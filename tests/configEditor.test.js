@@ -17,5 +17,13 @@ test('shared password is required and used for all bots', () => {
 test('all five plugin sessions use the configured password without logging it', () => {
   const { loadConfig } = require('../src/config'); const { Manager } = require('../src/manager'); const Logger = require('../src/logger'); const { AuthSession } = require('../src/auth')
   const config = loadConfig({ BOT_AUTH_PASSWORD:'test-shared' }); config.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-default-auth-')); const logger = new Logger(config); logger.output = () => {}; const manager = new Manager(config, logger)
-  try { for (const c of manager.controllers.values()) { const sent = []; c.state = 'CONNECTED'; c.bot = { chat: msg => sent.push(msg), clearControlStates () {}, quit () {} }; const auth = new AuthSession(c, manager.store); c.session = auth; auth.start(); auth.message('/register'); assert.equal(sent[0], `/register ${config.password} ${config.password}`); auth.message('registration successful'); assert.equal(c.authState, 'AUTHENTICATED'); auth.stop(); const login = new AuthSession(c, manager.store); c.session = login; login.start(); login.message('/login'); assert.equal(sent[1], `/login ${config.password}`); login.stop() } assert.ok(logger.lines.every(line => !line.includes(config.password))) } finally { manager.shutdown() }
+  try { for (const c of manager.controllers.values()) { const sent = []; c.state = 'CONNECTED'; c.bot = { chat: msg => sent.push(msg), clearControlStates () {}, quit () {} }; const auth = new AuthSession(c, manager.store); c.session = auth; auth.start(); auth.message('/register'); assert.equal(sent[0], `/register ${config.password}`); auth.message('registration successful'); assert.equal(c.authState, 'AUTHENTICATED'); auth.stop(); const login = new AuthSession(c, manager.store); c.session = login; login.start(); login.message('/login'); assert.equal(sent[1], `/login ${config.password}`); login.stop() } assert.ok(logger.lines.every(line => !line.includes(config.password))) } finally { manager.shutdown() }
+})
+
+test('registration can optionally include confirmation without affecting login', () => {
+  const { loadConfig } = require('../src/config'); const { AuthSession } = require('../src/auth')
+  const config = loadConfig({ BOT_AUTH_PASSWORD: 'unit-test-password', BOT_REGISTER_CONFIRM: 'true' })
+  const sent = []; const c = { config, state:'CONNECTED', bot:{chat:message=>sent.push(message)}, log(){}, update(){}, name:'bot' }
+  const a = new AuthSession(c, {save(){}}); a.start(); a.message('/register'); assert.deepEqual(sent, ['/register unit-test-password unit-test-password']); a.stop()
+  assert.throws(() => loadConfig({ BOT_AUTH_PASSWORD:'unit-test-password', BOT_REGISTER_CONFIRM:'invalid' }), /BOT_REGISTER_CONFIRM/)
 })

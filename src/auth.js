@@ -23,7 +23,7 @@ class AuthSession {
     if (p.register.test(text)) return this.send('register')
     if (p.login.test(text)) return this.send('login')
   }
-  send (type) { if (!this.c.bot || this.c.state !== 'CONNECTED') return; this.sent = type; this.c.authState = 'AUTHENTICATING'; this.c.log('info', `Server authentication: ${type} requested`); const pass = this.c.config.password; this.c.bot.chat(type === 'register' ? `/register ${pass} ${pass}` : `/login ${pass}`); this.c.update() }
+  send (type) { if (!this.c.bot || this.c.state !== 'CONNECTED') return; this.sent = type; this.c.authState = 'AUTHENTICATING'; this.c.log('info', `Server authentication: ${type} requested`); const pass = this.c.config.password; this.c.bot.chat(type === 'register' ? `/register ${pass}${this.c.config.registerConfirm ? ` ${pass}` : ''}` : `/login ${pass}`); this.c.update() }
   success () { this.stop(); this.c.authState = 'AUTHENTICATED'; this.c.log('success', 'Server authentication confirmed'); this.c.update(); this.c.authConfirmed?.(); this.c.work?.health(); this.c.survival?.schedule() }
 }
 module.exports = { AuthStore, AuthSession }

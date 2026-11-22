@@ -12,6 +12,7 @@ const FIELDS = [
   ['MC_AUTH', 'Account authentication (microsoft or offline)', 'offline'],
   ['BOT_AUTH_ENABLED', 'Server plugin authentication (true/false)', 'true'],
   ['BOT_AUTH_PASSWORD', 'Server plugin password (hidden)', '', true],
+  ['BOT_REGISTER_CONFIRM', 'Registration requires password confirmation (true/false)', 'false'],
   ['DASHBOARD_PORT', 'Local dashboard port', '3000'],
   ['RECONNECT_ENABLED', 'Automatic reconnect (true/false)', 'true'],
   ['RECONNECT_INITIAL_DELAY', 'Initial retry delay in ms', '5000'],

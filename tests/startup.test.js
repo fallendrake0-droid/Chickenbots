@@ -13,7 +13,7 @@ for (const [character, key, expected] of [['e', { name: 'e' }, 'edit'], ['\r', {
 test('password prompt is visible and secret is not echoed', async () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-editor-')), '.env')
   const rl = new EventEmitter(); rl.terminal = true; rl.history = []; let screen = ''; rl.output = { write (text) { screen += text } }; rl._writeToOutput = text => rl.output.write(text)
-  const answers = ['', '', '', 'offline', 'true', 'private-pass', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
+  const answers = ['', '', '', 'offline', 'true', 'private-pass', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
   rl.question = (prompt, callback) => { rl._writeToOutput(prompt); const answer = answers.shift(); setImmediate(() => { rl._writeToOutput(answer); callback(answer) }) }
   await editConfig(rl, { file, overrides: {}, startup: true })
   assert.equal(answers.length, 0); assert.equal((screen.match(/BOT_AUTH_PASSWORD/g) || []).length, 1); assert.doesNotMatch(screen, /private-pass/); assert.match(fs.readFileSync(file, 'utf8'), /BOT_AUTH_PASSWORD="private-pass"/)
