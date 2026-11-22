@@ -1,5 +1,6 @@
 'use strict'
 const { excavation, matches, MAX_RANGE, ORE_TYPES } = require('./work')
+const { TeamIntel } = require('./teamIntel')
 const NEARBY_PER_BOT = 32
 const key = pos => `${pos.x},${pos.y},${pos.z}`
 class TeamJob {
@@ -12,7 +13,14 @@ class TeamJob {
   drain () {
     if (this.state !== 'RUNNING') return
     for (const [worker, waiting] of this.waiters) {
-      const index = this.queue.findIndex(item => waiting.bot.entity?.position && waiting.bot.game?.dimension === this.dimension && item.pos.distanceTo(waiting.bot.entity.position) <= MAX_RANGE && waiting.bot.blockAt(item.pos) != null)
+      let index = -1; let nearest = Infinity
+      for (let i = 0; i < this.queue.length; i++) {
+        const item = this.queue[i]; const position = waiting.bot.entity?.position
+        if (!position || waiting.bot.game?.dimension !== this.dimension) continue
+        const distance = item.pos.distanceTo(position)
+        if (!Number.isFinite(distance) || distance > MAX_RANGE || distance >= nearest || waiting.bot.blockAt(item.pos) == null) continue
+        index = i; nearest = distance
+      }
       if (index < 0) continue
       const lease = this.queue.splice(index, 1)[0]; this.claims.set(worker, lease); this.waiters.delete(worker); waiting.resolve(lease)
     }
@@ -37,18 +45,18 @@ class TeamJob {
   stop () { if (this.state !== 'RUNNING') return; this.state = 'STOPPED'; for (const worker of [...this.workers]) worker.stop(); for (const { resolve } of this.waiters.values()) resolve(null); this.waiters.clear(); this.manager.logger.log('TEAM', 'info', 'Team work stopped'); this.update() }
 }
 class TeamManager {
-  constructor (manager) { this.manager = manager; this.job = null }
-  snapshot () { return this.job ? this.job.snapshot() : { state: 'IDLE', type: null, members: [], excluded: [], total: 0, done: 0, skipped: 0, remaining: 0, inProgress: 0, errors: [] } }
+  constructor (manager) { this.manager = manager; this.job = null; this.intel = new TeamIntel(manager) }
+  snapshot () { const job = this.job ? this.job.snapshot() : { state: 'IDLE', type: null, members: [], excluded: [], total: 0, done: 0, skipped: 0, remaining: 0, inProgress: 0, errors: [] }; return { ...job, intel: this.intel.snapshot() } }
   start (type, args = {}) {
     if (this.job?.state === 'RUNNING') throw new Error('A team task is already running')
     if (!['trees', 'stone', 'dirt', 'excavate'].includes(type) && !ORE_TYPES.has(type)) throw new Error('Invalid work type')
     const all = [...this.manager.controllers.values()]; const connected = all.filter(c => c.work.ready())
     if (!connected.length) throw new Error('No connected and authenticated bots available')
     if (connected.some(c => c.work.active || c.work.eatAction || c.survival?.busy || c.playerActions?.busy())) throw new Error('Stop individual work and wait for eating to finish before starting team work')
-    const first = connected.find(c => c.bot.pathfinder && c.bot.entity?.position && c.bot.game?.dimension != null)
+    const first = this.intel.elect()
     if (!first) throw new Error('No bot has a known dimension, position and pathfinder')
     const dimension = first.bot.game.dimension
-    const selected = connected.filter(c => c.bot.pathfinder && c.bot.entity?.position && c.bot.game?.dimension === dimension)
+    const selected = connected.filter(c => this.intel.eligible(c) && c.bot.game.dimension === dimension)
     const excluded = all.filter(c => !selected.includes(c)).map(c => c.name)
     let positions
     if (type === 'excavate') positions = excavation(args.from, args.to, first.bot.entity.position)

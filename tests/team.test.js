@@ -42,3 +42,9 @@ test('team ore orders assign unique positions with valid tools', async () => {
  const {manager,blocks,diggers,add}=fixture(2); add(2,'iron_ore'); add(3,'deepslate_iron_ore'); for(const b of blocks.values()) b.harvestTools={1:true}; manager.team.start('ore_iron'); await until(()=>manager.team.snapshot().state!=='RUNNING'); const result=manager.team.snapshot(); assert.equal(result.done,2); assert.equal(result.state,'COMPLETED'); assert.equal(new Set(diggers.map(x=>x[1])).size,2)
 })
 test('team mining searches up to the maximum 48 blocks per bot', async () => { const {manager,add}=fixture(2); add(2); const distances=[]; for(const c of manager.controllers.values()) { const find=c.bot.findBlocks; c.bot.findBlocks=opts=>{distances.push(opts.maxDistance); return find(opts)} } manager.team.start('stone'); await until(()=>manager.team.snapshot().state !== 'RUNNING'); assert.deepEqual(distances,[48,48]) })
+test('coordinator failover preserves active claims and next job uses elected dimension', async () => {
+ const {manager,add}=fixture(2); add(2); add(3); const [a,b]=[...manager.controllers.values()]; let resolve; a.bot.dig=()=>new Promise(r=>{resolve=r}); manager.team.start('stone'); await until(()=>!!resolve); assert.equal(manager.team.snapshot().intel.coordinator,'bot0'); a.work.stop(true); a.state='DISCONNECTED'; a.bot=null; await until(()=>manager.team.snapshot().state!=='RUNNING'); assert.equal(manager.team.snapshot().intel.coordinator,'bot1'); assert.equal(manager.team.snapshot().done,2); resolve(); await tick(); assert.equal(manager.team.snapshot().done,2)
+})
+test('worker claims its nearest loaded target first', async () => {
+ const {manager,add,diggers}=fixture(1); add(10); add(2); add(6); manager.team.start('stone'); await until(()=>manager.team.snapshot().state!=='RUNNING'); assert.deepEqual(diggers.map(d=>d[1]),['(2, 64, 0)','(6, 64, 0)','(10, 64, 0)'])
+})

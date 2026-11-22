@@ -24,6 +24,7 @@ async function main () {
   rl.on('line', line => { if (editing) return; const [cmd, ...args] = line.trim().split(/\s+/); try { if (cmd === 'help') terminal.help()
     else if (cmd === 'config') { editing = true; terminal.setEditing(true); editConfig(rl, { overrides: shellEnvironment }).catch(err => log.log('SYSTEM', 'error', err.message)).finally(() => { editing = false; terminal.setEditing(false); terminal.prompt() }) }
     else if (cmd === 'status') terminal.status(manager.snapshot())
+    else if (cmd === 'team' && args.length === 1 && ['status','resources'].includes(args[0])) { const team=manager.team.snapshot(), intel=team.intel; if (args[0] === 'status') terminal.write(`Coordinator: ${intel.coordinator || 'none'} | Work: ${team.type || 'none'} ${team.state} ${team.done}/${team.total} | Members: ${intel.members.map(m => m.name).join(', ') || 'none'}`); else terminal.write(`Observed connected bot inventories (not storage):\n${intel.totals.map(x => `  ${x.name}: ${x.count}`).join('\n') || '  No inventory items observed'}\n${intel.members.filter(m => !m.inventoryAvailable).map(m => `  ${m.name}: inventory unavailable`).join('\n')}`) }
     else if (cmd === 'server') terminal.write(`SERVER  ${config.host}:${config.port}`)
     else if (cmd === 'ping') terminal.write(manager.snapshot().bots.map(b => `${b.name}: ${b.ping == null ? 'unavailable' : `${b.ping} ms`}`).join('\n'))
     else if (cmd === 'clear') { console.clear(); terminal.banner(config) }
