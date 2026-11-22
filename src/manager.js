@@ -6,6 +6,7 @@ const path = require('path')
 const { AuthStore, AuthSession } = require('./auth')
 const { pathfinder } = require('mineflayer-pathfinder')
 const { Work } = require('./work')
+const { Survival } = require('./survival')
 const { TeamManager } = require('./team')
 function classify (message) {
   const m = String(message).toLowerCase()
@@ -23,11 +24,11 @@ function classify (message) {
 }
 
 class Controller {
-  constructor (manager, name) { this.manager = manager; this.config = manager.config; this.name = name; this.state = 'STOPPED'; this.authState = 'OFFLINE'; this.bot = null; this.generation = 0; this.retryCount = 0; this.timer = null; this.watchdog = null; this.stableTimer = null; this.lastError = null; this.history = []; this.chatHistory = []; this.stats = { connections: 0, disconnections: 0 }; this.connectedAt = null; this.server = null; this.lastChat = 0; this.work = new Work(this) }
+  constructor (manager, name) { this.manager = manager; this.config = manager.config; this.name = name; this.state = 'STOPPED'; this.authState = 'OFFLINE'; this.bot = null; this.generation = 0; this.retryCount = 0; this.timer = null; this.watchdog = null; this.stableTimer = null; this.lastError = null; this.history = []; this.chatHistory = []; this.stats = { connections: 0, disconnections: 0 }; this.connectedAt = null; this.server = null; this.lastChat = 0; this.work = new Work(this); this.survival = new Survival(this) }
   log (level, msg) { this.manager.logger.log(this.name, level, msg); this.history.push({ time: Date.now(), level, message: this.manager.logger.clean(msg) }); if (this.history.length > 100) this.history.shift() }
   update () { this.manager.emit() }
   setState (state) { this.state = state; this.update() }
-  snapshot () { const b = this.bot; const pos = b?.entity?.position; return { name: this.name, state: this.state, auth: this.authState, health: b?.health ?? null, food: b?.food ?? null, dimension: b?.game?.dimension ?? null, position: pos ? { x: Math.round(pos.x * 10) / 10, y: Math.round(pos.y * 10) / 10, z: Math.round(pos.z * 10) / 10 } : null, ping: b?.player?.ping ?? this.server?.latency ?? null, connectedAt: this.connectedAt, lastError: this.lastError, retryCount: this.retryCount, stats: this.stats, work: this.work.snapshot(), history: this.history, chat: this.chatHistory, server: this.server } }
+  snapshot () { const b = this.bot; const pos = b?.entity?.position; return { name: this.name, state: this.state, auth: this.authState, health: b?.health ?? null, food: b?.food ?? null, dimension: b?.game?.dimension ?? null, position: pos ? { x: Math.round(pos.x * 10) / 10, y: Math.round(pos.y * 10) / 10, z: Math.round(pos.z * 10) / 10 } : null, ping: b?.player?.ping ?? this.server?.latency ?? null, connectedAt: this.connectedAt, lastError: this.lastError, retryCount: this.retryCount, stats: this.stats, work: this.work.snapshot(), survival: this.survival.snapshot(), history: this.history, chat: this.chatHistory, server: this.server } }
   start () { if (this.state !== 'STOPPED' && !['ERROR', 'AUTHENTICATION_FAILED', 'DISCONNECTED'].includes(this.state)) return false; this.retryCount = 0; this.launch(); return true }
   launch () { const gen = ++this.generation; clearTimeout(this.timer); this.setState('INITIALIZING'); this.manager.enqueue(() => { if (this.generation === gen) this.connect(gen).catch(err => { if (this.generation === gen) { const [code, permanent] = classify(err.message); this.fail(code, err.message, permanent) } }) }) }
   async connect (gen) {
@@ -48,7 +49,8 @@ class Controller {
     bot.once('login', () => { if (gen !== this.generation) return; if (this.config.auth === 'microsoft' && bot.username && bot.username.toLowerCase() !== this.name.toLowerCase()) return this.fail('AUTH_FAILED', `Microsoft profile name ${bot.username} does not match configured bot ${this.name}. Use the account owning this name.`, true); this.setState('LOGGED_IN'); this.log('info', 'Minecraft login successful; waiting for spawn'); this.setState('SPAWNING') })
     bot.once('spawn', () => { if (gen !== this.generation) return; clearTimeout(this.watchdog); this.connectedAt = Date.now(); this.stats.connections++; this.lastError = null; this.setState('CONNECTED'); this.log('success', 'BOT SUCCESSFULLY JOINED THE SERVER (world spawn)'); this.session.start(); for (const text of pendingPrompts.splice(0)) { if (gen !== this.generation) break; try { this.session.message(text) } catch (err) { this.fail('AUTH_FAILED', `Authentication state error: ${err.message}`, true); break } } if (gen === this.generation) this.stableTimer = setTimeout(() => { if (gen === this.generation) this.maybeResetRetries() }, this.config.stableTime) })
     bot.on('messagestr', (text) => { if (gen !== this.generation) return; if (this.state !== 'CONNECTED' && typeof text === 'string' && (this.config.patterns.register.test(text) || this.config.patterns.login.test(text))) { pendingPrompts.push(text); if (pendingPrompts.length > 5) pendingPrompts.shift() } try { this.session.message(text) } catch (err) { this.fail('AUTH_FAILED', `Authentication state error: ${err.message}`, true); return } const clean = this.manager.logger.clean(text); if (/\/(register|login)\b/i.test(text) || (this.config.password && text.includes(this.config.password))) return; this.addChat('server', clean) })
-    bot.inventory?.on?.('updateSlot', () => { if (gen === this.generation) this.work.health() })
+    bot.inventory?.on?.('updateSlot', () => { if (gen === this.generation) { this.work.health(); this.survival.schedule() } })
+    bot.on('windowClose', () => { if (gen === this.generation) { this.work.health(); this.survival.schedule() } })
     bot.on('health', () => { if (gen === this.generation) { this.update(); this.work.health() } })
     bot.on('kicked', reason => { if (gen !== this.generation) return; const message = typeof reason === 'string' ? reason : JSON.stringify(reason); const [code, permanent] = classify(message); this.fail(code === 'UNEXPECTED_DISCONNECT' ? 'KICKED' : code, message, permanent, true) })
     bot.on('error', err => { if (gen !== this.generation) return; const [code, permanent] = classify(err.message); this.fail(code, err.message, permanent, true) })
@@ -69,7 +71,7 @@ class Controller {
     }
   }
   cleanup (connectionDead = false) {
-    this.work.stop(true, !connectionDead); ++this.generation; this.manager.cancelInvalid(); clearTimeout(this.timer); clearTimeout(this.watchdog); clearTimeout(this.stableTimer); this.session?.stop()
+    this.survival.reset(); this.work.stop(true, !connectionDead); ++this.generation; this.manager.cancelInvalid(); clearTimeout(this.timer); clearTimeout(this.watchdog); clearTimeout(this.stableTimer); this.session?.stop()
     if (this.bot) { this.stats.disconnections++; const b = this.bot; this.bot = null; try { b.clearControlStates(); if (connectionDead && b._client?.socket) b._client.socket.destroy(); else if (!connectionDead) b.quit() } catch {} }
     this.connectedAt = null; this.authState = 'OFFLINE'
   }

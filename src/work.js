@@ -4,7 +4,7 @@ const { Vec3 } = require('vec3')
 const MAX_BLOCKS = 256
 const MAX_RANGE = 48
 const NEARBY_LIMIT = 32
-const FOODS = new Set(['bread', 'baked_potato', 'carrot', 'golden_carrot', 'apple', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton', 'cooked_rabbit', 'cooked_cod', 'cooked_salmon', 'cooked_potato', 'pumpkin_pie', 'melon_slice', 'beetroot', 'dried_kelp', 'sweet_berries'])
+const { chooseFood, validateFoodSettings } = require('./food')
 const STONE = new Set(['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate', 'granite', 'diorite', 'andesite', 'tuff', 'calcite'])
 const DIRT = new Set(['dirt', 'grass_block', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium', 'mud'])
 function isLog (name) { return /(^|_)(log|wood|stem|hyphae)$/.test(name) }
@@ -17,27 +17,29 @@ function excavation (from, to, position) {
   const positions = []; for (let y = high.y; y >= low.y; y--) for (let x = low.x; x <= high.x; x++) for (let z = low.z; z <= high.z; z++) positions.push(new Vec3(x, y, z)); return positions
 }
 class Work {
-  constructor (controller) { this.c = controller; this.createMovements = bot => new Movements(bot); this.autoEat = true; this.active = null; this.eatAction = null; this.generation = 0; this.lastEat = 0; this.lastFoodWarning = 0; this.eatTimer = null; this.task = { state: 'IDLE', type: null, done: 0, total: 0, message: '' } }
+  constructor (controller) { this.c = controller; this.createMovements = bot => new Movements(bot); this.autoEat = true; this.foodSettings = { threshold: 14, reserve: 0, priority: 'balanced' }; this.foodReason = null; this.active = null; this.eatAction = null; this.generation = 0; this.lastEat = 0; this.lastFoodWarning = 0; this.eatTimer = null; this.task = { state: 'IDLE', type: null, done: 0, total: 0, message: '' } }
   ready () { return this.c.state === 'CONNECTED' && ['AUTHENTICATED', 'DISABLED'].includes(this.c.authState) && this.c.bot }
-  snapshot () { return { ...this.task, autoEat: this.autoEat, eating: !!this.eatAction } }
+  snapshot () { return { ...this.task, autoEat: this.autoEat, eating: !!this.eatAction, foodSettings: { ...this.foodSettings }, foodReason: this.foodReason } }
   setAutoEat (enabled) { if (typeof enabled !== 'boolean') throw new Error('Auto-eat must be true or false'); this.autoEat = enabled; if (!enabled) { clearTimeout(this.eatTimer); this.eatTimer = null; try { this.c.bot?.deactivateItem?.() } catch {} } this.c.update(); if (enabled) this.health() }
-  health () { if (!this.autoEat || !this.ready() || this.active || this.eatAction || this.c.bot.food == null || this.c.bot.food > 14 || Date.now() - this.lastEat < 5000) return; const bot = this.c.bot; const generation = this.generation; const action = {}; this.eatAction = action; this.c.update(); this.eat(bot, generation).catch(err => { if (this.generation === generation) this.c.log('warning', `Auto-eat: ${err.message}`) }).finally(() => { if (this.eatAction === action) { this.eatAction = null; this.c.update(); this.scheduleEat() } }) }
-  scheduleEat () { clearTimeout(this.eatTimer); this.eatTimer = null; if (this.autoEat && this.ready() && !this.active && this.c.bot.food != null && this.c.bot.food <= 14) { this.eatTimer = setTimeout(() => { this.eatTimer = null; this.health() }, 5500); this.eatTimer.unref?.() } }
+  setFoodSettings (settings) { this.foodSettings = validateFoodSettings(settings); this.c.update(); this.health() }
+  foodCandidate () { return chooseFood(this.c.bot, this.foodSettings) }
+  health () { if (!this.autoEat || !this.ready() || this.active || this.eatAction || this.c.survival?.busy || this.c.bot.currentWindow || this.c.bot.food == null || this.c.bot.food > this.foodSettings.threshold || Date.now() - this.lastEat < 5000) return; const bot = this.c.bot; const generation = this.generation; const action = {}; this.eatAction = action; this.c.update(); this.eat(bot, generation).catch(err => { if (this.generation === generation) this.c.log('warning', `Auto-eat: ${err.message}`) }).finally(() => { if (this.eatAction === action) { this.eatAction = null; this.c.update(); this.scheduleEat(); this.c.survival?.schedule() } }) }
+  scheduleEat () { clearTimeout(this.eatTimer); this.eatTimer = null; if (this.autoEat && this.ready() && !this.active && this.c.bot.food != null && this.c.bot.food <= this.foodSettings.threshold) { this.eatTimer = setTimeout(() => { this.eatTimer = null; this.health() }, 5500); this.eatTimer.unref?.() } }
   async eat (bot, generation) {
-    if (!this.autoEat || bot.food == null || bot.food > 14 || Date.now() - this.lastEat < 5000) return
-    this.lastEat = Date.now(); const food = bot.inventory.items().find(item => FOODS.has(item.name))
-    if (!food) { if (Date.now() - this.lastFoodWarning > 30000) { this.c.log('warning', 'Auto-eat: no suitable food in inventory'); this.lastFoodWarning = Date.now() } return }
+    if (!this.autoEat || bot.food == null || bot.food > this.foodSettings.threshold || Date.now() - this.lastEat < 5000) return
+    this.lastEat = Date.now(); const selection = chooseFood(bot, this.foodSettings); const food = selection.item; this.foodReason = selection.reason; this.c.update()
+    if (!food) { if (Date.now() - this.lastFoodWarning > 30000) { this.c.log('warning', `Auto-eat: ${selection.reason}`); this.lastFoodWarning = Date.now() } return }
     await bot.equip(food, 'hand'); this.check(bot, generation); if (!this.autoEat) return; await bot.consume(); this.check(bot, generation); this.c.log('info', `Auto-eat: consumed ${food.name}`)
   }
   check (bot, generation) { if (generation !== this.generation || this.c.bot !== bot || !this.ready() || (this.active?.team && bot.game?.dimension !== this.active.team.dimension)) throw new Error('Task cancelled or bot disconnected') }
   start (type, args = {}) {
-    const bot = this.ready(); if (!bot) throw new Error('Bot must be connected and authenticated'); if (this.active || this.eatAction) throw new Error('Bot is already busy'); if (!['trees', 'stone', 'dirt', 'excavate'].includes(type)) throw new Error('Invalid work type'); if (!bot.pathfinder || !bot.entity?.position) throw new Error('Pathfinder or bot position unavailable')
+    const bot = this.ready(); if (!bot) throw new Error('Bot must be connected and authenticated'); if (this.active || this.eatAction || this.c.survival?.busy) throw new Error('Bot is already busy'); if (!['trees', 'stone', 'dirt', 'excavate'].includes(type)) throw new Error('Invalid work type'); if (!bot.pathfinder || !bot.entity?.position) throw new Error('Pathfinder or bot position unavailable')
     let positions
     if (type === 'excavate') positions = excavation(args.from, args.to, bot.entity.position)
     else { positions = bot.findBlocks({ matching: block => matches(type, block), maxDistance: 16, count: NEARBY_LIMIT }); if (!positions.length) throw new Error(`No matching ${type} blocks found nearby`) }
     this.active = { bot, generation: this.generation }; this.task = { state: 'RUNNING', type, done: 0, total: positions.length, message: 'Starting' }; this.c.log('info', `Starting ${type} task (${positions.length} candidate blocks)`); this.c.update()
     const active = this.active
-    this.run(bot, active.generation, type, positions).catch(err => { if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `${type}: ${err.message}`) } }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health() } })
+    this.run(bot, active.generation, type, positions).catch(err => { if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `${type}: ${err.message}`) } }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health(); this.c.survival?.schedule() } })
   }
   prepare (bot) {
     const movement = this.createMovements(bot); movement.canDig = false; movement.allow1by1towers = false; movement.allowParkour = false; movement.scafoldingBlocks = []; bot.pathfinder.setMovements(movement); bot.pathfinder.searchRadius = MAX_RANGE
@@ -60,12 +62,12 @@ class Work {
     this.task.state = 'COMPLETED'; this.task.message = `Finished: ${this.task.done} dig actions completed, ${skipped} skipped`; this.c.log('success', `${type}: ${this.task.message}`)
   }
   startTeam (team) {
-    const bot = this.ready(); if (!bot || this.active || this.eatAction || !bot.pathfinder || !bot.entity?.position) throw new Error(`${this.c.name} is not available for work`)
+    const bot = this.ready(); if (!bot || this.active || this.eatAction || this.c.survival?.busy || !bot.pathfinder || !bot.entity?.position) throw new Error(`${this.c.name} is not available for work`)
     const active = { bot, generation: this.generation, team }; this.active = active
     this.task = { state: 'RUNNING', type: team.type, done: 0, total: team.total, message: 'Team task: waiting for an assignment' }; this.c.update()
     this.runTeam(bot, active.generation, team).catch(err => {
       if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `Team ${team.type}: ${err.message}`); team.leave(this, err.message) }
-    }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health() } })
+    }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health(); this.c.survival?.schedule() } })
   }
   async runTeam (bot, generation, team) {
     this.prepare(bot)

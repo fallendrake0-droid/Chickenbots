@@ -44,7 +44,7 @@ class TeamManager {
     if (!['trees', 'stone', 'dirt', 'excavate'].includes(type)) throw new Error('Invalid work type')
     const all = [...this.manager.controllers.values()]; const connected = all.filter(c => c.work.ready())
     if (!connected.length) throw new Error('No connected and authenticated bots available')
-    if (connected.some(c => c.work.active || c.work.eatAction)) throw new Error('Stop individual work and wait for eating to finish before starting team work')
+    if (connected.some(c => c.work.active || c.work.eatAction || c.survival?.busy)) throw new Error('Stop individual work and wait for eating to finish before starting team work')
     const first = connected.find(c => c.bot.pathfinder && c.bot.entity?.position && c.bot.game?.dimension != null)
     if (!first) throw new Error('No bot has a known dimension, position and pathfinder')
     const dimension = first.bot.game.dimension

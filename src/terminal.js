@@ -39,7 +39,7 @@ class Terminal {
   }
   help () {
     const heading = this.paint('COMMAND REFERENCE', '1;92')
-    this.write(`\n ${heading}\n ${this.paint('─'.repeat(46), '2')}\n  status                 Fleet connection & auth state\n  server  |  ping        Target address / available latency\n  start [bot|all]        Start one bot or the entire fleet\n  stop [bot|all]         Safely disconnect\n  reconnect [bot|all]    Restart connections\n  chat <bot> <message>   Send a manual chat message\n  config                 Edit settings (restart to apply)\n  clear  |  help  |  exit\n`)
+    this.write(`\n ${heading}\n ${this.paint('─'.repeat(46), '2')}\n  status                 Fleet connection & auth state\n  server  |  ping        Target address / available latency\n  start [bot|all]        Start one bot or the entire fleet\n  stop [bot|all]         Safely disconnect\n  reconnect [bot|all]    Restart connections\n  chat <bot> <message>   Send a manual chat message\n  survival <bot|all> armour|eat on|off\n  survival <bot|all> food <threshold> <reserve> <balanced|saturation|cheap>\n  config                 Edit settings (restart to apply)\n  clear  |  help  |  exit\n`)
   }
   status (snapshot) {
     const rows = snapshot.bots.map((bot, index) => {

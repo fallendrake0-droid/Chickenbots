@@ -25,6 +25,8 @@ function dashboard (manager) {
         else if (data.action === 'work:start' && data.bot !== 'all') { if (manager.team.job?.state === 'RUNNING') throw new Error('Stop the team task before starting individual work'); targets[0].work.start(data.type, { from: data.from, to: data.to }) }
         else if (data.action === 'work:stop' && data.bot !== 'all') targets[0].work.stop()
         else if (data.action === 'work:autoEat') { if (typeof data.enabled !== 'boolean') throw new Error('Auto-eat must be true or false'); for (const c of targets) c.work.setAutoEat(data.enabled) }
+        else if (data.action === 'survival:armour') { if (typeof data.enabled !== 'boolean') throw new Error('Auto armour must be true or false'); for (const c of targets) c.survival.setAutoArmour(data.enabled) }
+        else if (data.action === 'survival:food') { const { validateFoodSettings } = require('./food'); const settings = validateFoodSettings(data.settings); for (const c of targets) c.work.setFoodSettings(settings) }
         else if (data.action === 'team:start' && data.bot === 'all') manager.team.start(data.type, { from: data.from, to: data.to })
         else if (data.action === 'team:stop' && data.bot === 'all') manager.team.stop()
         else if (data.action === 'movement' && data.bot !== 'all') { const c = targets[0]; c.movement(data.control, data.value); const key = `${c.name}:${data.control}`; clearTimeout(held.get(key)); if (data.value) held.set(key, setTimeout(() => { held.delete(key); try { c.movement(data.control, false) } catch {} }, 10000)); else held.delete(key) }
