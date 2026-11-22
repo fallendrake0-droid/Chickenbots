@@ -2,7 +2,7 @@
 const fs = require('fs')
 const path = require('path')
 const dotenv = require('dotenv')
-const { loadConfig } = require('./config')
+const { loadConfig, DEFAULT_PLUGIN_PASSWORD } = require('./config')
 
 // Fixed bot names and localhost binding are intentional safety constraints.
 const FIELDS = [
@@ -11,7 +11,7 @@ const FIELDS = [
   ['MC_VERSION', 'Minecraft version (auto or supported version)', 'auto'],
   ['MC_AUTH', 'Account authentication (microsoft or offline)', 'microsoft'],
   ['BOT_AUTH_ENABLED', 'Server plugin authentication (true/false)', 'true'],
-  ['BOT_AUTH_PASSWORD', 'Server plugin password (hidden)', '', true],
+  ['BOT_AUTH_PASSWORD', 'Server plugin password (hidden)', DEFAULT_PLUGIN_PASSWORD, true],
   ['DASHBOARD_PORT', 'Local dashboard port', '3000'],
   ['RECONNECT_ENABLED', 'Automatic reconnect (true/false)', 'true'],
   ['RECONNECT_INITIAL_DELAY', 'Initial retry delay in ms', '5000'],
@@ -94,14 +94,14 @@ async function editConfig (rl, { file = path.resolve('.env'), overrides = {}, st
   console.log(`Values are saved to .env only after validation. Ctrl-C cancels.${startup ? '' : ' Restart Chickenbots to apply changes.'}`)
   for (const [key, label, fallback, hidden] of FIELDS) {
     const existing = Object.hasOwn(current, key) ? current[key] : fallback
-    const shown = hidden ? (existing ? 'set' : 'not set') : existing
+    const shown = hidden ? (current[key] ? 'set' : 'default') : existing
     const overridden = Object.hasOwn(overrides, key) ? ' [shell override]' : ''
     while (true) {
       const answer = await question(rl, `${label} (${key}) [${shown}]${overridden}: `, hidden)
       if (answer !== '') changes[key] = answer === '!clear' ? '' : answer
       if (key === 'BOT_AUTH_PASSWORD') {
         const enabled = overrides.BOT_AUTH_ENABLED ?? changes.BOT_AUTH_ENABLED ?? current.BOT_AUTH_ENABLED ?? 'true'
-        const password = overrides.BOT_AUTH_PASSWORD ?? changes.BOT_AUTH_PASSWORD ?? current.BOT_AUTH_PASSWORD ?? ''
+        const password = (overrides.BOT_AUTH_PASSWORD ?? changes.BOT_AUTH_PASSWORD ?? current.BOT_AUTH_PASSWORD) || DEFAULT_PLUGIN_PASSWORD || ''
         if (enabled === 'true' && (!password || /\s/.test(password))) {
           if (Object.hasOwn(overrides, 'BOT_AUTH_PASSWORD')) throw new Error('The BOT_AUTH_PASSWORD environment override is empty or invalid; remove or correct it before editing.')
           console.log('A password without spaces is required while server plugin authentication is enabled. Enter it at the hidden prompt, or cancel and disable plugin authentication.')

@@ -41,9 +41,9 @@ async function startup (terminal, shellEnvironment, input = process.stdin, outpu
       continue
     }
     try {
-      // Offer a secure first-run prompt instead of failing when only the plugin password is missing.
+      // Recover an invalid explicit password; an empty value uses the shared default.
       const values = { ...dotenv.parse(readEnv('.env')), ...shellEnvironment }
-      if ((values.BOT_AUTH_ENABLED ?? 'true') === 'true' && (!values.BOT_AUTH_PASSWORD || /\s/.test(values.BOT_AUTH_PASSWORD))) {
+      if ((values.BOT_AUTH_ENABLED ?? 'true') === 'true' && values.BOT_AUTH_PASSWORD && /\s/.test(values.BOT_AUTH_PASSWORD)) {
         const rl = readline.createInterface({ input, output, terminal: true })
         rl.on('SIGINT', () => rl.close())
         try { await promptPluginPassword(rl, { overrides: shellEnvironment }) } catch (err) {
