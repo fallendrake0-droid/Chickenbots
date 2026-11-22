@@ -8,12 +8,13 @@ class AuthStore {
 }
 class AuthSession {
   constructor (controller, store) { this.c = controller; this.store = store; this.sent = null; this.timer = null }
-  start () { if (!this.c.config.enabled) { this.c.authState = 'DISABLED'; this.c.update(); this.c.authConfirmed?.(); this.c.work?.health(); this.c.survival?.schedule(); return } this.c.authState = 'WAITING_FOR_PROMPT'; this.c.log('info', 'Waiting for the server registration or login prompt'); this.c.update(); this.timer = setTimeout(() => this.fail('Authentication prompt or confirmation timed out; check plugin patterns.'), this.c.config.authTimeout) }
+  start () { if (!this.c.config.enabled) { this.c.authState = 'DISABLED'; this.c.update(); this.c.authConfirmed?.(); this.c.work?.health(); this.c.survival?.schedule(); return } this.c.authState = 'WAITING_FOR_PROMPT'; this.c.log('info', this.c.config.pluginAuthMode === 'login' ? 'Sending one login command and waiting for server confirmation' : 'Waiting for the server registration or login prompt'); this.c.update(); this.timer = setTimeout(() => this.fail('Authentication prompt or confirmation timed out; check plugin patterns.'), this.c.config.authTimeout); if (this.c.config.pluginAuthMode === 'login') { try { this.send('login') } catch (err) { this.fail(`Could not send authentication command: ${this.c.manager.logger.clean(err.message)}`) } } }
   stop () { clearTimeout(this.timer) }
   fail (message) { this.stop(); this.c.authState = 'FAILED'; this.c.fail('AUTH_FAILED', message, true) }
   message (text) {
     if (!this.c.config.enabled || !['WAITING_FOR_PROMPT', 'AUTHENTICATING'].includes(this.c.authState)) return
     const p = this.c.config.patterns; const name = this.c.name
+    if (this.sent === 'login' && this.c.config.pluginAuthMode === 'login' && p.register.test(text) && !p.registered.test(text) && !p.success.test(text)) return this.fail('Server requested registration; login-only mode will not register. Register the account with administrator approval or use prompt mode.')
     if (p.invalid?.test(text) && this.sent) return this.fail('Server rejected or cannot process the authentication command; check the plugin configuration.')
     if (p.incorrect.test(text) && this.sent === 'login') return this.fail('Server rejected the plugin password. Check BOT_AUTH_PASSWORD and server account settings.')
     if (p.already.test(text) && this.sent === 'register') { this.store.save(name, true); this.sent = null; return this.send('login') }
