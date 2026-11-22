@@ -81,11 +81,11 @@ class Work {
     }
     this.task.state = 'COMPLETED'; this.task.message = `Team work finished: ${this.task.done} dig actions completed`
   }
-  stop (discard = false) {
+  stop (discard = false, networkAvailable = true) {
     ++this.generation; clearTimeout(this.eatTimer); this.eatTimer = null; const active = this.active
     if (active || this.task.state === 'RUNNING') { this.task.state = 'STOPPED'; this.task.message = 'Stopped by operator or disconnect' }
     const bot = this.c.bot
-    if (bot) { try { bot.pathfinder?.setGoal(null); bot.stopDigging?.(); bot.deactivateItem?.(); bot.clearControlStates?.() } catch {} }
+    if (bot) { try { if (networkAvailable) { bot.pathfinder?.setGoal(null); bot.stopDigging?.(); if (bot.usingHeldItem || this.eatAction) bot.deactivateItem?.() } else bot.emit?.('path_stop'); bot.clearControlStates?.() } catch {} }
     // Keep a cancelled task busy until its in-flight action settles; disconnected bots are discarded.
     if (active?.team) active.team.leave(this, 'Stopped or disconnected')
     if (discard) { this.active = null; this.eatAction = null }

@@ -18,6 +18,8 @@ const FIELDS = [
   ['RECONNECT_MAX_DELAY', 'Maximum retry delay in ms', '60000'],
   ['RECONNECT_MAX_ATTEMPTS', 'Maximum retries (0 = unlimited)', '0'],
   ['BOT_START_DELAY', 'Delay between bot connections in ms (minimum 5000)', '5000'],
+  ['THROTTLE_COOLDOWN', 'Server throttle cooldown in ms', '30000'],
+  ['STABLE_CONNECTION_TIME', 'Stable connection time before resetting retries in ms', '60000'],
   ['CONNECTION_TIMEOUT', 'Connection timeout in ms', '30000'],
   ['AUTH_TIMEOUT', 'Server authentication timeout in ms', '30000'],
   ['LOG_LEVEL', 'Log level (info/debug)', 'info']
