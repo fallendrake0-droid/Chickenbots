@@ -43,3 +43,5 @@ $('playerBot').addEventListener('change', () => { if (snapshot) render(snapshot)
 $('followPlayer').addEventListener('click', () => action({action:'player:action',bot:$('playerBot').value,command:'follow',player:$('playerName').value}))
 $('stopPlayer').addEventListener('click', () => action({action:'player:action',bot:$('playerBot').value,command:'stop'}))
 $('dropPlayer').addEventListener('click', () => { const player=$('playerName').value, item=$('playerItem').value, count=Number($('playerCount').value); if (!player || !item || !Number.isSafeInteger(count) || count < 1 || count > 64) return alert('Select a visible player, material, and quantity from 1 to 64.'); if (confirm(`Toss ${count} ${item} near ${player}? Anyone nearby may pick it up.`)) action({action:'player:action',bot:$('playerBot').value,command:'drop',player,item,count}) })
+
+$('mineOre').addEventListener('click', () => { const bot=$('workBot').value; const ore=$('oreType').value; if (confirm(`Allow ${bot} to mine nearby ${ore} ore? This changes the world.`)) action({action:bot === 'all' ? 'team:start' : 'work:start',bot,type:'ore_' + ore}) })

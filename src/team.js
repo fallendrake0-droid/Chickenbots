@@ -1,5 +1,5 @@
 'use strict'
-const { excavation, matches, MAX_RANGE } = require('./work')
+const { excavation, matches, MAX_RANGE, ORE_TYPES } = require('./work')
 const NEARBY_PER_BOT = 32
 const key = pos => `${pos.x},${pos.y},${pos.z}`
 class TeamJob {
@@ -41,7 +41,7 @@ class TeamManager {
   snapshot () { return this.job ? this.job.snapshot() : { state: 'IDLE', type: null, members: [], excluded: [], total: 0, done: 0, skipped: 0, remaining: 0, inProgress: 0, errors: [] } }
   start (type, args = {}) {
     if (this.job?.state === 'RUNNING') throw new Error('A team task is already running')
-    if (!['trees', 'stone', 'dirt', 'excavate'].includes(type)) throw new Error('Invalid work type')
+    if (!['trees', 'stone', 'dirt', 'excavate'].includes(type) && !ORE_TYPES.has(type)) throw new Error('Invalid work type')
     const all = [...this.manager.controllers.values()]; const connected = all.filter(c => c.work.ready())
     if (!connected.length) throw new Error('No connected and authenticated bots available')
     if (connected.some(c => c.work.active || c.work.eatAction || c.survival?.busy || c.playerActions?.busy())) throw new Error('Stop individual work and wait for eating to finish before starting team work')

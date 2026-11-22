@@ -38,3 +38,6 @@ test('unloaded blocks are skipped instead of falsely completed or hanging', asyn
  const {manager,add}=fixture(2); add(2); for (const c of manager.controllers.values()) c.bot.blockAt=()=>null; manager.team.start('stone'); await until(()=>manager.team.snapshot().state!=='RUNNING'); const r=manager.team.snapshot(); assert.equal(r.state,'PARTIAL'); assert.equal(r.done,0); assert.equal(r.skipped,1); assert.match(r.errors.join(' '),/out of range/)
 })
 test('no workers or mixed invalid tasks are rejected', () => { const {manager}=fixture(2); for (const c of manager.controllers.values()) c.state='STOPPED'; assert.throws(()=>manager.team.start('stone'),/No connected/); assert.throws(()=>manager.team.start('invalid'),/Invalid work type/) })
+test('team ore orders assign unique positions with valid tools', async () => {
+ const {manager,blocks,diggers,add}=fixture(2); add(2,'iron_ore'); add(3,'deepslate_iron_ore'); for(const b of blocks.values()) b.harvestTools={1:true}; manager.team.start('ore_iron'); await until(()=>manager.team.snapshot().state!=='RUNNING'); const result=manager.team.snapshot(); assert.equal(result.done,2); assert.equal(result.state,'COMPLETED'); assert.equal(new Set(diggers.map(x=>x[1])).size,2)
+})
