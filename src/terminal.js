@@ -23,12 +23,14 @@ class Terminal {
     this.editing = editing
     if (!editing) { const pending = this.pending.splice(0); for (const line of pending) this.write(line) }
   }
+  clear () { if (this.output.isTTY && process.env.TERM !== 'dumb') this.output.write('\x1b[2J\x1b[H') }
   banner (config) {
     const accent = s => this.paint(s, '1;92'); const dim = s => this.paint(s, '2'); const cyan = s => this.paint(s, '36')
     const wide = !this.output.columns || this.output.columns >= 65
     const title = wide
-      ? ['  ██████╗██╗  ██╗██╗ ██████╗██╗  ██╗███████╗███╗   ██╗', ' ██╔════╝██║  ██║██║██╔════╝██║ ██╔╝██╔════╝████╗  ██║', ' ██║     ███████║██║██║     █████╔╝ █████╗  ██╔██╗ ██║', ' ██║     ██╔══██║██║██║     ██╔═██╗ ██╔══╝  ██║╚██╗██║', ' ╚██████╗██║  ██║██║╚██████╗██║  ██╗███████╗██║ ╚████║', '  ╚═════╝╚═╝  ╚═╝╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝'].map(accent).join('\n')
+      ? ['  ██████╗██╗  ██╗██╗ ██████╗██╗  ██╗███████╗███╗   ██╗', ' ██╔════╝██║  ██║██║██╔════╝██║ ██╔╝██╔════╝████╗  ██║', ' ██║     ███████║██║██║     █████╔╝ █████╗  ██╔██╗ ██║', ' ██║     ██╔══██║██║██║     ██╔═██╗ ██╔══╝  ██║╚██╗██║', ' ╚██████╗██║  ██║██║╚██████╗██║  ██╗███████╗██║ ╚████║', '  ╚═════╝╚═╝  ╚═╝╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝', ' ██████╗  ██████╗ ████████╗███████╗', ' ██╔══██╗██╔═══██╗╚══██╔══╝██╔════╝', ' ██████╔╝██║   ██║   ██║   ███████╗', ' ██╔══██╗██║   ██║   ██║   ╚════██║', ' ██████╔╝╚██████╔╝   ██║   ███████║', ' ╚═════╝  ╚═════╝    ╚═╝   ╚══════╝'].map(accent).join('\n')
       : accent('  C H I C K E N B O T S')
+    if (!config) { this.output.write(`\n${title}\n\n ${cyan('◆ FIVE-BOT CONTROL CENTRE')}  ${dim('// OPERATIONS CONSOLE')}\n ${dim('─'.repeat(wide ? 58 : 30))}\n\n`); return }
     this.output.write(`\n${title}\n\n ${cyan('◆ FIVE-BOT CONTROL CENTRE')}  ${dim('// OPERATIONS CONSOLE')}\n ${dim('─'.repeat(wide ? 58 : Math.max(12, Math.min((this.output.columns || 40) - 2, 40))))}\n ${dim('TARGET')}     ${config.host}:${config.port}\n ${dim('DASHBOARD')}  http://${config.dashboardHost}:${config.dashboardPort}\n ${dim('FLEET')}      05 independent controllers  ${dim('•')}  ${config.delay / 1000}s stagger\n ${dim('COMMANDS')}   type ${accent('help')} for controls  ${dim('•')}  ${accent('config')} to edit settings\n\n`)
   }
   log (line, level) {

@@ -58,33 +58,43 @@ function question (rl, prompt, hidden) {
     const cleanup = () => { rl._writeToOutput = oldWrite; rl.removeListener('close', onClose) }
     const onClose = () => { if (!done) { done = true; cleanup(); reject(new Error('Configuration editing cancelled')) } }
     rl.once('close', onClose)
-    if (hidden) {
-      // Print the prompt before muting readline's echo, including redraws and history.
-      rl.output.write(prompt)
-      rl._writeToOutput = () => {}
-    }
-    rl.question(hidden ? '' : prompt, answer => {
+    // question renders its prompt synchronously. Mute only after it is displayed,
+    // so readline cannot erase the password label during its initial redraw.
+    rl.question(prompt, answer => {
       if (done) return
       done = true; cleanup()
       if (hidden) { rl.output.write('\n'); if (Array.isArray(rl.history)) rl.history = rl.history.filter(entry => entry !== answer) }
       resolve(answer)
     })
+    if (hidden) rl._writeToOutput = () => {}
   })
 }
 
-async function editConfig (rl, { file = path.resolve('.env'), overrides = {} } = {}) {
+async function editConfig (rl, { file = path.resolve('.env'), overrides = {}, startup = false } = {}) {
   if (!rl.terminal) throw new Error('The config editor requires an interactive terminal (TTY) to protect passwords.')
   const original = readEnv(file); const current = dotenv.parse(original); const changes = {}
   console.log('\nCONFIG EDITOR — Enter keeps the current value; type !clear to clear a value.')
-  console.log('Values are saved to .env only after validation. Ctrl-C cancels. Restart Chickenbots to apply changes.')
+  console.log(`Values are saved to .env only after validation. Ctrl-C cancels.${startup ? '' : ' Restart Chickenbots to apply changes.'}`)
   for (const [key, label, fallback, hidden] of FIELDS) {
     const existing = Object.hasOwn(current, key) ? current[key] : fallback
     const shown = hidden ? (existing ? 'set' : 'not set') : existing
     const overridden = Object.hasOwn(overrides, key) ? ' [shell override]' : ''
-    const answer = await question(rl, `${label} (${key}) [${shown}]${overridden}: `, hidden)
-    if (answer !== '') changes[key] = answer === '!clear' ? '' : answer
+    while (true) {
+      const answer = await question(rl, `${label} (${key}) [${shown}]${overridden}: `, hidden)
+      if (answer !== '') changes[key] = answer === '!clear' ? '' : answer
+      if (key === 'BOT_AUTH_PASSWORD') {
+        const enabled = overrides.BOT_AUTH_ENABLED ?? changes.BOT_AUTH_ENABLED ?? current.BOT_AUTH_ENABLED ?? 'true'
+        const password = overrides.BOT_AUTH_PASSWORD ?? changes.BOT_AUTH_PASSWORD ?? current.BOT_AUTH_PASSWORD ?? ''
+        if (enabled === 'true' && (!password || /\s/.test(password))) {
+          if (Object.hasOwn(overrides, 'BOT_AUTH_PASSWORD')) throw new Error('The BOT_AUTH_PASSWORD environment override is empty or invalid; remove or correct it before editing.')
+          console.log('A password without spaces is required while server plugin authentication is enabled. Enter it at the hidden prompt, or cancel and disable plugin authentication.')
+          continue
+        }
+      }
+      break
+    }
   }
   writeEnv(file, original, changes, overrides)
-  console.log('Configuration saved to .env. Restart Chickenbots to apply it. Shell environment variables take precedence over .env.')
+  console.log(`Configuration saved to .env. ${startup ? 'Press Enter at the startup screen to apply it.' : 'Restart Chickenbots to apply it.'} Shell environment variables take precedence over .env.`)
 }
 module.exports = { FIELDS, editConfig, writeEnv, readEnv }

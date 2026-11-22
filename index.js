@@ -1,15 +1,16 @@
 'use strict'
 const shellEnvironment = { ...process.env }
-require('dotenv').config({ quiet: true })
 const readline = require('readline')
-const { loadConfig } = require('./src/config')
 const Logger = require('./src/logger')
 const { Manager } = require('./src/manager')
 const dashboard = require('./src/dashboard')
 const { editConfig } = require('./src/configEditor')
 const Terminal = require('./src/terminal')
+const { startup } = require('./src/startup')
 async function main () {
-  const config = loadConfig(process.env); const terminal = new Terminal(); const log = new Logger(config); log.output = (line, level) => terminal.log(line, level); const manager = new Manager(config, log); manager.deviceLogin = message => terminal.write(message); const web = dashboard(manager)
+  const terminal = new Terminal(); const config = await startup(terminal, shellEnvironment); if (!config) return
+  const log = new Logger(config); log.output = (line, level) => terminal.log(line, level); const manager = new Manager(config, log); manager.deviceLogin = message => terminal.write(message); const web = dashboard(manager)
+  terminal.clear()
   terminal.banner(config)
   log.log('SYSTEM', 'info', `Target: ${config.host}:${config.port}`)
   await web.listen(); log.log('SYSTEM', 'success', `Dashboard: http://${config.dashboardHost}:${config.dashboardPort}`); manager.all('start')

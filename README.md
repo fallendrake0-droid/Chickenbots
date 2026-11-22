@@ -9,12 +9,11 @@ Node.js **22 or later**, npm, and permission from the server owner. Mineflayer i
 Linux / Chromebook Debian (install Node.js 22+ using your distribution or a trusted Node.js installer):
 
 ```sh
-git clone https://github.com/fallendrake0-droid/Chickenbots.git
+git clone --branch arena/89d4431b-chickenbots https://github.com/fallendrake0-droid/Chickenbots.git
 cd Chickenbots
 npm install
-npm run config
-# Set the plugin password in the hidden prompt.
 npm start
+# Press E to configure, then Enter to start.
 ```
 
 Termux: `pkg update && pkg install nodejs git`, then run the Linux commands above. Check `node -v` is at least 22; some devices or native dependencies may not be supported.
@@ -22,15 +21,14 @@ Termux: `pkg update && pkg install nodejs git`, then run the Linux commands abov
 Windows PowerShell (install Node.js 22+ and Git first):
 
 ```powershell
-git clone https://github.com/fallendrake0-droid/Chickenbots.git
+git clone --branch arena/89d4431b-chickenbots https://github.com/fallendrake0-droid/Chickenbots.git
 cd Chickenbots
 npm install
-npm run config
-# Set the plugin password in the hidden prompt.
 npm start
+# Press E to configure, then Enter to start.
 ```
 
-Set `BOT_AUTH_PASSWORD` in the untracked `.env` to the server-plugin password provided by your server administrator. The requested initial value is `chickenbot12345`; this is a weak shared password, so change it on the server and in `.env` when possible. Never commit `.env` or share `data/`. This plugin password is **not** a Microsoft password. Open **http://127.0.0.1:3000** on the same computer. The local dashboard is intentionally inaccessible from other devices; SSH port forwarding can be used if you understand its security implications. It has no separate user login, so anyone with access to your local machine can control it.
+At the startup screen, press **E** to edit configuration, then press **Enter** to start. The server-plugin password prompt is visible but your typing is hidden. Enter the password supplied by your server administrator; it is required when plugin authentication is enabled. The editor stores it in the untracked `.env`. On non-interactive input, startup skips the menu and validates existing settings immediately. To clear the screen, the startup screen emits terminal control codes only on an interactive terminal. The requested initial value is `chickenbot12345`; this is a weak shared password, so change it on the server and in `.env` when possible. Never commit `.env` or share `data/`. This plugin password is **not** a Microsoft password. Open **http://127.0.0.1:3000** on the same computer. The local dashboard is intentionally inaccessible from other devices; SSH port forwarding can be used if you understand its security implications. It has no separate user login, so anyone with access to your local machine can control it.
 
 ## Minecraft account authentication
 
@@ -48,7 +46,7 @@ Configure case-insensitive JavaScript regular expressions with `AUTH_PATTERN_REG
 
 The dashboard displays actual bot states, position, health, food, ping when available, errors and retries. Start/stop/restart/reconnect operate on real instances; bulk destructive actions ask for confirmation. Hold movement buttons to send Mineflayer control states and release to stop; disconnecting the dashboard clears held controls. Chat is manual, limited to connected and authenticated bots, and cannot send commands. The event stream and selected bot chat are bounded in memory. The application does not interpret player messages as local commands.
 
-Run `npm run config` to edit settings interactively before starting, even if no `.env` exists. While the application is running, enter `config` in the terminal to open the same editor. Press Enter to keep each value, or type `!clear` to clear it. Password input is hidden. The editor validates all settings and saves them to the private `.env` only when complete; restart the app to apply changes. Shell environment variables override `.env`, and fields with an override are labelled. Ctrl-C cancels editing (and shuts down a running app). A real interactive terminal is required. The five names and localhost dashboard binding remain fixed.
+Press E at startup, or run `npm run config` to edit settings interactively before starting, even if no `.env` exists. While the application is running, enter `config` in the terminal to open the same editor. Press Enter to keep each value, or type `!clear` to clear it. Password input is hidden. The editor validates all settings and saves them to the private `.env` only when complete; changes made at startup apply when you press Enter, while changes made during operation require a restart. Shell environment variables override `.env`, and fields with an override are labelled. Ctrl-C cancels editing (and shuts down a running app). A real interactive terminal is required. The five names and localhost dashboard binding remain fixed.
 
 The terminal uses colour on supported interactive terminals and plain output when piped. Set `NO_COLOR=1` to disable colour. Live messages preserve the command prompt; messages arriving during the config editor are shown after editing.
 
