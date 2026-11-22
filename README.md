@@ -50,6 +50,8 @@ The dashboard displays actual bot states, position, health, food, ping when avai
 
 Run `npm run config` to edit settings interactively before starting, even if no `.env` exists. While the application is running, enter `config` in the terminal to open the same editor. Press Enter to keep each value, or type `!clear` to clear it. Password input is hidden. The editor validates all settings and saves them to the private `.env` only when complete; restart the app to apply changes. Shell environment variables override `.env`, and fields with an override are labelled. Ctrl-C cancels editing (and shuts down a running app). A real interactive terminal is required. The five names and localhost dashboard binding remain fixed.
 
+The terminal uses colour on supported interactive terminals and plain output when piped. Set `NO_COLOR=1` to disable colour. Live messages preserve the command prompt; messages arriving during the config editor are shown after editing.
+
 Terminal commands: `help`, `config`, `status`, `server`, `ping`, `start [bot|all]`, `stop [bot|all]`, `reconnect [bot|all]`, `chat <bot> <message>`, `clear`, and `exit`. Ctrl-C or SIGTERM also shuts down. The dashboard stays available while bots are offline.
 
 ## Configuration and troubleshooting
