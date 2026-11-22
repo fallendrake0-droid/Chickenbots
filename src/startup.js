@@ -1,7 +1,7 @@
 'use strict'
 const readline = require('readline')
 const dotenv = require('dotenv')
-const { readEnv, editConfig } = require('./configEditor')
+const { readEnv, editConfig, promptPluginPassword } = require('./configEditor')
 const { loadConfig } = require('./config')
 
 function choice (input, output) {
@@ -41,6 +41,16 @@ async function startup (terminal, shellEnvironment, input = process.stdin, outpu
       continue
     }
     try {
+      // Offer a secure first-run prompt instead of failing when only the plugin password is missing.
+      const values = { ...dotenv.parse(readEnv('.env')), ...shellEnvironment }
+      if ((values.BOT_AUTH_ENABLED ?? 'true') === 'true' && (!values.BOT_AUTH_PASSWORD || /\s/.test(values.BOT_AUTH_PASSWORD))) {
+        const rl = readline.createInterface({ input, output, terminal: true })
+        rl.on('SIGINT', () => rl.close())
+        try { await promptPluginPassword(rl, { overrides: shellEnvironment }) } catch (err) {
+          if (rl.closed) return null
+          throw err
+        } finally { rl.close() }
+      }
       // Validate afresh after editing, while preserving shell environment precedence.
       const config = loadConfig({ ...dotenv.parse(readEnv('.env')), ...shellEnvironment })
       dotenv.config({ quiet: true })

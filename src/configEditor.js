@@ -70,6 +70,23 @@ function question (rl, prompt, hidden) {
   })
 }
 
+async function promptPluginPassword (rl, { file = path.resolve('.env'), overrides = {} } = {}) {
+  if (!rl.terminal) throw new Error('An interactive terminal is required to enter the password securely.')
+  const original = readEnv(file)
+  if (Object.hasOwn(overrides, 'BOT_AUTH_PASSWORD')) throw new Error('BOT_AUTH_PASSWORD is set in your shell but is empty or invalid. Remove or correct that environment variable and restart.')
+  rl.output.write('Server plugin authentication is enabled and needs a password.\nEnter the password provided by your server administrator; your typing will be hidden.\n')
+  while (true) {
+    const password = await question(rl, 'Server plugin password (BOT_AUTH_PASSWORD): ', true)
+    if (!password || /[\s"\x00]/.test(password) || dotenv.parse(`BOT_AUTH_PASSWORD="${password}"`).BOT_AUTH_PASSWORD !== password) {
+      rl.output.write('Enter a non-empty password without spaces or double quotes. Try again, or press Ctrl-C to cancel.\n')
+      continue
+    }
+    writeEnv(file, original, { BOT_AUTH_PASSWORD: password }, overrides)
+    rl.output.write('Password saved privately in .env. Starting Chickenbots.\n')
+    return
+  }
+}
+
 async function editConfig (rl, { file = path.resolve('.env'), overrides = {}, startup = false } = {}) {
   if (!rl.terminal) throw new Error('The config editor requires an interactive terminal (TTY) to protect passwords.')
   const original = readEnv(file); const current = dotenv.parse(original); const changes = {}
@@ -97,4 +114,4 @@ async function editConfig (rl, { file = path.resolve('.env'), overrides = {}, st
   writeEnv(file, original, changes, overrides)
   console.log(`Configuration saved to .env. ${startup ? 'Press Enter at the startup screen to apply it.' : 'Restart Chickenbots to apply it.'} Shell environment variables take precedence over .env.`)
 }
-module.exports = { FIELDS, editConfig, writeEnv, readEnv }
+module.exports = { FIELDS, editConfig, promptPluginPassword, writeEnv, readEnv }

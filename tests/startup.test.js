@@ -18,3 +18,17 @@ test('password prompt is visible, blank password is retried and secret is not ec
   await editConfig(rl, { file, overrides: {}, startup: true })
   assert.equal(answers.length, 0); assert.equal((screen.match(/BOT_AUTH_PASSWORD/g) || []).length, 2); assert.doesNotMatch(screen, /private-pass/); assert.match(fs.readFileSync(file, 'utf8'), /BOT_AUTH_PASSWORD="private-pass"/)
 })
+
+test('quick password setup retries invalid input, saves securely and never echoes it', async () => {
+  const { promptPluginPassword } = require('../src/configEditor')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-password-')); const file = path.join(dir, '.env')
+  const rl = new EventEmitter(); rl.terminal = true; rl.history = []; let screen = ''; rl.output = { write (s) { screen += s } }; rl._writeToOutput = s => rl.output.write(s)
+  const answers = ['', 'bad password', 'private-password']; rl.question = (prompt, cb) => { rl._writeToOutput(prompt); const answer = answers.shift(); setImmediate(() => { rl._writeToOutput(answer); cb(answer) }) }
+  await promptPluginPassword(rl, { file, overrides: {} })
+  assert.match(screen, /Server plugin password/); assert.doesNotMatch(screen, /private-password|bad password/); assert.equal((screen.match(/Try again/g) || []).length, 2); assert.match(fs.readFileSync(file, 'utf8'), /BOT_AUTH_PASSWORD="private-password"/)
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+})
+test('quick setup rejects shell password overrides rather than falsely claiming success', async () => {
+  const { promptPluginPassword } = require('../src/configEditor'); const rl = new EventEmitter(); rl.terminal = true
+  await assert.rejects(promptPluginPassword(rl, { file: path.join(os.tmpdir(), 'cb-not-present-' + process.pid), overrides: { BOT_AUTH_PASSWORD: '' } }), /shell/)
+})
