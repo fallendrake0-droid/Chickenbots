@@ -29,7 +29,7 @@ class Work {
     if (!food) { if (Date.now() - this.lastFoodWarning > 30000) { this.c.log('warning', 'Auto-eat: no suitable food in inventory'); this.lastFoodWarning = Date.now() } return }
     await bot.equip(food, 'hand'); this.check(bot, generation); if (!this.autoEat) return; await bot.consume(); this.check(bot, generation); this.c.log('info', `Auto-eat: consumed ${food.name}`)
   }
-  check (bot, generation) { if (generation !== this.generation || this.c.bot !== bot || !this.ready()) throw new Error('Task cancelled or bot disconnected') }
+  check (bot, generation) { if (generation !== this.generation || this.c.bot !== bot || !this.ready() || (this.active?.team && bot.game?.dimension !== this.active.team.dimension)) throw new Error('Task cancelled or bot disconnected') }
   start (type, args = {}) {
     const bot = this.ready(); if (!bot) throw new Error('Bot must be connected and authenticated'); if (this.active || this.eatAction) throw new Error('Bot is already busy'); if (!['trees', 'stone', 'dirt', 'excavate'].includes(type)) throw new Error('Invalid work type'); if (!bot.pathfinder || !bot.entity?.position) throw new Error('Pathfinder or bot position unavailable')
     let positions
@@ -39,21 +39,47 @@ class Work {
     const active = this.active
     this.run(bot, active.generation, type, positions).catch(err => { if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `${type}: ${err.message}`) } }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health() } })
   }
-  async run (bot, generation, type, positions) {
+  prepare (bot) {
     const movement = this.createMovements(bot); movement.canDig = false; movement.allow1by1towers = false; movement.allowParkour = false; movement.scafoldingBlocks = []; bot.pathfinder.setMovements(movement); bot.pathfinder.searchRadius = MAX_RANGE
-    let skipped = 0
-    for (const pos of positions) {
-      this.check(bot, generation); await this.eat(bot, generation); this.check(bot, generation)
-      const feet = bot.entity.position.floored(); if (pos.x === feet.x && pos.z === feet.z && (pos.y === feet.y || pos.y === feet.y - 1)) { skipped++; continue }
-      let block = bot.blockAt(pos); if (!matches(type, block)) { skipped++; continue }
-      if (!bot.canDigBlock(block)) { this.task.message = `Moving to ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 3)); this.check(bot, generation); block = bot.blockAt(pos); if (!matches(type, block)) { skipped++; continue } }
-      if (!bot.canDigBlock(block)) { skipped++; continue }
-      const tool = bot.pathfinder.bestHarvestTool(block)
-      if (block.harvestTools && (!tool || !block.harvestTools[tool.type])) throw new Error(`No suitable tool to harvest ${block.name}`)
-      if (tool) { await bot.equip(tool, 'hand'); this.check(bot, generation) }
-      this.task.message = `Digging ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await bot.dig(block, true, 'raycast'); this.check(bot, generation); this.task.done++; this.c.update()
-    }
+  }
+  async digOne (bot, generation, type, pos) {
+    this.check(bot, generation); await this.eat(bot, generation); this.check(bot, generation)
+    const isSupport = () => { const feet = bot.entity.position.floored(); return pos.x === feet.x && pos.z === feet.z && (pos.y === feet.y || pos.y === feet.y - 1) }
+    if (isSupport()) return false
+    let block = bot.blockAt(pos); if (!matches(type, block)) return false
+    if (!bot.canDigBlock(block)) { this.task.message = `Moving to ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 3)); this.check(bot, generation); block = bot.blockAt(pos); if (!matches(type, block)) return false }
+    if (!bot.canDigBlock(block) || isSupport()) return false
+    const tool = bot.pathfinder.bestHarvestTool(block)
+    if (block.harvestTools && (!tool || !block.harvestTools[tool.type])) throw new Error(`No suitable tool to harvest ${block.name}`)
+    if (tool) { await bot.equip(tool, 'hand'); this.check(bot, generation) }
+    this.task.message = `Digging ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await bot.dig(block, true, 'raycast'); this.check(bot, generation); return true
+  }
+  async run (bot, generation, type, positions) {
+    this.prepare(bot); let skipped = 0
+    for (const pos of positions) { if (await this.digOne(bot, generation, type, pos)) this.task.done++; else skipped++; this.c.update() }
     this.task.state = 'COMPLETED'; this.task.message = `Finished: ${this.task.done} dig actions completed, ${skipped} skipped`; this.c.log('success', `${type}: ${this.task.message}`)
+  }
+  startTeam (team) {
+    const bot = this.ready(); if (!bot || this.active || this.eatAction || !bot.pathfinder || !bot.entity?.position) throw new Error(`${this.c.name} is not available for work`)
+    const active = { bot, generation: this.generation, team }; this.active = active
+    this.task = { state: 'RUNNING', type: team.type, done: 0, total: team.total, message: 'Team task: waiting for an assignment' }; this.c.update()
+    this.runTeam(bot, active.generation, team).catch(err => {
+      if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `Team ${team.type}: ${err.message}`); team.leave(this, err.message) }
+    }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health() } })
+  }
+  async runTeam (bot, generation, team) {
+    this.prepare(bot)
+    while (true) {
+      this.check(bot, generation)
+      const lease = await team.claim(this, bot)
+      this.check(bot, generation)
+      if (!lease) break
+      const dug = await this.digOne(bot, generation, team.type, lease.pos)
+      this.check(bot, generation)
+      if (dug) this.task.done++
+      team.report(this, lease, dug); this.c.update()
+    }
+    this.task.state = 'COMPLETED'; this.task.message = `Team work finished: ${this.task.done} dig actions completed`
   }
   stop (discard = false) {
     ++this.generation; clearTimeout(this.eatTimer); this.eatTimer = null; const active = this.active
@@ -61,6 +87,7 @@ class Work {
     const bot = this.c.bot
     if (bot) { try { bot.pathfinder?.setGoal(null); bot.stopDigging?.(); bot.deactivateItem?.(); bot.clearControlStates?.() } catch {} }
     // Keep a cancelled task busy until its in-flight action settles; disconnected bots are discarded.
+    if (active?.team) active.team.leave(this, 'Stopped or disconnected')
     if (discard) { this.active = null; this.eatAction = null }
     this.c.update()
   }

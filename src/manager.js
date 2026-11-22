@@ -7,6 +7,7 @@ const path = require('path')
 const { AuthStore, AuthSession } = require('./auth')
 const { pathfinder } = require('mineflayer-pathfinder')
 const { Work } = require('./work')
+const { TeamManager } = require('./team')
 function classify (message) {
   const m = String(message).toLowerCase()
   if (/whitelist|not white.listed/.test(m)) return ['WHITELIST_REJECTED', true]
@@ -64,13 +65,13 @@ class Controller {
   stopMovement () { if (!this.work.active) this.bot?.clearControlStates() }
 }
 class Manager {
-  constructor (config, logger, createBot = mineflayer.createBot) { this.config = config; this.logger = logger; this.createBot = createBot; this.deviceLogin = message => console.log(message); this.resolve = dns.lookup; this.tcpCheck = tcpCheck; this.ping = mc.ping; this.store = new AuthStore(config.dataDir); this.controllers = new Map(config.names.map(n => [n, new Controller(this, n)])); this.queue = []; this.queueTimer = null; this.lastAttempt = 0; this.nextConnection = 0; this.slotWaiters = new Map(); this.listeners = new Set(); this.startedAt = Date.now(); this.closed = false; this.positionTimer = setInterval(() => this.emit(), 2000); this.positionTimer.unref() }
+  constructor (config, logger, createBot = mineflayer.createBot) { this.config = config; this.logger = logger; this.createBot = createBot; this.deviceLogin = message => console.log(message); this.resolve = dns.lookup; this.tcpCheck = tcpCheck; this.ping = mc.ping; this.store = new AuthStore(config.dataDir); this.controllers = new Map(config.names.map(n => [n, new Controller(this, n)])); this.queue = []; this.queueTimer = null; this.lastAttempt = 0; this.nextConnection = 0; this.slotWaiters = new Map(); this.listeners = new Set(); this.startedAt = Date.now(); this.closed = false; this.team = new TeamManager(this); this.positionTimer = setInterval(() => this.emit(), 2000); this.positionTimer.unref() }
   enqueue (fn) { this.queue.push(fn); this.drain() }
   drain () { if (this.queueTimer || !this.queue.length || this.closed) return; const wait = Math.max(0, this.config.delay - (Date.now() - this.lastAttempt)); this.queueTimer = setTimeout(() => { this.queueTimer = null; const fn = this.queue.shift(); this.lastAttempt = Date.now(); fn(); this.drain() }, wait) }
   connectionSlot () { const now = Date.now(); const at = Math.max(now, this.nextConnection); this.nextConnection = at + this.config.delay; if (at === now) return Promise.resolve(); return new Promise(resolve => { const timer = setTimeout(() => { this.slotWaiters.delete(timer); resolve() }, at - now); this.slotWaiters.set(timer, resolve) }) }
   emit () { for (const fn of this.listeners) fn() }
-  snapshot () { return { server: `${this.config.host}:${this.config.port}`, uptime: Date.now() - this.startedAt, bots: [...this.controllers.values()].map(c => c.snapshot()) } }
+  snapshot () { return { server: `${this.config.host}:${this.config.port}`, uptime: Date.now() - this.startedAt, team: this.team.snapshot(), bots: [...this.controllers.values()].map(c => c.snapshot()) } }
   all (action) { for (const c of this.controllers.values()) { if (action === 'start') c.start(); else if (action === 'stop') c.stop(); else if (action === 'reconnect' || action === 'restart') c.reconnect() } }
-  shutdown () { this.closed = true; clearTimeout(this.queueTimer); clearInterval(this.positionTimer); this.queue = []; for (const [timer, resolve] of this.slotWaiters) { clearTimeout(timer); resolve() } this.slotWaiters.clear(); this.all('stop') }
+  shutdown () { this.team.stop(); this.closed = true; clearTimeout(this.queueTimer); clearInterval(this.positionTimer); this.queue = []; for (const [timer, resolve] of this.slotWaiters) { clearTimeout(timer); resolve() } this.slotWaiters.clear(); this.all('stop') }
 }
 module.exports = { Manager, Controller, classify, tcpCheck }

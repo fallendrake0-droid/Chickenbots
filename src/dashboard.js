@@ -22,9 +22,11 @@ function dashboard (manager) {
         const targets = data.bot === 'all' ? [...manager.controllers.values()] : [manager.controllers.get(data.bot)]; if (targets.some(c => !c)) throw new Error('Invalid bot')
         if (['start', 'stop', 'restart', 'reconnect'].includes(data.action)) { for (const c of targets) { if (data.action === 'start') c.start(); else if (data.action === 'stop') c.stop(); else c.reconnect() } }
         else if (data.action === 'chat') { const errors = []; for (const c of targets) { try { c.chat(data.message) } catch (e) { errors.push(`${c.name}: ${e.message}`) } } if (errors.length) throw new Error(errors.join('; ')) }
-        else if (data.action === 'work:start' && data.bot !== 'all') targets[0].work.start(data.type, { from: data.from, to: data.to })
+        else if (data.action === 'work:start' && data.bot !== 'all') { if (manager.team.job?.state === 'RUNNING') throw new Error('Stop the team task before starting individual work'); targets[0].work.start(data.type, { from: data.from, to: data.to }) }
         else if (data.action === 'work:stop' && data.bot !== 'all') targets[0].work.stop()
-        else if (data.action === 'work:autoEat' && data.bot !== 'all') targets[0].work.setAutoEat(data.enabled)
+        else if (data.action === 'work:autoEat') { if (typeof data.enabled !== 'boolean') throw new Error('Auto-eat must be true or false'); for (const c of targets) c.work.setAutoEat(data.enabled) }
+        else if (data.action === 'team:start' && data.bot === 'all') manager.team.start(data.type, { from: data.from, to: data.to })
+        else if (data.action === 'team:stop' && data.bot === 'all') manager.team.stop()
         else if (data.action === 'movement' && data.bot !== 'all') { const c = targets[0]; c.movement(data.control, data.value); const key = `${c.name}:${data.control}`; clearTimeout(held.get(key)); if (data.value) held.set(key, setTimeout(() => { held.delete(key); try { c.movement(data.control, false) } catch {} }, 10000)); else held.delete(key) }
         else if (data.action === 'stopMovement') { for (const c of targets) c.stopMovement(); for (const [key, timer] of held) { if (data.bot === 'all' || key.startsWith(data.bot + ':')) { clearTimeout(timer); held.delete(key) } } }
         else throw new Error('Invalid action')
