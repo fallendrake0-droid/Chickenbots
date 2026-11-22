@@ -36,7 +36,23 @@ $('workBot').addEventListener('change', () => { if (snapshot) render(snapshot) }
 for (const type of ['trees', 'stone', 'dirt']) $(type).addEventListener('click', () => { const bot = $('workBot').value; action({ action: bot === 'all' ? 'team:start' : 'work:start', bot, type }) })
 $('stopWork').addEventListener('click', () => action({ action: $('workBot').value === 'all' ? 'team:stop' : 'work:stop', bot: $('workBot').value }))
 $('autoEat').addEventListener('click', () => { const selected = $('workBot').value; if (!snapshot) return; if (selected === 'all') action({ action:'work:autoEat', bot:'all', enabled: !snapshot.bots.every(b => b.work.autoEat) }); else { const b = snapshot.bots.find(b => b.name === selected); if (b) action({ action: 'work:autoEat', bot: b.name, enabled: !b.work.autoEat }) } })
-$('excavate').addEventListener('click', () => { const ids = ['fromX','fromY','fromZ','toX','toY','toZ']; if (ids.some(id => $(id).value.trim() === '' || !Number.isSafeInteger(Number($(id).value)))) return feedback('Enter six integer block coordinates.'); const [x1,y1,z1,x2,y2,z2] = ids.map(id => Number($(id).value)); const bot = $('workBot').value; action({ action:bot === 'all' ? 'team:start' : 'work:start', bot, type:'excavate', from:{x:x1,y:y1,z:z1}, to:{x:x2,y:y2,z:z2} }) })
+const coordinateIds = ['fromX','fromY','fromZ','toX','toY','toZ']; let excavationApproval = null; let previewSequence = 0
+function clearPreview () { excavationApproval = null; previewSequence++; $('excavate').disabled = true; $('excavationPreview').textContent = 'Preview required before excavation. No blocks are changed during preview.' }
+for (const id of [...coordinateIds, 'workBot']) $(id).addEventListener('change', clearPreview)
+for (const id of coordinateIds) $(id).addEventListener('input', clearPreview)
+socket.on('disconnect', clearPreview)
+$('previewExcavate').addEventListener('click', () => {
+  clearPreview(); if (coordinateIds.some(id => $(id).value.trim() === '' || !Number.isSafeInteger(Number($(id).value)))) return feedback('Enter six integer block coordinates.')
+  const [x1,y1,z1,x2,y2,z2] = coordinateIds.map(id => Number($(id).value)); const bot = $('workBot').value; const sequence = previewSequence
+  const request = { bot, from:{x:x1,y:y1,z:z1}, to:{x:x2,y:y2,z:z2} }; $('excavationPreview').textContent = 'Inspecting loaded blocks…'
+  socket.emit('action', {action:'excavate:preview', ...request}, result => {
+    if (sequence !== previewSequence) return
+    if (!result || result.error) { $('excavationPreview').textContent = `Preview failed: ${result?.error || 'no response'}`; return }
+    const p = result.preview; excavationApproval = { ...request, token:result.token }; $('excavate').disabled = false
+    $('excavationPreview').textContent = `Anchor ${p.anchor} · ${p.dimension} · ${p.volume} positions · ${p.eligible} matching · ${p.excluded} excluded · ${p.unloaded} unloaded · ${p.hazards} matching positions with observed hazards. Preview expires after 60 seconds. The area can change; this is not a guarantee of safety or permission.`
+  })
+})
+$('excavate').addEventListener('click', () => { const approved = excavationApproval; if (!approved) return; clearPreview(); action({action:approved.bot === 'all' ? 'team:start' : 'work:start', type:'excavate', ...approved}) })
 
 $('autoArmour').addEventListener('click', () => { if (!snapshot) return; const bot = $('workBot').value; const targets = bot === 'all' ? snapshot.bots : snapshot.bots.filter(b => b.name === bot); action({action:'survival:armour', bot, enabled:!targets.every(b => b.survival.autoArmour)}) })
 $('saveFood').addEventListener('click', () => { if (!$('foodThreshold').value.trim() || !$('foodReserve').value.trim()) return feedback('Enter a threshold and reserve.'); action({action:'survival:food', bot:$('workBot').value, settings:{threshold:Number($('foodThreshold').value), reserve:Number($('foodReserve').value), priority:$('foodPriority').value}}) })

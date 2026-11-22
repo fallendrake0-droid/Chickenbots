@@ -75,12 +75,13 @@ class Work {
     if (!bot.canDigBlock(block) || isSupport()) return false
     if (hazardousWork) { const reason = this.oreSafety(bot, pos); if (reason) { this.task.message = `Skipped ${block.name}: ${reason}`; this.c.log('warning', this.task.message); return false } }
     const tool = bot.pathfinder.bestHarvestTool(block)
-    if (ORE_TYPES.has(type) && (!block.harvestTools || !Object.keys(block.harvestTools).length)) throw new Error(`Harvest requirements unavailable for ${block.name}`)
+    const oreBlock = ORE_TYPES.has(type) || (type === 'excavate' && /_ore$/.test(block.name))
+    if (oreBlock && (!block.harvestTools || !Object.keys(block.harvestTools).length)) throw new Error(`Harvest requirements unavailable for ${block.name}`)
     if (block.harvestTools && (!tool || !block.harvestTools[tool.type])) throw new Error(`No suitable tool to harvest ${block.name}`)
-    if (tool && ORE_TYPES.has(type)) { let used; try { used = tool.durabilityUsed } catch {} const max = tool.maxDurability ?? bot.registry?.itemsByName?.[tool.name]?.maxDurability; if (Number.isFinite(max) && Number.isFinite(used) && max - used <= Math.max(1, max * 0.05)) throw new Error(`Tool ${tool.name} is nearly broken`) }
+    if (tool && oreBlock) { let used; try { used = tool.durabilityUsed } catch {} const max = tool.maxDurability ?? bot.registry?.itemsByName?.[tool.name]?.maxDurability; if (Number.isFinite(max) && Number.isFinite(used) && max - used <= Math.max(1, max * 0.05)) throw new Error(`Tool ${tool.name} is nearly broken`) }
     if (tool) { await bot.equip(tool, 'hand'); this.check(bot, generation) }
     if (hazardousWork) { const reason = this.oreSafety(bot, pos); if (reason) { this.c.log('warning', `Skipped ${block.name}: ${reason}`); return false } block = bot.blockAt(pos); if (!matches(type, block) || !bot.canDigBlock(block)) return false }
-    this.task.message = `Digging ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await this.oreAction(bot, 'Work digging', () => bot.dig(block, true, 'raycast')); this.check(bot, generation); if (ORE_TYPES.has(type)) { const after = bot.blockAt(pos); if (!after || after.name === block.name) throw new Error(`Local block state did not change after digging ${block.name}`) } return true
+    this.task.message = `Digging ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await this.oreAction(bot, 'Work digging', () => bot.dig(block, true, 'raycast')); this.check(bot, generation); if (oreBlock) { const after = bot.blockAt(pos); if (!after || after.name === block.name) throw new Error(`Local block state did not change after digging ${block.name}`) } return true
   }
   async run (bot, generation, type, positions) {
     this.prepare(bot); let skipped = 0
