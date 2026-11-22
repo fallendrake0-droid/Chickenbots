@@ -12,9 +12,8 @@ Linux / Chromebook Debian (install Node.js 22+ using your distribution or a trus
 git clone https://github.com/fallendrake0-droid/Chickenbots.git
 cd Chickenbots
 npm install
-cp .env.example .env
-# Edit .env with nano or another editor; set BOT_AUTH_PASSWORD.
-nano .env
+npm run config
+# Set the plugin password in the hidden prompt.
 npm start
 ```
 
@@ -26,8 +25,8 @@ Windows PowerShell (install Node.js 22+ and Git first):
 git clone https://github.com/fallendrake0-droid/Chickenbots.git
 cd Chickenbots
 npm install
-Copy-Item .env.example .env
-notepad .env
+npm run config
+# Set the plugin password in the hidden prompt.
 npm start
 ```
 
@@ -49,7 +48,9 @@ Configure case-insensitive JavaScript regular expressions with `AUTH_PATTERN_REG
 
 The dashboard displays actual bot states, position, health, food, ping when available, errors and retries. Start/stop/restart/reconnect operate on real instances; bulk destructive actions ask for confirmation. Hold movement buttons to send Mineflayer control states and release to stop; disconnecting the dashboard clears held controls. Chat is manual, limited to connected and authenticated bots, and cannot send commands. The event stream and selected bot chat are bounded in memory. The application does not interpret player messages as local commands.
 
-Terminal commands: `help`, `status`, `server`, `ping`, `start [bot|all]`, `stop [bot|all]`, `reconnect [bot|all]`, `chat <bot> <message>`, `clear`, and `exit`. Ctrl-C or SIGTERM also shuts down. The dashboard stays available while bots are offline.
+Run `npm run config` to edit settings interactively before starting, even if no `.env` exists. While the application is running, enter `config` in the terminal to open the same editor. Press Enter to keep each value, or type `!clear` to clear it. Password input is hidden. The editor validates all settings and saves them to the private `.env` only when complete; restart the app to apply changes. Shell environment variables override `.env`, and fields with an override are labelled. Ctrl-C cancels editing (and shuts down a running app). A real interactive terminal is required. The five names and localhost dashboard binding remain fixed.
+
+Terminal commands: `help`, `config`, `status`, `server`, `ping`, `start [bot|all]`, `stop [bot|all]`, `reconnect [bot|all]`, `chat <bot> <message>`, `clear`, and `exit`. Ctrl-C or SIGTERM also shuts down. The dashboard stays available while bots are offline.
 
 ## Configuration and troubleshooting
 
