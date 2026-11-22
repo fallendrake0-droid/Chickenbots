@@ -1,7 +1,8 @@
 'use strict'
 const $ = id => document.getElementById(id)
 const socket = io({ transports: ['websocket'] }); let snapshot = null; let initialized = false
-function action (data) { socket.emit('action', data, result => { if (result?.error) alert(result.error) }) }
+function feedback (message) { $('commandFeedback').textContent = message }
+function action (data) { feedback('Sending command…'); socket.emit('action', data, result => { if (!result) return feedback('No command response received.'); if (result.error) return feedback(`Error: ${result.error}`); if (result.started) return feedback(`${data.command === 'follow' ? 'Following' : 'Stopped'}: ${result.started.join(', ') || 'none'}${result.skipped.length ? ' · Not started: ' + result.skipped.join('; ') : ''}`); feedback('Command accepted. Check the task status for its outcome.') }) }
 socket.on('connect', () => { $('socketDot').className = 'online'; $('socketStatus').textContent = 'CONTROL LINK ONLINE' })
 socket.on('disconnect', () => { $('socketDot').className = ''; $('socketStatus').textContent = 'CONTROL LINK OFFLINE' })
 function el (tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n }
@@ -27,21 +28,22 @@ function render (data) {
 socket.on('snapshot', render)
 $('chatBot').addEventListener('change', () => { if (snapshot) render(snapshot) })
 $('chatForm').addEventListener('submit', e => { e.preventDefault(); action({action:'chat', bot:$('chatBot').value, message:$('message').value}); $('message').value = '' })
-document.querySelectorAll('[data-all]').forEach(b => b.addEventListener('click', () => { const a=b.dataset.all; if (a !== 'start' && !confirm(`${a.toUpperCase()} all bots?`)) return; action({bot:'all',action:a}) }))
+document.querySelectorAll('[data-all]').forEach(b => b.addEventListener('click', () => { const a=b.dataset.all; action({bot:'all',action:a}) }))
 window.addEventListener('blur', () => action({bot:'all',action:'stopMovement'}))
 
 $('workBot').addEventListener('change', () => { if (snapshot) render(snapshot) })
-for (const type of ['trees', 'stone', 'dirt']) $(type).addEventListener('click', () => { const bot = $('workBot').value; if (confirm(`Allow ${bot} to dig nearby ${type}? This changes the world.`)) action({ action: bot === 'all' ? 'team:start' : 'work:start', bot, type }) })
+for (const type of ['trees', 'stone', 'dirt']) $(type).addEventListener('click', () => { const bot = $('workBot').value; action({ action: bot === 'all' ? 'team:start' : 'work:start', bot, type }) })
 $('stopWork').addEventListener('click', () => action({ action: $('workBot').value === 'all' ? 'team:stop' : 'work:stop', bot: $('workBot').value }))
 $('autoEat').addEventListener('click', () => { const selected = $('workBot').value; if (!snapshot) return; if (selected === 'all') action({ action:'work:autoEat', bot:'all', enabled: !snapshot.bots.every(b => b.work.autoEat) }); else { const b = snapshot.bots.find(b => b.name === selected); if (b) action({ action: 'work:autoEat', bot: b.name, enabled: !b.work.autoEat }) } })
-$('excavate').addEventListener('click', () => { const ids = ['fromX','fromY','fromZ','toX','toY','toZ']; if (ids.some(id => $(id).value.trim() === '' || !Number.isSafeInteger(Number($(id).value)))) return alert('Enter six integer block coordinates.'); const [x1,y1,z1,x2,y2,z2] = ids.map(id => Number($(id).value)); const bot = $('workBot').value; if (confirm(`Allow ${bot} to excavate from ${x1}, ${y1}, ${z1} to ${x2}, ${y2}, ${z2}? This changes the world.`)) action({ action:bot === 'all' ? 'team:start' : 'work:start', bot, type:'excavate', from:{x:x1,y:y1,z:z1}, to:{x:x2,y:y2,z:z2} }) })
+$('excavate').addEventListener('click', () => { const ids = ['fromX','fromY','fromZ','toX','toY','toZ']; if (ids.some(id => $(id).value.trim() === '' || !Number.isSafeInteger(Number($(id).value)))) return feedback('Enter six integer block coordinates.'); const [x1,y1,z1,x2,y2,z2] = ids.map(id => Number($(id).value)); const bot = $('workBot').value; action({ action:bot === 'all' ? 'team:start' : 'work:start', bot, type:'excavate', from:{x:x1,y:y1,z:z1}, to:{x:x2,y:y2,z:z2} }) })
 
 $('autoArmour').addEventListener('click', () => { if (!snapshot) return; const bot = $('workBot').value; const targets = bot === 'all' ? snapshot.bots : snapshot.bots.filter(b => b.name === bot); action({action:'survival:armour', bot, enabled:!targets.every(b => b.survival.autoArmour)}) })
-$('saveFood').addEventListener('click', () => { if (!$('foodThreshold').value.trim() || !$('foodReserve').value.trim()) return alert('Enter a threshold and reserve.'); action({action:'survival:food', bot:$('workBot').value, settings:{threshold:Number($('foodThreshold').value), reserve:Number($('foodReserve').value), priority:$('foodPriority').value}}) })
+$('saveFood').addEventListener('click', () => { if (!$('foodThreshold').value.trim() || !$('foodReserve').value.trim()) return feedback('Enter a threshold and reserve.'); action({action:'survival:food', bot:$('workBot').value, settings:{threshold:Number($('foodThreshold').value), reserve:Number($('foodReserve').value), priority:$('foodPriority').value}}) })
 
 $('playerBot').addEventListener('change', () => { if (snapshot) render(snapshot) })
-$('followPlayer').addEventListener('click', () => action({action:'player:action',bot:$('playerBot').value,command:'follow',player:$('playerName').value}))
-$('stopPlayer').addEventListener('click', () => action({action:'player:action',bot:$('playerBot').value,command:'stop'}))
-$('dropPlayer').addEventListener('click', () => { const player=$('playerName').value, item=$('playerItem').value, count=Number($('playerCount').value); if (!player || !item || !Number.isSafeInteger(count) || count < 1 || count > 64) return alert('Select a visible player, material, and quantity from 1 to 64.'); if (confirm(`Toss ${count} ${item} near ${player}? Anyone nearby may pick it up.`)) action({action:'player:action',bot:$('playerBot').value,command:'drop',player,item,count}) })
+$('followPlayer').addEventListener('click', () => action({action:'player:action',bot:'all',command:'follow',player:$('playerName').value}))
+$('stopPlayer').addEventListener('click', () => action({action:'player:action',bot:'all',command:'stop'}))
+$('stopPlayerOne').addEventListener('click', () => action({action:'player:action',bot:$('playerBot').value,command:'stop'}))
+$('dropPlayer').addEventListener('click', () => { const player=$('playerName').value, item=$('playerItem').value, count=Number($('playerCount').value); if (!player || !item || !Number.isSafeInteger(count) || count < 1 || count > 64) return feedback('Select a visible player, material, and quantity from 1 to 64.'); action({action:'player:action',bot:$('playerBot').value,command:'drop',player,item,count}) })
 
-$('mineOre').addEventListener('click', () => { const bot=$('workBot').value; const ore=$('oreType').value; if (confirm(`Allow ${bot} to mine nearby ${ore} ore? This changes the world.`)) action({action:bot === 'all' ? 'team:start' : 'work:start',bot,type:'ore_' + ore}) })
+$('mineOre').addEventListener('click', () => { const bot=$('workBot').value; const ore=$('oreType').value; action({action:bot === 'all' ? 'team:start' : 'work:start',bot,type:'ore_' + ore}) })

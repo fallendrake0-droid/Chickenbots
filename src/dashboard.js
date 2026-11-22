@@ -22,7 +22,7 @@ function dashboard (manager) {
         const targets = data.bot === 'all' ? [...manager.controllers.values()] : [manager.controllers.get(data.bot)]; if (targets.some(c => !c)) throw new Error('Invalid bot')
         if (['start', 'stop', 'restart', 'reconnect'].includes(data.action)) { for (const c of targets) { if (data.action === 'start') c.start(); else if (data.action === 'stop') c.stop(); else c.reconnect() } }
         else if (data.action === 'suspendReconnect') { for (const c of targets) c.suspendReconnect() }
-        else if (data.action === 'player:action' && data.bot !== 'all') require('./players').playerCommand(manager, data.bot, data.command, {player:data.player, item:data.item, count:data.count})
+        else if (data.action === 'player:action') { const result = require('./players').playerCommand(manager, data.bot, data.command, {player:data.player, item:data.item, count:data.count}); if (data.bot === 'all') return reply({ok:true, ...result}) }
         else if (data.action === 'chat') { const errors = []; for (const c of targets) { try { c.chat(data.message) } catch (e) { errors.push(`${c.name}: ${e.message}`) } } if (errors.length) throw new Error(errors.join('; ')) }
         else if (data.action === 'work:start' && data.bot !== 'all') { if (manager.team.job?.state === 'RUNNING') throw new Error('Stop the team task before starting individual work'); targets[0].work.start(data.type, { from: data.from, to: data.to }) }
         else if (data.action === 'work:stop' && data.bot !== 'all') targets[0].work.stop()

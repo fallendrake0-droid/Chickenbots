@@ -38,7 +38,7 @@ class Work {
     const bot = this.ready(); if (!bot) throw new Error('Bot must be connected and authenticated'); if (this.active || this.eatAction || this.c.survival?.busy || this.c.playerActions?.busy()) throw new Error('Bot is already busy'); if (!['trees', 'stone', 'dirt', 'excavate'].includes(type) && !ORE_TYPES.has(type)) throw new Error('Invalid work type'); if (!bot.pathfinder || !bot.entity?.position) throw new Error('Pathfinder or bot position unavailable')
     let positions
     if (type === 'excavate') positions = excavation(args.from, args.to, bot.entity.position)
-    else { positions = bot.findBlocks({ matching: block => matches(type, block), maxDistance: 16, count: NEARBY_LIMIT }); if (!positions.length) throw new Error(`No matching ${type} blocks found nearby`) }
+    else { positions = bot.findBlocks({ matching: block => matches(type, block), maxDistance: type === 'trees' ? 16 : MAX_RANGE, count: NEARBY_LIMIT }); if (!positions.length) throw new Error(`No matching ${type} blocks found nearby`) }
     this.active = { bot, generation: this.generation }; this.task = { state: 'RUNNING', type, done: 0, total: positions.length, message: 'Starting' }; this.c.log('info', `Starting ${type} task (${positions.length} candidate blocks)`); this.c.update()
     const active = this.active
     this.run(bot, active.generation, type, positions).catch(err => { if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `${type}: ${err.message}`) } }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health(); this.c.survival?.schedule() } })

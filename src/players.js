@@ -78,6 +78,25 @@ class PlayerActions {
   }
 }
 function playerCommand (manager, botName, command, args = {}) {
+  if (botName === 'all') {
+    if (!['follow', 'stop'].includes(command)) throw new Error('Only follow and stop support all bots')
+    if (command === 'follow' && (typeof args.player !== 'string' || !/^[A-Za-z0-9_]{1,16}$/.test(args.player))) throw new Error('Invalid player name')
+    const started = []; const skipped = []
+    for (const c of manager.controllers.values()) {
+      try {
+        if (command === 'stop') { if (c.playerActions.active) { c.playerActions.stop(); started.push(c.name) } continue }
+        const active = c.playerActions.active
+        if (active?.name === args.player) { started.push(c.name); continue }
+        // Validate the new target before stopping an existing follow.
+        c.playerActions.target(args.player)
+        if (active) c.playerActions.stop('Following a different player')
+        c.playerActions.follow(args.player)
+        if (c.playerActions.active) started.push(c.name)
+        else skipped.push(`${c.name}: ${manager.logger.clean(c.playerActions.task.message)}`)
+      } catch (err) { skipped.push(`${c.name}: ${manager.logger.clean(err.message)}`) }
+    }
+    return { started, skipped }
+  }
   const c = manager.controllers.get(botName); if (!c) throw new Error('Invalid bot')
   if (command === 'follow') c.playerActions.follow(args.player)
   else if (command === 'drop') c.playerActions.drop(args.player, args.item, args.count)

@@ -29,3 +29,9 @@ test('stopping during transfer keeps inventory locked until it settles and does 
 test('follow stops on critical hunger and respects modified items', async () => {
  const {manager,c,bot,items}=setup(); try { c.playerActions.follow('Steve'); bot.food=5; c.playerActions.monitor(); assert.match(c.playerActions.task.message,/critical/); await flush(); bot.food=20; items[0].componentMap=new Map([['custom_name','rare']]); assert.throws(()=>c.playerActions.drop('Steve','cobblestone',1),/unmodified/); bot.inventory.selectedItem={}; items[0].componentMap.clear(); assert.throws(()=>c.playerActions.drop('Steve','cobblestone',1),/unavailable/) } finally {manager.shutdown()}
 })
+test('all bots follow the chosen visible player with independent errors and group stop', () => {
+ const {manager,c,bot}=setup(); try {
+  const other=manager.controllers.get('101010'); other.state='CONNECTED'; other.authState='DISABLED'; const otherBot=new EventEmitter(); Object.assign(otherBot,{players:{Steve:{entity:{position:new Vec3(3,64,0)}}},entity:{position:new Vec3(0,64,0)},food:20,health:20,inventory:{items:()=>[]},pathfinder:{setGoal(){},setMovements(){}},clearControlStates(){},quit(){}}); other.bot=otherBot; other.work.createMovements=()=>({});
+  const result=playerCommand(manager,'all','follow',{player:'Steve'}); assert.deepEqual(result.started,['______','101010']); assert.equal(result.skipped.length,3); assert.equal(c.playerActions.active.name,'Steve'); assert.equal(other.playerActions.active.name,'Steve'); assert.equal(playerCommand(manager,'all','follow',{player:'Steve'}).started.length,2); assert.throws(()=>playerCommand(manager,'all','drop',{player:'Steve',item:'dirt',count:1}),/Only follow/); const stopped=playerCommand(manager,'all','stop'); assert.deepEqual(stopped.started,['______','101010']); assert.equal(c.playerActions.busy(),false); assert.equal(other.playerActions.busy(),false)
+ } finally {manager.shutdown()}
+})

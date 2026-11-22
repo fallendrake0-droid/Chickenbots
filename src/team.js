@@ -52,7 +52,7 @@ class TeamManager {
     const excluded = all.filter(c => !selected.includes(c)).map(c => c.name)
     let positions
     if (type === 'excavate') positions = excavation(args.from, args.to, first.bot.entity.position)
-    else { const unique = new Map(); for (const c of selected) for (const p of c.bot.findBlocks({ matching: block => matches(type, block), maxDistance: 16, count: NEARBY_PER_BOT })) unique.set(key(p), p); positions = [...unique.values()]; if (!positions.length) throw new Error(`No matching ${type} blocks found near the available bots`) }
+    else { const unique = new Map(); for (const c of selected) for (const p of c.bot.findBlocks({ matching: block => matches(type, block), maxDistance: type === 'trees' ? 16 : MAX_RANGE, count: NEARBY_PER_BOT })) unique.set(key(p), p); positions = [...unique.values()]; if (!positions.length) throw new Error(`No matching ${type} blocks found near the available bots`) }
     const job = new TeamJob(this.manager, type, selected.map(c => c.work), positions, excluded, dimension); this.job = job
     this.manager.logger.log('TEAM', 'info', `Starting ${type} with ${selected.length} bot(s), ${positions.length} candidate blocks`)
     for (const c of selected) { try { c.work.startTeam(job) } catch (err) { job.leave(c.work, err.message) } }
