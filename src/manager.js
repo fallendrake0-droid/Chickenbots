@@ -7,9 +7,11 @@ const { AuthStore, AuthSession } = require('./auth')
 const { pathfinder } = require('mineflayer-pathfinder')
 const { Work } = require('./work')
 const { Survival } = require('./survival')
+const { installMovementGuard } = require('./movementGuard')
 const { TeamManager } = require('./team')
 function classify (message) {
   const m = String(message).toLowerCase()
+  if (/invalid move player packet/.test(m)) return ['INVALID_MOVEMENT_PACKET', true]
   if (/connection throttled|too many connections|reconnect too (fast|quickly)|reconnecting too (fast|quickly)/.test(m)) return ['CONNECTION_THROTTLED', false]
   if (/econnreset|econnaborted|epipe|socketclosed|socket hang up/.test(m)) return ['CONNECTION_RESET', false]
   if (/whitelist|not white.listed/.test(m)) return ['WHITELIST_REJECTED', true]
@@ -44,8 +46,8 @@ class Controller {
     const advertised = String(status.version?.name || '').match(/\b(\d+\.\d+(?:\.\d+)?)\b/)?.[1]; if (advertised && advertised !== version) this.log('warning', `Advertised version label ${advertised} differs from selected client ${version}; protocol translation and backend compatibility are unverified.`)
     await this.manager.connectionSlot(() => gen === this.generation); if (gen !== this.generation) return
     this.setState('CONNECTING')
-    const bot = this.manager.createBot({ host: this.config.host, port: this.config.port, username: this.name, auth: this.config.auth, version, logErrors: false, profilesFolder: path.join(this.config.dataDir, 'microsoft', this.name), onMsaCode: data => { if (gen === this.generation) this.manager.deviceLogin(`[${this.name}] Microsoft device login: ${data.message}`) } })
-    this.bot = bot; this.manager.pendingLogins.add(this); this.diagnostic = { generation: gen, startedAt: Date.now(), loginAt: null, spawnedAt: null, authenticatedAt: null, stableAt: null, lastPacketAt: null, lastMessage: null, kicked: false, socketError: null, disconnectReason: null, source: null }; this.authenticatedAt = null; if (typeof bot._client?.on === 'function') bot._client.on('packet', () => { if (gen === this.generation && this.diagnostic) this.diagnostic.lastPacketAt = Date.now() }); const pendingPrompts = []; if (typeof bot.loadPlugin === 'function') bot.loadPlugin(pathfinder); this.authState = 'OFFLINE'; this.session = new AuthSession(this, this.manager.store)
+    const bot = this.manager.createBot({ host: this.config.host, port: this.config.port, username: this.name, auth: this.config.auth, version, physicsEnabled: false, logErrors: false, profilesFolder: path.join(this.config.dataDir, 'microsoft', this.name), onMsaCode: data => { if (gen === this.generation) this.manager.deviceLogin(`[${this.name}] Microsoft device login: ${data.message}`) } })
+    this.bot = bot; this.manager.pendingLogins.add(this); this.diagnostic = { generation: gen, startedAt: Date.now(), loginAt: null, spawnedAt: null, authenticatedAt: null, stableAt: null, lastPacketAt: null, lastMessage: null, kicked: false, socketError: null, disconnectReason: null, source: null, movementPackets: [] }; installMovementGuard(bot, sample => { if (gen !== this.generation || !this.diagnostic) return; this.diagnostic.movementPackets.push(sample); if (this.diagnostic.movementPackets.length > 5) this.diagnostic.movementPackets.shift() }, (name, fields) => { setImmediate(() => { if (gen === this.generation) this.fail('INVALID_MOVEMENT_PACKET', `Client generated non-finite ${fields.join(', ')} in ${name}; packet not sent. Inspect movement diagnostics and protocol compatibility.`, true) }) }, { tickEnd: this.config.tickEndWorkaround && require('minecraft-data')(version).supportFeature('sendsClientTickEndPacket') }); this.authenticatedAt = null; if (typeof bot._client?.on === 'function') bot._client.on('packet', () => { if (gen === this.generation && this.diagnostic) this.diagnostic.lastPacketAt = Date.now() }); const pendingPrompts = []; if (typeof bot.loadPlugin === 'function') bot.loadPlugin(pathfinder); this.authState = 'OFFLINE'; this.session = new AuthSession(this, this.manager.store)
     this.watchdog = setTimeout(() => { if (gen === this.generation) this.fail('CONNECTION_TIMEOUT', 'Login or world spawn timed out.', false) }, this.config.timeout)
     bot.once('login', () => { if (gen !== this.generation) return; if (this.config.auth === 'microsoft' && bot.username && bot.username.toLowerCase() !== this.name.toLowerCase()) return this.fail('AUTH_FAILED', `Microsoft profile name ${bot.username} does not match configured bot ${this.name}. Use the account owning this name.`, true); this.diagnostic.loginAt = Date.now(); this.setState('LOGGED_IN'); this.log('info', 'Minecraft login successful; waiting for spawn'); this.setState('SPAWNING') })
     bot.once('spawn', () => { if (gen !== this.generation) return; clearTimeout(this.watchdog); this.connectedAt = Date.now(); this.diagnostic.spawnedAt = this.connectedAt; this.stats.connections++; this.lastError = null; this.setState('CONNECTED'); this.log('success', 'BOT SUCCESSFULLY JOINED THE SERVER (world spawn)'); this.session.start(); for (const text of pendingPrompts.splice(0)) { if (gen !== this.generation) break; try { this.session.message(text) } catch (err) { this.fail('AUTH_FAILED', `Authentication state error: ${err.message}`, true); break } } })
@@ -60,7 +62,7 @@ class Controller {
   }
   authConfirmed () {
     if (this.state !== 'CONNECTED' || !this.diagnostic || this.authenticatedAt) return
-    this.authenticatedAt = Date.now(); this.diagnostic.authenticatedAt = this.authenticatedAt
+    this.authenticatedAt = Date.now(); this.diagnostic.authenticatedAt = this.authenticatedAt; this.bot.physicsEnabled = true
     const gen = this.generation; this.log('info', `Stability monitor started (generation ${gen})`)
     clearTimeout(this.stableTimer)
     this.stableTimer = setTimeout(() => { if (gen === this.generation) this.maybeResetRetries() }, this.config.postAuthStability)
@@ -78,6 +80,7 @@ class Controller {
     this.lastError = `${code}: ${this.manager.logger.clean(message)}`
     if (this.diagnostic && this.lastDiagnostic) this.log('warning', `Session ${this.lastDiagnostic.generation}: source ${this.lastDiagnostic.source}; spawn age ${this.lastDiagnostic.spawnedAt ? Date.now() - this.lastDiagnostic.spawnedAt + 'ms' : 'unavailable'}; auth age ${this.lastDiagnostic.authenticatedAt ? Date.now() - this.lastDiagnostic.authenticatedAt + 'ms' : 'unavailable'}; kick ${this.lastDiagnostic.kicked ? 'yes' : 'no'}`)
     this.log('error', this.lastError + (code === 'WHITELIST_REJECTED' ? ' Ask the administrator to whitelist this account.' : ''))
+    if (code === 'INVALID_MOVEMENT_PACKET' && this.lastDiagnostic?.movementPackets?.length) this.log('warning', `Recent outgoing movement samples (time in milliseconds): ${JSON.stringify(this.lastDiagnostic.movementPackets)}`)
     if (code === 'CONNECTION_RESET' && !this.lastDiagnostic?.kicked) this.log('warning', `The connection was reset without a detailed kick reason${shortConnection ? ` shortly after spawn (plugin auth: ${previousAuth})` : ''}. Check the Aternos server log, login plugin, proxy and protocol compatibility.`)
     if (code === 'CONNECTION_THROTTLED') { this.manager.applyCooldown(this.config.throttleCooldown); this.log('warning', `Server requested slower connections; all bot attempts are paused for at least ${this.config.throttleCooldown / 1000}s.`) }
     this.cleanup(connectionDead); if (code === 'AUTH_FAILED') this.authState = 'FAILED'; this.setState(permanent ? (code === 'AUTH_FAILED' ? 'AUTHENTICATION_FAILED' : 'ERROR') : 'DISCONNECTED')
