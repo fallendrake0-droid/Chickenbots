@@ -9,7 +9,7 @@ const FIELDS = [
   ['MC_HOST', 'Minecraft server host', 'cr3xlol.aternos.me'],
   ['MC_PORT', 'Minecraft server port', '55742'],
   ['MC_VERSION', 'Minecraft version (auto or supported version)', 'auto'],
-  ['MC_AUTH', 'Account authentication (microsoft or offline)', 'microsoft'],
+  ['MC_AUTH', 'Account authentication (microsoft or offline)', 'offline'],
   ['BOT_AUTH_ENABLED', 'Server plugin authentication (true/false)', 'true'],
   ['BOT_AUTH_PASSWORD', 'Server plugin password (hidden)', DEFAULT_PLUGIN_PASSWORD, true],
   ['DASHBOARD_PORT', 'Local dashboard port', '3000'],

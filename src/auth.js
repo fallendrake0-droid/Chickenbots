@@ -8,7 +8,7 @@ class AuthStore {
 }
 class AuthSession {
   constructor (controller, store) { this.c = controller; this.store = store; this.sent = null; this.timer = null }
-  start () { if (!this.c.config.enabled) { this.c.authState = 'DISABLED'; this.c.update(); return } this.c.authState = 'WAITING_FOR_PROMPT'; this.c.update(); this.timer = setTimeout(() => this.fail('Authentication prompt or confirmation timed out; check plugin patterns.'), this.c.config.authTimeout) }
+  start () { if (!this.c.config.enabled) { this.c.authState = 'DISABLED'; this.c.update(); this.c.work?.health(); return } this.c.authState = 'WAITING_FOR_PROMPT'; this.c.update(); this.timer = setTimeout(() => this.fail('Authentication prompt or confirmation timed out; check plugin patterns.'), this.c.config.authTimeout) }
   stop () { clearTimeout(this.timer) }
   fail (message) { this.stop(); this.c.authState = 'FAILED'; this.c.fail('AUTH_FAILED', message, true) }
   message (text) {
@@ -23,6 +23,6 @@ class AuthSession {
     if (p.login.test(text)) return this.send('login')
   }
   send (type) { if (!this.c.bot || this.c.state !== 'CONNECTED') return; this.sent = type; this.c.authState = 'AUTHENTICATING'; this.c.log('info', `Server authentication: ${type} requested`); const pass = this.c.config.password; this.c.bot.chat(type === 'register' ? `/register ${pass} ${pass}` : `/login ${pass}`); this.c.update() }
-  success () { this.stop(); this.c.authState = 'AUTHENTICATED'; this.c.log('success', 'Server authentication confirmed'); this.c.update() }
+  success () { this.stop(); this.c.authState = 'AUTHENTICATED'; this.c.log('success', 'Server authentication confirmed'); this.c.update(); this.c.work?.health() }
 }
 module.exports = { AuthStore, AuthSession }

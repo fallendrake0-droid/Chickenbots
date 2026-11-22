@@ -13,6 +13,7 @@ async function main () {
   terminal.clear()
   terminal.banner(config)
   log.log('SYSTEM', 'info', `Target: ${config.host}:${config.port}`)
+  log.log('SYSTEM', 'info', `Account authentication: ${config.auth}${config.auth === 'offline' ? ' (use only on servers that permit offline identities)' : ''}`)
   await web.listen(); log.log('SYSTEM', 'success', `Dashboard: http://${config.dashboardHost}:${config.dashboardPort}`); manager.all('start')
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: !!process.stdin.isTTY })
   terminal.attach(rl)

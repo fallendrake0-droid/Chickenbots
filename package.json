@@ -25,7 +25,9 @@
     "minecraft-data": "^3.119.0",
     "minecraft-protocol": "^1.68.0",
     "mineflayer": "^4.39.0",
-    "socket.io": "^4.8.4"
+    "mineflayer-pathfinder": "^2.4.5",
+    "socket.io": "^4.8.4",
+    "vec3": "^0.2.0"
   },
   "engines": {
     "node": ">=22"

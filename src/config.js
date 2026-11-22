@@ -13,7 +13,7 @@ function loadConfig (env = process.env) {
   if (names.join(',') !== NAMES.join(',')) throw new Error('BOT_NAMES must contain the five configured usernames in order')
   const host = env.MC_HOST || 'cr3xlol.aternos.me'
   if (!/^(?=.{1,253}$)[a-zA-Z0-9.-]+$/.test(host) || host === 'localhost' || host === '127.0.0.1') throw new Error('Invalid MC_HOST')
-  const auth = env.MC_AUTH || 'microsoft'; if (!['microsoft', 'offline'].includes(auth)) throw new Error('MC_AUTH must be microsoft or offline')
+  const auth = env.MC_AUTH || 'offline'; if (!['microsoft', 'offline'].includes(auth)) throw new Error('MC_AUTH must be microsoft or offline')
   const version = env.MC_VERSION || 'auto'; if (version !== 'auto' && !protocol.supportedVersions.includes(version)) throw new Error(`Unsupported MC_VERSION ${version}`)
   const enabled = bool('BOT_AUTH_ENABLED', true); const password = env.BOT_AUTH_PASSWORD || DEFAULT_PLUGIN_PASSWORD || ''
   if (enabled && (!password || /\s/.test(password))) throw new Error('BOT_AUTH_PASSWORD is required when BOT_AUTH_ENABLED=true and must not contain whitespace')

@@ -1,6 +1,6 @@
 # Chickenbots
 
-Five independent, idle Mineflayer clients and a local control centre. No AI, API keys, gameplay automation or anti-AFK evasion. Default target: **cr3xlol.aternos.me:55742**. Only a Mineflayer `spawn` event counts as connected; server-plugin authentication is a separate state.
+Five independent Mineflayer clients and a local control centre with operator-requested work orders. No AI, API keys or anti-AFK evasion. Default target: **cr3xlol.aternos.me:55742**. Only a Mineflayer `spawn` event counts as connected; server-plugin authentication is a separate state.
 
 ## Requirements and installation
 
@@ -32,9 +32,11 @@ At the startup screen, press **E** to edit configuration, or press **Enter** to 
 
 ## Minecraft account authentication
 
-`MC_AUTH=microsoft` is the default. Follow each bot's device-login instructions in the terminal, using the legitimate Microsoft account that owns that Minecraft Java profile. Five simultaneous premium identities require five distinct eligible accounts with the exact configured profile names. Microsoft authentication determines the real profile name; it cannot create or impersonate these names. Tokens are cached separately under `data/microsoft/`. Keep the data directory private. If authorization takes longer than 30 seconds, raise `CONNECTION_TIMEOUT` before starting.
+`MC_AUTH=offline` is the default for servers that explicitly permit offline identities. This does not bypass online-mode authentication; never impersonate another player. If an existing `.env` still sets `MC_AUTH=microsoft`, press E at startup and change it to `offline` only if the server permits it.
 
-`MC_AUTH=offline` explicitly selects offline identities, only for servers that permit offline-mode connections and identities you are authorized to use. There is no automatic downgrade. The fixed identities are `______`, `101010`, `010101`, `110011`, `001100`; `BOT_NAMES` must preserve exactly these names and order. An administrator must whitelist each actual account if required.
+`MC_AUTH=microsoft` is available for online-mode servers. Follow each bot's device-login instructions in the terminal, using the legitimate Microsoft account that owns that Minecraft Java profile. Five simultaneous premium identities require five distinct eligible accounts with the exact configured profile names. Microsoft authentication determines the real profile name; it cannot create or impersonate these names. Tokens are cached separately under `data/microsoft/`. Keep the data directory private. If authorization takes longer than 30 seconds, raise `CONNECTION_TIMEOUT` before starting.
+
+Offline identities must be authorized for use on the server. There is no automatic downgrade from Microsoft authentication. The fixed identities are `______`, `101010`, `010101`, `110011`, `001100`; `BOT_NAMES` must preserve exactly these names and order. An administrator must whitelist each actual account if required.
 
 ## Server plugin registration
 
@@ -51,6 +53,14 @@ Press E at startup, or run `npm run config` to edit settings interactively befor
 The terminal uses colour on supported interactive terminals and plain output when piped. Set `NO_COLOR=1` to disable colour. Live messages preserve the command prompt; messages arriving during the config editor are shown after editing.
 
 Terminal commands: `help`, `config`, `status`, `server`, `ping`, `start [bot|all]`, `stop [bot|all]`, `reconnect [bot|all]`, `chat <bot> <message>`, `clear`, and `exit`. Ctrl-C or SIGTERM also shuts down. The dashboard stays available while bots are offline.
+
+## Work orders and auto-eat
+
+The local dashboard has a **Work orders** section. Choose one connected and server-authenticated bot, then confirm **Chop nearby trees**, **Mine nearby stone**, or **Mine nearby dirt**. Each order searches loaded blocks within 16 blocks and attempts up to 32 matching blocks. **Excavate** accepts two inclusive integer X/Y/Z corners, each within 48 blocks of the bot, and at most 256 total blocks. It only digs naturally occurring stone, dirt, logs, sand, gravel, clay, and ores; containers, liquids, unbreakable blocks, other materials, unloaded chunks, and the block directly under the bot are skipped. The bot must have a safe path to targets. These are limited work orders, not continuous mining; they do not collect dropped items automatically.
+
+Bots use the fastest suitable tool already in their inventories; materials such as stone requiring a pickaxe fail with an explanatory status if the appropriate tool is missing. Pathfinder may walk and jump to blocks but is configured not to break or place blocks while navigating. Pathfinding and digging may still be blocked by terrain, server permissions, lag, plugins, or hazards. Use work orders only where you are authorized to modify blocks. Stop the task with **Stop work**, or stop/disconnect the bot; tasks never resume automatically after a disconnect. The selected bot's action progress or error appears in the dashboard; a completed client-side dig is not proof that a server with protection plugins accepted the change. Manual movement is blocked during a work order.
+
+Auto-eat is enabled per bot by default and can be toggled from the work panel. When food is 14 or lower, an authenticated bot selects safe food from its inventory, equips and consumes it, including between work blocks. It does not craft food or tools. If no appropriate food is available it logs a warning and retries at a limited rate; disabled and disconnected bots do not eat. Food and tools must be supplied by the player. Server-side food rules and inventory state can still prevent eating.
 
 ## Configuration and troubleshooting
 
