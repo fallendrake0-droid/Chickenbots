@@ -1,0 +1,57 @@
+{
+  "root": true,
+  "env": {
+    "node": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "script"
+  },
+  "extends": "eslint:recommended",
+  "rules": {
+    "no-unused-vars": [
+      "warn",
+      {
+        "args": "none",
+        "caughtErrors": "none",
+        "varsIgnorePattern": "^_"
+      }
+    ],
+    "no-constant-condition": [
+      "error",
+      {
+        "checkLoops": false
+      }
+    ],
+    "no-empty": [
+      "error",
+      {
+        "allowEmptyCatch": true
+      }
+    ],
+    "no-prototype-builtins": "off",
+    "no-control-regex": "off",
+    "no-useless-escape": "warn"
+  },
+  "overrides": [
+    {
+      "files": [
+        "tests/**/*.js",
+        "scripts/**/*.js"
+      ],
+      "rules": {
+        "no-unused-vars": "off"
+      }
+    },
+    {
+      "files": [
+        "src/dashboard/public/**/*.js"
+      ],
+      "env": {
+        "browser": true,
+        "node": false
+      }
+    }
+  ]
+}

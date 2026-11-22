@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chickenbots V4 — Team Command</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🐔</span>
+      <div>
+        <h1>CHICKENBOTS <span class="ver">V4</span></h1>
+        <p id="subtitle">five-bot overworld team · deterministic · no AI keys</p>
+      </div>
+    </div>
+    <div class="stats" id="topstats">
+      <div class="stat"><span class="k">ONLINE</span><span class="v" id="stat-online">–</span></div>
+      <div class="stat"><span class="k">LEADER</span><span class="v" id="stat-leader">–</span></div>
+      <div class="stat"><span class="k">TASKS</span><span class="v" id="stat-tasks">–</span></div>
+      <div class="stat"><span class="k">MODE</span><span class="v" id="stat-mode">–</span></div>
+      <div class="stat"><span class="k">AUTONOMY</span><span class="v" id="stat-auto">–</span></div>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="Dashboard sections"></nav>
+
+  <main>
+    <section class="panel" id="tab-content">
+      <div class="loading">Connecting to the team state feed…</div>
+    </section>
+
+    <aside class="console">
+      <div class="console-head">
+        <strong>COMMAND CONSOLE</strong>
+        <span class="hint">same validated handler as terminal · destructive commands need <code>confirm</code></span>
+      </div>
+      <div class="quick" id="quick"></div>
+      <div class="output" id="output"></div>
+      <form id="command-form">
+        <input id="command-input" autocomplete="off" spellcheck="false" placeholder="status | excavate preview radius 100 64 100 8 4 | schematics list Beginner" />
+        <button type="submit">RUN</button>
+      </form>
+    </aside>
+  </main>
+
+  <footer>
+    <span id="foot-status">initialising…</span>
+    <span>dashboard 0.0.0.0:3000 · chat is output-only · PvP off by default</span>
+  </footer>
+  <script src="/app.js"></script>
+</body>
+</html>

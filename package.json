@@ -1,0 +1,38 @@
+{
+  "name": "chickenbots",
+  "version": "4.0.0",
+  "description": "Chickenbots V4 - autonomous five-bot Minecraft Overworld team: survival, PvE, mining, excavation, farming, exploration, cooperative megabuilding",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "cli": "node src/cli.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "lint": "node scripts/lint.js",
+    "validate": "node scripts/validate-all.js",
+    "schematics:generate": "node scripts/schematics-generate.js",
+    "schematics:validate": "node scripts/schematics-validate.js",
+    "schematics:stats": "node scripts/schematics-stats.js",
+    "test:team": "node --test --test-concurrency=1 tests/team.test.js",
+    "test:excavation": "node --test --test-concurrency=1 tests/excavation.test.js tests/excavation-exec.test.js",
+    "test:survival": "node --test --test-concurrency=1 tests/survival.test.js tests/controllers.test.js",
+    "test:schematics": "node --test --test-concurrency=1 tests/schematics.test.js tests/builder.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "minecraft-data": "^3.119.0",
+    "minecraft-protocol": "^1.68.0",
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-nbt": "^2.5.0",
+    "vec3": "^0.1.10",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.1"
+  },
+  "license": "MIT"
+}
