@@ -15,7 +15,7 @@ function point (input) { if (!input || typeof input !== 'object') throw new Erro
 function excavation (from, to, position) {
   const a = point(from); const b = point(to); const low = new Vec3(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.min(a.z, b.z)); const high = new Vec3(Math.max(a.x, b.x), Math.max(a.y, b.y), Math.max(a.z, b.z)); const volume = (high.x - low.x + 1) * (high.y - low.y + 1) * (high.z - low.z + 1)
   if (volume > MAX_BLOCKS) throw new Error(`Excavation is limited to ${MAX_BLOCKS} blocks`)
-  if (!position || a.distanceTo(position) > MAX_RANGE || b.distanceTo(position) > MAX_RANGE) throw new Error(`Both corners must be within ${MAX_RANGE} blocks of the bot`)
+  if (!position || ![position.x, position.y, position.z].every(Number.isFinite) || a.distanceTo(position) > MAX_RANGE || b.distanceTo(position) > MAX_RANGE) throw new Error(`Both corners must be within ${MAX_RANGE} blocks of the bot`)
   const positions = []; for (let y = high.y; y >= low.y; y--) for (let x = low.x; x <= high.x; x++) for (let z = low.z; z <= high.z; z++) positions.push(new Vec3(x, y, z)); return positions
 }
 class Work {
@@ -41,15 +41,16 @@ class Work {
     else { positions = bot.findBlocks({ matching: block => matches(type, block), maxDistance: type === 'trees' ? 16 : MAX_RANGE, count: NEARBY_LIMIT }); if (!positions.length) throw new Error(`No matching ${type} blocks found nearby`) }
     this.active = { bot, generation: this.generation }; this.task = { state: 'RUNNING', type, done: 0, total: positions.length, message: 'Starting' }; this.c.log('info', `Starting ${type} task (${positions.length} candidate blocks)`); this.c.update()
     const active = this.active
-    this.run(bot, active.generation, type, positions).catch(err => { if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `${type}: ${err.message}`) } }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health(); this.c.survival?.schedule() } })
+    this.run(bot, active.generation, type, positions).catch(err => { if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `${type}: ${err.message}`) } }).finally(async () => { if (active.timedOutAction) await active.timedOutAction.catch(() => {}); if (this.active === active) { this.active = null; this.c.update(); this.health(); this.c.survival?.schedule() } })
   }
   prepare (bot) {
     const movement = this.createMovements(bot); movement.canDig = false; movement.allow1by1towers = false; movement.allowParkour = false; movement.allowSprinting = false; movement.scafoldingBlocks = []; bot.pathfinder.setMovements(movement); bot.pathfinder.searchRadius = MAX_RANGE
   }
   async oreAction (bot, label, action) {
     let timer
-    const timeout = new Promise((resolve, reject) => { timer = setTimeout(() => { try { bot.pathfinder?.setGoal(null); bot.stopDigging?.() } catch {} reject(new Error(`${label} timed out; action cancelled`)) }, this.oreTimeoutMs); timer.unref?.() })
-    try { return await Promise.race([action(), timeout]) } finally { clearTimeout(timer) }
+    const active = this.active; const pending = Promise.resolve().then(() => { if (active) this.check(bot, active.generation); return action() }); if (active) { active.inFlight = pending; pending.then(() => { if (active.inFlight === pending) active.inFlight = null }, () => { if (active.inFlight === pending) active.inFlight = null }) }
+    const timeout = new Promise((resolve, reject) => { timer = setTimeout(() => { if (active && this.active === active) active.timedOutAction = pending; try { bot.pathfinder?.setGoal(null); bot.stopDigging?.() } catch {} reject(new Error(`${label} timed out; cancellation requested`)) }, this.oreTimeoutMs); timer.unref?.() })
+    try { return await Promise.race([pending, timeout]) } finally { clearTimeout(timer) }
   }
   oreSafety (bot, pos) {
     if (typeof bot.health === 'number' && bot.health <= 8) return 'Low health'
@@ -66,32 +67,33 @@ class Work {
   }
   async digOne (bot, generation, type, pos) {
     this.check(bot, generation); await this.eat(bot, generation); this.check(bot, generation)
+    const hazardousWork = ORE_TYPES.has(type) || type === 'excavate'
     const isSupport = () => { const feet = bot.entity.position.floored(); return pos.x === feet.x && pos.z === feet.z && (pos.y === feet.y || pos.y === feet.y - 1) }
     if (isSupport()) return false
     let block = bot.blockAt(pos); if (!matches(type, block)) return false
-    if (!bot.canDigBlock(block)) { this.task.message = `Moving to ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); if (ORE_TYPES.has(type)) await this.oreAction(bot, 'Ore navigation', () => bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 3))); else await bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 3)); this.check(bot, generation); block = bot.blockAt(pos); if (!matches(type, block)) return false }
+    if (!bot.canDigBlock(block)) { this.task.message = `Moving to ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await this.oreAction(bot, 'Work navigation', () => bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 3))); this.check(bot, generation); block = bot.blockAt(pos); if (!matches(type, block)) return false }
     if (!bot.canDigBlock(block) || isSupport()) return false
-    if (ORE_TYPES.has(type)) { const reason = this.oreSafety(bot, pos); if (reason) { this.task.message = `Skipped ${block.name}: ${reason}`; this.c.log('warning', this.task.message); return false } }
+    if (hazardousWork) { const reason = this.oreSafety(bot, pos); if (reason) { this.task.message = `Skipped ${block.name}: ${reason}`; this.c.log('warning', this.task.message); return false } }
     const tool = bot.pathfinder.bestHarvestTool(block)
     if (ORE_TYPES.has(type) && (!block.harvestTools || !Object.keys(block.harvestTools).length)) throw new Error(`Harvest requirements unavailable for ${block.name}`)
     if (block.harvestTools && (!tool || !block.harvestTools[tool.type])) throw new Error(`No suitable tool to harvest ${block.name}`)
     if (tool && ORE_TYPES.has(type)) { let used; try { used = tool.durabilityUsed } catch {} const max = tool.maxDurability ?? bot.registry?.itemsByName?.[tool.name]?.maxDurability; if (Number.isFinite(max) && Number.isFinite(used) && max - used <= Math.max(1, max * 0.05)) throw new Error(`Tool ${tool.name} is nearly broken`) }
     if (tool) { await bot.equip(tool, 'hand'); this.check(bot, generation) }
-    if (ORE_TYPES.has(type)) { const reason = this.oreSafety(bot, pos); if (reason) { this.c.log('warning', `Skipped ${block.name}: ${reason}`); return false } block = bot.blockAt(pos); if (!matches(type, block) || !bot.canDigBlock(block)) return false }
-    this.task.message = `Digging ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); if (ORE_TYPES.has(type)) await this.oreAction(bot, 'Ore digging', () => bot.dig(block, true, 'raycast')); else await bot.dig(block, true, 'raycast'); this.check(bot, generation); if (ORE_TYPES.has(type)) { const after = bot.blockAt(pos); if (!after || after.name === block.name) throw new Error(`Local block state did not change after digging ${block.name}`) } return true
+    if (hazardousWork) { const reason = this.oreSafety(bot, pos); if (reason) { this.c.log('warning', `Skipped ${block.name}: ${reason}`); return false } block = bot.blockAt(pos); if (!matches(type, block) || !bot.canDigBlock(block)) return false }
+    this.task.message = `Digging ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}`; this.c.update(); await this.oreAction(bot, 'Work digging', () => bot.dig(block, true, 'raycast')); this.check(bot, generation); if (ORE_TYPES.has(type)) { const after = bot.blockAt(pos); if (!after || after.name === block.name) throw new Error(`Local block state did not change after digging ${block.name}`) } return true
   }
   async run (bot, generation, type, positions) {
     this.prepare(bot); let skipped = 0
     for (const pos of positions) { if (await this.digOne(bot, generation, type, pos)) this.task.done++; else skipped++; this.c.update() }
-    this.task.state = ORE_TYPES.has(type) && skipped ? 'PARTIAL' : 'COMPLETED'; this.task.message = `Finished: ${this.task.done} dig actions completed, ${skipped} skipped`; this.c.log(this.task.state === 'PARTIAL' ? 'warning' : 'success', `${type}: ${this.task.message}${ORE_TYPES.has(type) ? ' (client-predicted; drops not verified)' : ''}`)
+    this.task.state = skipped ? 'PARTIAL' : 'COMPLETED'; this.task.message = `Finished: ${this.task.done} dig actions completed, ${skipped} skipped`; this.c.log(this.task.state === 'PARTIAL' ? 'warning' : 'success', `${type}: ${this.task.message}${ORE_TYPES.has(type) ? ' (client-predicted; drops not verified)' : ''}`)
   }
   startTeam (team) {
     const bot = this.ready(); if (!bot || this.active || this.eatAction || this.c.survival?.busy || this.c.playerActions?.busy() || !bot.pathfinder || !bot.entity?.position) throw new Error(`${this.c.name} is not available for work`)
     const active = { bot, generation: this.generation, team }; this.active = active
     this.task = { state: 'RUNNING', type: team.type, done: 0, total: team.total, message: 'Team task: waiting for an assignment' }; this.c.update()
     this.runTeam(bot, active.generation, team).catch(err => {
-      if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `Team ${team.type}: ${err.message}`); team.leave(this, err.message) }
-    }).finally(() => { if (this.active === active) { this.active = null; this.c.update(); this.health(); this.c.survival?.schedule() } })
+      if (this.active === active && this.generation === active.generation) { this.task.state = 'FAILED'; this.task.message = this.c.manager.logger.clean(err.message); this.c.log('warning', `Team ${team.type}: ${err.message}`); team.leave(this, err.message, !!active.timedOutAction) }
+    }).finally(async () => { if (active.timedOutAction) await active.timedOutAction.catch(() => {}); if (this.active === active) { this.active = null; this.c.update(); this.health(); this.c.survival?.schedule() } })
   }
   async runTeam (bot, generation, team) {
     this.prepare(bot)
@@ -113,7 +115,7 @@ class Work {
     const bot = this.c.bot
     if (bot && (active || this.eatAction)) { try { if (networkAvailable) { bot.pathfinder?.setGoal(null); bot.stopDigging?.(); if (bot.usingHeldItem || this.eatAction) bot.deactivateItem?.() } else bot.emit?.('path_stop'); bot.clearControlStates?.() } catch {} }
     // Keep a cancelled task busy until its in-flight action settles; disconnected bots are discarded.
-    if (active?.team) active.team.leave(this, 'Stopped or disconnected')
+    if (active?.team) active.team.leave(this, 'Stopped or disconnected', !!active.inFlight)
     if (discard) { this.active = null; this.eatAction = null }
     this.c.update()
   }

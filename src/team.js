@@ -30,11 +30,12 @@ class TeamJob {
     } else this.update()
   }
   report (worker, lease, dug) { if (this.state !== 'RUNNING' || this.claims.get(worker) !== lease) return; this.claims.delete(worker); if (dug) this.done++; else this.skipped++; this.drain() }
-  leave (worker, reason) {
+  leave (worker, reason, abandonClaim = false) {
     if (!this.workers.has(worker)) return
     this.workers.delete(worker); const waiting = this.waiters.get(worker); this.waiters.delete(worker); if (waiting) waiting.resolve(null)
     const lease = this.claims.get(worker); this.claims.delete(worker)
-    if (lease && (this.state === 'RUNNING' || this.state === 'STOPPED')) this.queue.push(lease)
+    if (lease && abandonClaim) this.skipped++
+    else if (lease && (this.state === 'RUNNING' || this.state === 'STOPPED')) this.queue.push(lease)
     if (this.state === 'RUNNING') {
       this.errors.push(`${worker.c.name}: ${this.manager.logger.clean(reason)}`)
       if (!this.workers.size) { this.finish('FAILED'); return }
