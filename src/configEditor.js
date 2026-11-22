@@ -2,7 +2,7 @@
 const fs = require('fs')
 const path = require('path')
 const dotenv = require('dotenv')
-const { loadConfig, DEFAULT_PLUGIN_PASSWORD } = require('./config')
+const { loadConfig } = require('./config')
 
 // Fixed bot names and localhost binding are intentional safety constraints.
 const FIELDS = [
@@ -11,12 +11,15 @@ const FIELDS = [
   ['MC_VERSION', 'Minecraft version (auto or supported version)', 'auto'],
   ['MC_AUTH', 'Account authentication (microsoft or offline)', 'offline'],
   ['BOT_AUTH_ENABLED', 'Server plugin authentication (true/false)', 'true'],
-  ['BOT_AUTH_PASSWORD', 'Server plugin password (hidden)', DEFAULT_PLUGIN_PASSWORD, true],
+  ['BOT_AUTH_PASSWORD', 'Server plugin password (hidden)', '', true],
   ['DASHBOARD_PORT', 'Local dashboard port', '3000'],
   ['RECONNECT_ENABLED', 'Automatic reconnect (true/false)', 'true'],
   ['RECONNECT_INITIAL_DELAY', 'Initial retry delay in ms', '5000'],
   ['RECONNECT_MAX_DELAY', 'Maximum retry delay in ms', '60000'],
   ['RECONNECT_MAX_ATTEMPTS', 'Maximum retries (0 = unlimited)', '0'],
+  ['MAX_SIMULTANEOUS_LOGINS', 'Maximum simultaneous pending logins', '1'],
+  ['POST_AUTH_STABILITY_MS', 'Authenticated stability interval in ms', '30000'],
+  ['POST_AUTH_RESET_LIMIT', 'Short authenticated disconnects before suspending retries', '3'],
   ['BOT_START_DELAY', 'Delay between bot connections in ms (minimum 5000)', '5000'],
   ['THROTTLE_COOLDOWN', 'Server throttle cooldown in ms', '30000'],
   ['STABLE_CONNECTION_TIME', 'Stable connection time before resetting retries in ms', '60000'],
@@ -103,7 +106,7 @@ async function editConfig (rl, { file = path.resolve('.env'), overrides = {}, st
       if (answer !== '') changes[key] = answer === '!clear' ? '' : answer
       if (key === 'BOT_AUTH_PASSWORD') {
         const enabled = overrides.BOT_AUTH_ENABLED ?? changes.BOT_AUTH_ENABLED ?? current.BOT_AUTH_ENABLED ?? 'true'
-        const password = (overrides.BOT_AUTH_PASSWORD ?? changes.BOT_AUTH_PASSWORD ?? current.BOT_AUTH_PASSWORD) || DEFAULT_PLUGIN_PASSWORD || ''
+        const password = (overrides.BOT_AUTH_PASSWORD ?? changes.BOT_AUTH_PASSWORD ?? current.BOT_AUTH_PASSWORD) || ''
         if (enabled === 'true' && (!password || /\s/.test(password))) {
           if (Object.hasOwn(overrides, 'BOT_AUTH_PASSWORD')) throw new Error('The BOT_AUTH_PASSWORD environment override is empty or invalid; remove or correct it before editing.')
           console.log('A password without spaces is required while server plugin authentication is enabled. Enter it at the hidden prompt, or cancel and disable plugin authentication.')
