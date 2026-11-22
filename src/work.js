@@ -23,7 +23,7 @@ class Work {
   setAutoEat (enabled) { if (typeof enabled !== 'boolean') throw new Error('Auto-eat must be true or false'); this.autoEat = enabled; if (!enabled) { clearTimeout(this.eatTimer); this.eatTimer = null; try { this.c.bot?.deactivateItem?.() } catch {} } this.c.update(); if (enabled) this.health() }
   setFoodSettings (settings) { this.foodSettings = validateFoodSettings(settings); this.c.update(); this.health() }
   foodCandidate () { return chooseFood(this.c.bot, this.foodSettings) }
-  health () { if (!this.autoEat || !this.ready() || this.active || this.eatAction || this.c.survival?.busy || this.c.bot.currentWindow || this.c.bot.food == null || this.c.bot.food > this.foodSettings.threshold || Date.now() - this.lastEat < 5000) return; const bot = this.c.bot; const generation = this.generation; const action = {}; this.eatAction = action; this.c.update(); this.eat(bot, generation).catch(err => { if (this.generation === generation) this.c.log('warning', `Auto-eat: ${err.message}`) }).finally(() => { if (this.eatAction === action) { this.eatAction = null; this.c.update(); this.scheduleEat(); this.c.survival?.schedule() } }) }
+  health () { if (!this.autoEat || !this.ready() || this.active || this.eatAction || this.c.survival?.busy || this.c.playerActions?.busy() || this.c.bot.currentWindow || this.c.bot.food == null || this.c.bot.food > this.foodSettings.threshold || Date.now() - this.lastEat < 5000) return; const bot = this.c.bot; const generation = this.generation; const action = {}; this.eatAction = action; this.c.update(); this.eat(bot, generation).catch(err => { if (this.generation === generation) this.c.log('warning', `Auto-eat: ${err.message}`) }).finally(() => { if (this.eatAction === action) { this.eatAction = null; this.c.update(); this.scheduleEat(); this.c.survival?.schedule() } }) }
   scheduleEat () { clearTimeout(this.eatTimer); this.eatTimer = null; if (this.autoEat && this.ready() && !this.active && this.c.bot.food != null && this.c.bot.food <= this.foodSettings.threshold) { this.eatTimer = setTimeout(() => { this.eatTimer = null; this.health() }, 5500); this.eatTimer.unref?.() } }
   async eat (bot, generation) {
     if (!this.autoEat || bot.food == null || bot.food > this.foodSettings.threshold || Date.now() - this.lastEat < 5000) return
@@ -33,7 +33,7 @@ class Work {
   }
   check (bot, generation) { if (generation !== this.generation || this.c.bot !== bot || !this.ready() || (this.active?.team && bot.game?.dimension !== this.active.team.dimension)) throw new Error('Task cancelled or bot disconnected') }
   start (type, args = {}) {
-    const bot = this.ready(); if (!bot) throw new Error('Bot must be connected and authenticated'); if (this.active || this.eatAction || this.c.survival?.busy) throw new Error('Bot is already busy'); if (!['trees', 'stone', 'dirt', 'excavate'].includes(type)) throw new Error('Invalid work type'); if (!bot.pathfinder || !bot.entity?.position) throw new Error('Pathfinder or bot position unavailable')
+    const bot = this.ready(); if (!bot) throw new Error('Bot must be connected and authenticated'); if (this.active || this.eatAction || this.c.survival?.busy || this.c.playerActions?.busy()) throw new Error('Bot is already busy'); if (!['trees', 'stone', 'dirt', 'excavate'].includes(type)) throw new Error('Invalid work type'); if (!bot.pathfinder || !bot.entity?.position) throw new Error('Pathfinder or bot position unavailable')
     let positions
     if (type === 'excavate') positions = excavation(args.from, args.to, bot.entity.position)
     else { positions = bot.findBlocks({ matching: block => matches(type, block), maxDistance: 16, count: NEARBY_LIMIT }); if (!positions.length) throw new Error(`No matching ${type} blocks found nearby`) }
@@ -62,7 +62,7 @@ class Work {
     this.task.state = 'COMPLETED'; this.task.message = `Finished: ${this.task.done} dig actions completed, ${skipped} skipped`; this.c.log('success', `${type}: ${this.task.message}`)
   }
   startTeam (team) {
-    const bot = this.ready(); if (!bot || this.active || this.eatAction || this.c.survival?.busy || !bot.pathfinder || !bot.entity?.position) throw new Error(`${this.c.name} is not available for work`)
+    const bot = this.ready(); if (!bot || this.active || this.eatAction || this.c.survival?.busy || this.c.playerActions?.busy() || !bot.pathfinder || !bot.entity?.position) throw new Error(`${this.c.name} is not available for work`)
     const active = { bot, generation: this.generation, team }; this.active = active
     this.task = { state: 'RUNNING', type: team.type, done: 0, total: team.total, message: 'Team task: waiting for an assignment' }; this.c.update()
     this.runTeam(bot, active.generation, team).catch(err => {
@@ -87,7 +87,7 @@ class Work {
     ++this.generation; clearTimeout(this.eatTimer); this.eatTimer = null; const active = this.active
     if (active || this.task.state === 'RUNNING') { this.task.state = 'STOPPED'; this.task.message = 'Stopped by operator or disconnect' }
     const bot = this.c.bot
-    if (bot) { try { if (networkAvailable) { bot.pathfinder?.setGoal(null); bot.stopDigging?.(); if (bot.usingHeldItem || this.eatAction) bot.deactivateItem?.() } else bot.emit?.('path_stop'); bot.clearControlStates?.() } catch {} }
+    if (bot && (active || this.eatAction)) { try { if (networkAvailable) { bot.pathfinder?.setGoal(null); bot.stopDigging?.(); if (bot.usingHeldItem || this.eatAction) bot.deactivateItem?.() } else bot.emit?.('path_stop'); bot.clearControlStates?.() } catch {} }
     // Keep a cancelled task busy until its in-flight action settles; disconnected bots are discarded.
     if (active?.team) active.team.leave(this, 'Stopped or disconnected')
     if (discard) { this.active = null; this.eatAction = null }

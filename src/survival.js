@@ -44,7 +44,7 @@ class Survival {
   schedule (delay = 250) { if (!this.autoArmour || !this.ready() || this.timer) return; this.timer = setTimeout(() => { this.timer = null; void this.run().catch(err => { this.lastError = this.c.manager.logger.clean(err.message); this.c.log('warning', `Auto armour: ${this.lastError}`); this.c.update() }) }, delay); this.timer.unref?.() }
   async run () {
     const c = this.c; const bot = c.bot
-    if (!this.autoArmour || !this.ready() || this.busy || c.work.active || c.work.eatAction || !bot?.inventory?.slots || !bot.getEquipmentDestSlot || bot.currentWindow) return
+    if (!this.autoArmour || !this.ready() || this.busy || c.work.active || c.work.eatAction || c.playerActions?.busy() || !bot?.inventory?.slots || !bot.getEquipmentDestSlot || bot.currentWindow) return
     if (Date.now() < this.retryAt) { this.schedule(this.retryAt - Date.now()); return }
     // Eating takes precedence over equipment transactions.
     if (c.work.autoEat && c.work.foodCandidate().item) { c.work.health(); return }
