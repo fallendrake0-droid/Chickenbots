@@ -1,0 +1,27 @@
+'use strict'
+const $ = id => document.getElementById(id)
+const socket = io({ transports: ['websocket'] }); let snapshot = null; let initialized = false
+function action (data) { socket.emit('action', data, result => { if (result?.error) alert(result.error) }) }
+socket.on('connect', () => { $('socketDot').className = 'online'; $('socketStatus').textContent = 'CONTROL LINK ONLINE' })
+socket.on('disconnect', () => { $('socketDot').className = ''; $('socketStatus').textContent = 'CONTROL LINK OFFLINE' })
+function el (tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n }
+function button (text, fn) { const b = el('button', '', text); b.type = 'button'; b.addEventListener('click', fn); return b }
+function render (data) {
+  snapshot = data; $('server').textContent = data.server; const bots = data.bots; const connected = bots.filter(b => b.state === 'CONNECTED').length
+  $('network').textContent = connected ? '● NETWORK ONLINE' : '● NO BOTS CONNECTED'
+  const pings = bots.map(b => b.ping).filter(p => typeof p === 'number'); const stats = [['CONNECTED', `${connected} / 5`], ['AUTHENTICATING', bots.filter(b => b.auth === 'AUTHENTICATING' || b.auth === 'WAITING_FOR_PROMPT').length], ['RECONNECTING', bots.filter(b => b.state === 'RECONNECTING').length], ['FAILED', bots.filter(b => ['ERROR', 'AUTHENTICATION_FAILED'].includes(b.state)).length], ['AVG PING', pings.length ? `${Math.round(pings.reduce((a,b) => a+b,0)/pings.length)}ms` : '—'], ['UPTIME', `${Math.floor(data.uptime / 60000)}m`]]
+  $('stats').replaceChildren(...stats.map(([label, value]) => { const d = el('div', 'stat'); d.append(el('small', '', label), el('strong', '', String(value))); return d }))
+  if (!initialized) { for (const name of ['all', ...bots.map(b => b.name)]) { const o = el('option', '', name === 'all' ? 'ALL BOTS' : name); o.value = name; $('chatBot').append(o) } initialized = true }
+  // Retain movement controls during updates so pointer releases cannot be lost.
+  for (const [index, b] of bots.entries()) { let card = document.getElementById(`bot-${index}`); if (!card) { card = el('article', 'bot'); card.id = `bot-${index}`; const top = el('div', 'botTop'); top.append(el('span', '', `BOT / 0${index+1}`), el('span', '', '◈')); card.append(top, el('h3', '', b.name), el('div', 'badge'), el('div', 'detail')); const controls = el('div', 'controls'); for (const a of ['start','stop','restart','reconnect']) controls.append(button(a.toUpperCase(), () => action({ bot: b.name, action: a }))); card.append(controls); const movement = el('details', 'movement'); movement.append(el('summary', '', 'MOVEMENT CONTROLS')); const keys = el('div'); for (const key of ['forward','back','left','right','jump','sprint','sneak']) { const btn = el('button', '', key.toUpperCase()); btn.type = 'button'; const release = () => action({ bot:b.name, action:'movement', control:key, value:false }); btn.addEventListener('pointerdown', e => { e.preventDefault(); btn.setPointerCapture(e.pointerId); action({ bot:b.name, action:'movement', control:key, value:true }) }); btn.addEventListener('pointerup', release); btn.addEventListener('pointercancel', release); btn.addEventListener('lostpointercapture', release); keys.append(btn) } keys.append(button('STOP MOVEMENT', () => action({bot:b.name, action:'stopMovement'}))); movement.append(keys); card.append(movement); $('bots').append(card) }
+    card.querySelector('.badge').textContent = `● ${b.state}`; const vals = [['AUTH',b.auth],['HEALTH',b.health == null ? '—' : `${b.health} / 20`],['FOOD',b.food == null ? '—' : `${b.food} / 20`],['POSITION',b.position ? `${b.position.x}, ${b.position.y}, ${b.position.z}` : '—'],['DIMENSION',b.dimension ?? '—'],['PING',b.ping == null ? '—' : `${b.ping} ms`],['CONNECTED',b.connectedAt ? `${Math.floor((Date.now()-b.connectedAt)/1000)}s` : '—'],['RETRY',String(b.retryCount)],['LAST ERROR',b.lastError || '—']]; card.querySelector('.detail').replaceChildren(...vals.map(([k,v]) => { const row = el('div','row'); row.append(el('span','',k),el('span','',String(v))); return row }))
+  }
+  const selection = $('chatBot').value; const selected = selection === 'all' ? bots : bots.filter(b => b.name === selection)
+  $('chatLog').replaceChildren(...selected.flatMap(b => b.chat.map(c => ({...c,name:b.name}))).sort((a,b)=>a.time-b.time).slice(-100).map(c => el('div','',`[${new Date(c.time).toLocaleTimeString()}] ${c.name} · ${c.source}: ${c.text}`)))
+  $('events').replaceChildren(...bots.flatMap(b => b.history.map(h => ({...h,name:b.name}))).sort((a,b)=>b.time-a.time).slice(0,100).map(h => el('div','',`[${new Date(h.time).toLocaleTimeString()}] ${h.name} / ${h.level.toUpperCase()} · ${h.message}`)))
+}
+socket.on('snapshot', render)
+$('chatBot').addEventListener('change', () => { if (snapshot) render(snapshot) })
+$('chatForm').addEventListener('submit', e => { e.preventDefault(); action({action:'chat', bot:$('chatBot').value, message:$('message').value}); $('message').value = '' })
+document.querySelectorAll('[data-all]').forEach(b => b.addEventListener('click', () => { const a=b.dataset.all; if (a !== 'start' && !confirm(`${a.toUpperCase()} all bots?`)) return; action({bot:'all',action:a}) }))
+window.addEventListener('blur', () => action({bot:'all',action:'stopMovement'}))

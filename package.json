@@ -1,0 +1,35 @@
+{
+  "name": "chickenbots",
+  "version": "1.0.0",
+  "description": "Five-bot Mineflayer control centre",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test",
+    "start": "node index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fallendrake0-droid/Chickenbots.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/fallendrake0-droid/Chickenbots/issues"
+  },
+  "homepage": "https://github.com/fallendrake0-droid/Chickenbots#readme",
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "minecraft-data": "^3.119.0",
+    "minecraft-protocol": "^1.68.0",
+    "mineflayer": "^4.39.0",
+    "socket.io": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}
