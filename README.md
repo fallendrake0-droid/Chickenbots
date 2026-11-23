@@ -287,7 +287,10 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_PORT` | `55742` | server port |
 | `MC_VERSION` | `auto` | protocol negotiation; Aternos ViaVersion handles the rest |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
+| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `7000` / `2000` | gap between joining bots; avoids Aternos join throttling |
+| `MC_THROTTLE_DELAY_MS` | `30000` | minimum retry delay after a throttled join |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | optional AuthMe-style register/login after spawn |
+| `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `0.0.0.0` | bind address (sandbox preview needs this) |
@@ -455,6 +458,9 @@ commissioning.
 
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
+  Bots join one at a time with jitter, and throttled joins use a 30-second floor before retrying.
+  A server-side `Invalid move player packet` kick usually means the protocol version does not match;
+  set `MC_VERSION` to the server's exact version instead of `auto`.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
   real placement; a Grandmaster design is a multi-session project, not instant.
 * The construction pipeline is validated against `MockWorld`. Live operation still depends on the

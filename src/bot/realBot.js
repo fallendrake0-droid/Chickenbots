@@ -117,6 +117,7 @@ class RealBot extends BotAdapter {
       this.logger.info(`[${this.name}] authenticated with ${this.host}`);
     });
     bot.on('spawn', () => {
+      const firstSpawn = !this.spawned;
       this.connected = true;
       this.spawned = true;
       this.authenticated = true; // servers send spawn after successful login
@@ -124,7 +125,9 @@ class RealBot extends BotAdapter {
       this.spawnPosition = { ...this.position };
       this.dimension = bot.game?.dimension || 'overworld';
       this._syncInventory();
-      this.logger.info(`[${this.name}] spawned at ${this.position.x},${this.position.y},${this.position.z}`);
+      // Some proxies emit a second spawn packet after the initial teleport.
+      // Keep the event useful without logging two identical "spawned" lines.
+      this.logger.info(`[${this.name}] ${firstSpawn ? 'spawned' : 'respawned'} at ${this.position.x},${this.position.y},${this.position.z}`);
       for (const waiter of this._spawnWaiters) waiter.resolve({ ok: true, spawned: true, authenticated: true });
       this._spawnWaiters.clear();
     });
@@ -155,10 +158,13 @@ class RealBot extends BotAdapter {
       this.logger.warn(`[${this.name}] died at ${this.position.x},${this.position.y},${this.position.z}`);
     });
     bot.on('kicked', (reason) => {
-      this.lastError = typeof reason === 'string' ? reason : JSON.stringify(reason);
+      this.lastError = this._formatKickReason(reason);
       this.connected = false;
       this.spawned = false;
       this.logger.warn(`[${this.name}] kicked: ${this.lastError}`);
+      if (/invalid move player packet/i.test(this.lastError)) {
+        this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
+      }
     });
     bot.on('error', (err) => {
       this.lastError = err.message;
@@ -176,6 +182,23 @@ class RealBot extends BotAdapter {
       if (this._chatLog.length > 200) this._chatLog.shift();
       for (const listener of this._chatListeners) listener(text);
     });
+  }
+
+  _formatKickReason(reason) {
+    if (typeof reason === 'string') return reason;
+    const parts = [];
+    const visit = (node) => {
+      if (!node) return;
+      if (typeof node === 'string') { parts.push(node); return; }
+      if (Array.isArray(node)) { node.forEach(visit); return; }
+      if (typeof node !== 'object') return;
+      if (typeof node.text === 'string') parts.push(node.text);
+      if (node.extra !== undefined) visit(node.extra);
+      if (node.value !== undefined) visit(node.value);
+    };
+    visit(reason);
+    const text = parts.join('').trim();
+    return text || JSON.stringify(reason);
   }
 
   _vec(position) {

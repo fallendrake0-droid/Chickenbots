@@ -87,6 +87,10 @@ const config = {
     auth: env('MC_AUTH', 'offline'),
     connectTimeoutMs: envInt('MC_CONNECT_TIMEOUT_MS', 45000),
     keepAliveMs: envInt('MC_KEEPALIVE_MS', 10000),
+    // Aternos and vanilla proxies throttle rapid joins. Open one socket at a
+    // time, with jitter, instead of starting all five bots simultaneously.
+    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 7000),
+    connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 2000),
     // Optional registration / login (Aternos + AuthMe style plugins).
     registerPassword: env('MC_REGISTER_PASSWORD', ''),
     loginPassword: env('MC_LOGIN_PASSWORD', ''),
@@ -95,7 +99,9 @@ const config = {
     reconnect: {
       maxAttempts: envInt('MC_RECONNECT_MAX', 0), // 0 = unlimited
       baseDelayMs: envInt('MC_RECONNECT_BASE_MS', 5000),
-      maxDelayMs: envInt('MC_RECONNECT_MAX_MS', 120000)
+      maxDelayMs: envInt('MC_RECONNECT_MAX_MS', 120000),
+      throttleDelayMs: envInt('MC_THROTTLE_DELAY_MS', 30000),
+      jitterMs: envInt('MC_RECONNECT_JITTER_MS', 4000)
     }
   },
   dashboard: {

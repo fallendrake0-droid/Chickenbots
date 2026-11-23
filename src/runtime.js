@@ -17,6 +17,7 @@ const { createDashboard } = require('./dashboard/server');
 const { MockWorld } = require('./bot/mockWorld');
 const { MockBot } = require('./bot/mockBot');
 const { RealBot } = require('./bot/realBot');
+const { isThrottleError, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
 
 const STARTER_KIT = {
   bread: 32, cooked_beef: 16, stone_pickaxe: 2, iron_pickaxe: 1, iron_axe: 1, iron_sword: 1,
@@ -76,6 +77,8 @@ class TeamRuntime {
     this.disconnectedNotified = new Set();
     this.reconnectTasks = new Map();
     this.intentionalDisconnects = new Set();
+    this.supervisorTicks = 0;
+    this.supervisorBusy = false;
   }
 
   get allBotsReady() {
@@ -180,14 +183,39 @@ class TeamRuntime {
   }
 
   async _connectAll() {
-    for (const name of BOT_NAMES) {
+    const names = BOT_NAMES.filter((name) => this.bots.has(name));
+    for (let index = 0; index < names.length; index++) {
       if (this.shutdownRequested) return;
-      const bot = this.bots.get(name);
-      this._connectWithRetry(bot).catch((err) => {
-        this.connectionErrors[name] = err.message;
-        this.logger.error(`[${name}] connection failed: ${err.message}`);
-      });
+      const name = names[index];
+      this._startConnection(this.bots.get(name));
+      if (index < names.length - 1) {
+        await sleep(staggerDelay({
+          staggerMs: config.server.connectStaggerMs,
+          jitterMs: config.server.connectJitterMs
+        }));
+      }
     }
+  }
+
+  /**
+   * Own one connection task per bot. Registering the initial task in the same
+   * map as recovery prevents the supervisor from opening a second socket while
+   * a bot is already retrying.
+   */
+  _startConnection(bot) {
+    const existing = this.reconnectTasks.get(bot.name);
+    if (existing) return existing;
+    const task = this._connectWithRetry(bot)
+      .catch((err) => {
+        this.connectionErrors[bot.name] = err.message;
+        this.logger.error(`[${bot.name}] connection failed: ${err.message}`);
+        return { ok: false, error: err.message };
+      })
+      .finally(() => {
+        if (this.reconnectTasks.get(bot.name) === task) this.reconnectTasks.delete(bot.name);
+      });
+    this.reconnectTasks.set(bot.name, task);
+    return task;
   }
 
   async _connectWithRetry(bot) {
@@ -203,8 +231,16 @@ class TeamRuntime {
       this.connectionErrors[bot.name] = result.error || 'connection failed';
       const max = config.server.reconnect.maxAttempts;
       if (max > 0 && attempt >= max) throw new Error(result.error || 'max reconnect attempts reached');
-      const delay = Math.min(config.server.reconnect.maxDelayMs, config.server.reconnect.baseDelayMs * Math.pow(1.5, attempt - 1));
-      this.logger.warn(`[${bot.name}] connect attempt ${attempt} failed: ${result.error}; retrying in ${Math.round(delay / 1000)}s`);
+      const delay = reconnectDelay({
+        attempt,
+        error: result.error,
+        baseDelayMs: config.server.reconnect.baseDelayMs,
+        maxDelayMs: config.server.reconnect.maxDelayMs,
+        throttleDelayMs: config.server.reconnect.throttleDelayMs,
+        jitterMs: config.server.reconnect.jitterMs
+      });
+      const reason = isThrottleError(result.error) ? 'server join throttle' : 'connection failed';
+      this.logger.warn(`[${bot.name}] ${reason}: ${result.error}; retrying in ${(delay / 1000).toFixed(1)}s`);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
     return { ok: bot.ready };
@@ -213,6 +249,17 @@ class TeamRuntime {
   async _tick() {
     if (!this.running || this.paused || this.ticking) return;
     if (this.allBotsReady) this.autonomyArmed = true;
+    // Connection supervision must run even while the autonomy gate is closed;
+    // otherwise a bot that fails after the initial retry budget is never restored.
+    if (!this.simulate && this.shouldConnect) {
+      this.supervisorTicks++;
+      if (this.supervisorTicks % 20 === 0 && !this.supervisorBusy) {
+        this.supervisorBusy = true;
+        this._recoverDisconnected()
+          .catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`))
+          .finally(() => { this.supervisorBusy = false; });
+      }
+    }
     if (!this.autonomyAllowed) return;
     this.ticking = true;
     this.ticks++;
@@ -236,9 +283,6 @@ class TeamRuntime {
         }
       }
       this.coordinator.tick();
-      if (!this.simulate && this.shouldConnect && this.ticks % 40 === 0) {
-        this._recoverDisconnected().catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`));
-      }
       for (const actions of this.actions.list()) {
         const bot = actions.bot;
         if (!bot.connected || !bot.spawned || bot.health <= 0) continue;
@@ -276,20 +320,23 @@ class TeamRuntime {
    * disconnect is respected until an explicit reconnect clears that intent.
    */
   async _recoverDisconnected() {
+    let started = 0;
     for (const name of BOT_NAMES) {
       const bot = this.bots.get(name);
       if (!bot || bot.connected !== false || this.intentionalDisconnects.has(name) || this.reconnectTasks.has(name)) continue;
-      const task = this._connectWithRetry(bot)
-        .then((result) => {
-          if (result && result.ok) this.logger.info(`[${name}] reconnect supervisor restored the bot`);
-          return result;
-        })
-        .catch((err) => {
-          this.connectionErrors[name] = err.message;
-          this.logger.error(`[${name}] reconnect supervisor failed: ${err.message}`);
-        })
-        .finally(() => this.reconnectTasks.delete(name));
-      this.reconnectTasks.set(name, task);
+      if (started > 0) {
+        await sleep(staggerDelay({
+          staggerMs: config.server.connectStaggerMs,
+          jitterMs: config.server.connectJitterMs
+        }));
+      }
+      if (this.shutdownRequested) return;
+      const task = this._startConnection(bot);
+      task.then((result) => {
+        if (result && result.ok) this.logger.info(`[${name}] reconnect supervisor restored the bot`);
+        return result;
+      }).catch(() => null);
+      started++;
     }
   }
 
