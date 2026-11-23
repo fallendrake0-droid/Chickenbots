@@ -18,6 +18,141 @@ function buildStateTone(buildState) {
 
 let builderDesign = '';
 
+export const homeBasePage = {
+  title: 'Home Base',
+  render() {
+    const snap = state.snapshot || {};
+    const base = snap.homeBase || {};
+    const home = base.home || (snap.diagnostics && snap.diagnostics.runtime && snap.diagnostics.runtime.home) || null;
+    const perBot = base.perBot || [];
+    const sleep = new Map((snap.sleep || []).map((row) => [row.bot, row]));
+    const inventory = new Map(((snap.inventory && snap.inventory.bots) || []).map((row) => [row.bot, row]));
+    const builds = ((snap.builder && snap.builder.builds) || []).filter((build) => String(build.buildId).startsWith('home-'));
+    const beds = [...inventory.values()].reduce((sum, row) => sum + ((row.items || []).filter((item) => /_bed$/.test(item.name || item) || item.name === 'bed').reduce((n, item) => n + (item.count || 0), 0)), 0);
+    const sleeping = [...sleep.values()].filter((row) => row.sleeping).length;
+    return `
+      <div class="page">
+        ${pageHeader({
+          eyebrow: 'Construction', title: 'Home Base', description: 'The shared home coordinate, bed availability and base construction state. Coordinates come from the runtime; bed counts come from live inventories.',
+          actions: `<a class="button" href="#/builder">${icon('hammer')} Builder</a><a class="button" href="#/schematics">${icon('book-open')} Library</a><button class="button button--primary" type="button" data-command="return home all">${icon('home')} Return all home</button>`
+        })}
+        <div class="grid grid--stats">
+          ${statCard({ label: 'Home', value: home ? `${home.x}, ${home.y}, ${home.z}` : 'Not set', iconName: 'home', tone: home ? 'success' : 'warning', context: home ? 'Shared team home coordinate' : 'Set a home with the form below' })}
+          ${statCard({ label: 'Beds held', value: num(beds), iconName: 'bed', tone: beds >= 5 ? 'success' : beds ? 'warning' : 'danger', context: 'Bed items in live inventories' })}
+          ${statCard({ label: 'Sleeping', value: `${sleeping}<small> / ${perBot.length || 5}</small>`, iconName: 'moon', tone: sleeping ? 'info' : 'neutral', context: 'Current sleep state' })}
+          ${statCard({ label: 'Home builds', value: num(builds.length), iconName: 'hammer', tone: builds.length ? 'accent' : 'neutral', context: builds.length ? builds.map((build) => build.state).join(', ') : 'No home build registered' })}
+        </div>
+        <div class="grid grid--main-side">
+          <div class="stack gap-4">
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('home')} Team home</div>${home ? badge('SET', 'ok', { dot: true }) : badge('UNSET', 'warn')}</div>
+              <div class="card-body">
+                <form data-home-form>
+                  <div class="form-grid form-grid--3">
+                    <div class="field"><label class="field-label" for="home-x">X</label><input class="input" id="home-x" type="number" value="${home ? home.x : 0}" required></div>
+                    <div class="field"><label class="field-label" for="home-y">Y</label><input class="input" id="home-y" type="number" value="${home ? home.y : 65}" required></div>
+                    <div class="field"><label class="field-label" for="home-z">Z</label><input class="input" id="home-z" type="number" value="${home ? home.z : 0}" required></div>
+                  </div>
+                  <div class="row gap-2" style="margin-top:10px"><button class="button" type="submit">${icon('map')} Set home</button><button class="button" type="button" data-command="home status">${icon('info')} Home status</button></div>
+                </form>
+                <div class="divider"></div>
+                <div class="table-wrap"><table class="table table--compact">
+                  <thead><tr><th>Bot</th><th>Home</th><th>Bed item</th><th>Sleeping</th><th>Distance</th><th>Design</th><th>Action</th></tr></thead>
+                  <tbody>${perBot.length ? perBot.map((row) => {
+                    const bot = (snap.bots || []).find((entry) => entry.name === row.bot) || {};
+                    const bed = sleep.get(row.bot) || {};
+                    const dist = home && bot.position ? Math.round(Math.hypot(bot.position.x - home.x, bot.position.z - home.z)) : null;
+                    return `<tr>
+                      <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}">${esc(row.bot)}</a></td>
+                      <td class="mono tiny">${row.home ? `${row.home.x}, ${row.home.y}, ${row.home.z}` : home ? `${home.x}, ${home.y}, ${home.z}` : '—'}</td>
+                      <td>${bed.hasBedItem ? badge('HELD', 'ok') : badge('NONE', 'warn')}</td>
+                      <td>${bed.sleeping ? badge('SLEEPING', 'info') : badge('AWAKE', 'neutral')}</td>
+                      <td class="mono">${dist === null ? '—' : `${dist} m`}</td>
+                      <td class="tiny">${esc(row.design ? (row.design.name || row.design.id || '—') : '—')}</td>
+                      <td><button class="button button--sm" type="button" data-command="return home ${esc(row.bot)}">${icon('navigation')} Return</button></td>
+                    </tr>`;
+                  }).join('') : `<tr><td colspan="7">${emptyState('No home state', 'The home manager has not reported yet.', 'home')}</td></tr>`}</tbody>
+                </table></div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('hammer')} Home construction</div><span class="tiny muted">${builds.length} build(s)</span></div>
+              <div class="card-body">
+                <form data-home-build-form>
+                  <div class="form-grid form-grid--2">
+                    <div class="field"><label class="field-label" for="home-tier">Schematic tier</label><select class="select" id="home-tier">${['Beginner', 'Novice', 'Apprentice', 'Intermediate', 'Advanced', 'Expert', 'Master', 'Grandmaster'].map((tier) => `<option value="${tier}"${tier === 'Novice' ? ' selected' : ''}>${tier}</option>`).join('')}</select></div>
+                    <div class="field"><label class="field-label" for="home-run">Execution</label><select class="select" id="home-run"><option value="run">Plan and run</option><option value="">Plan only</option></select></div>
+                  </div>
+                  <button class="button button--primary" type="submit" style="margin-top:10px">${icon('home')} Build home base</button>
+                  <p class="tiny muted" style="margin:10px 0 0">The builder validates materials and site clearance before placing blocks. Starting requires explicit confirmation.</p>
+                </form>
+                ${builds.length ? `<div class="divider"></div><div class="table-wrap"><table class="table table--compact"><thead><tr><th>Build</th><th>Design</th><th>State</th><th>Progress</th></tr></thead><tbody>${builds.slice(0, 8).map((build) => `<tr><td class="mono tiny"><a class="link" href="#/projects/${encodeURIComponent(build.buildId)}">${esc(build.buildId)}</a></td><td>${esc(build.name || '—')}</td><td>${badge(build.state || '—', build.state === 'COMPLETE' ? 'ok' : build.state === 'FAILED' ? 'danger' : build.state === 'PAUSED' ? 'warn' : 'accent')}</td><td style="min-width:110px">${progress(build.percentComplete || 0, 100, { sm: true })}</td></tr>`).join('')}</tbody></table></div>` : ''}
+              </div>
+            </section>
+          </div>
+          <aside class="stack gap-4">
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('info')} Base readiness</div></div>
+              <div class="card-body">
+                ${kvRows([
+                  ['Home coordinate', home ? `${home.x}, ${home.y}, ${home.z}` : 'unset', true],
+                  ['Bots reporting', `${perBot.length} / 5`],
+                  ['Bed items', num(beds)],
+                  ['Sleeping now', num(sleeping)],
+                  ['Home builds', num(builds.length)]
+                ])}
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('shield')} Safety</div></div>
+              <div class="card-body"><div class="callout callout--info">${icon('info')}<div>Home coordinates are navigation targets, not a claim that a structure exists there. The builder rescans the world and only verifies blocks it actually placed.</div></div></div>
+            </section>
+          </aside>
+        </div>
+      </div>`;
+  },
+  mount(root) {
+    const form = root.querySelector('[data-home-form]');
+    if (form) form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const x = form.querySelector('#home-x').value;
+      const y = form.querySelector('#home-y').value;
+      const z = form.querySelector('#home-z').value;
+      try {
+        const result = await runCommand(`home set ${x} ${y} ${z}`);
+        const message = resultMessage(result);
+        toast({ type: message.type, title: message.title, message: message.message });
+      } catch (err) {
+        toast({ type: 'error', title: 'Home not updated', message: err.message });
+      }
+    });
+    const buildForm = root.querySelector('[data-home-build-form]');
+    if (buildForm) buildForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const tier = buildForm.querySelector('#home-tier').value;
+      const run = buildForm.querySelector('#home-run').value;
+      const ok = await confirmDialog({
+        title: 'Build home base',
+        message: `Plan ${tier} home-base construction at the shared home?`,
+        confirmLabel: 'Build',
+        details: 'The builder checks the site and materials first. Blocks are only claimed as placed after a world rescan.'
+      });
+      if (!ok) return;
+      const button = buildForm.querySelector('button[type="submit"]');
+      setButtonLoading(button, true);
+      try {
+        const result = await runCommand(`home build ${tier}${run ? ' run' : ''}`, { confirm: true });
+        const message = resultMessage(result);
+        toast({ type: message.type, title: message.title, message: message.message });
+      } catch (err) {
+        toast({ type: 'error', title: 'Home build failed', message: err.message, duration: 8000 });
+      } finally {
+        setButtonLoading(button, false);
+      }
+    });
+  }
+};
+
 export const builderPage = {
   title: 'Builder',
   render() {
@@ -70,7 +205,7 @@ export const builderPage = {
                   <td class="mono tiny">${num(build.placedBlocks || 0)} / ${num(build.totalBlocks || 0)}</td>
                   <td class="mono tiny">${build.origin ? `${build.origin.x}, ${build.origin.y}, ${build.origin.z}` : '—'}</td>
                   <td class="mono">${num((build.missingMaterials || []).length)}</td>
-                  <td><div class="row gap-2">${!['COMPLETE', 'CANCELLED', 'FAILED'].includes(build.state) ? `<button class="button button--sm" type="button" data-command="build run ${esc(build.buildId)} 40">Run</button><button class="button button--sm button--danger-ghost" type="button" data-command="build stop ${esc(build.buildId)}" data-danger="true" data-confirm-title="Stop build" data-confirm-message="Stop ${esc(build.name)}? Placed blocks remain in the world.">Stop</button>` : ''}</div></td>
+                  <td><div class="row gap-2">${!['COMPLETE', 'CANCELLED', 'FAILED'].includes(build.state) ? `<button class="button button--sm" type="button" data-command="build run ${esc(build.buildId)} 40">Run</button>${build.state === 'PAUSED' ? `<button class="button button--sm" type="button" data-command="build resume ${esc(build.buildId)}">Resume</button>` : `<button class="button button--sm" type="button" data-command="build pause ${esc(build.buildId)}">Pause</button>`}<button class="button button--sm button--danger-ghost" type="button" data-command="build stop ${esc(build.buildId)}" data-danger="true" data-confirm-title="Stop build" data-confirm-message="Stop ${esc(build.name)}? Placed blocks remain in the world.">Stop</button>` : ''}</div></td>
                 </tr>`).join('') : `<tr><td colspan="8">${emptyState('No builds', 'Start a build from a validated schematic, or browse the library.', 'hammer', '<a class="button button--primary" href="#/schematics">Schematic library</a>')}</td></tr>`}</tbody>
               </table></div>
             </section>
@@ -113,17 +248,37 @@ export const builderPage = {
         toast({ type: 'warn', title: 'Design required', message: 'Enter a design ID or name from the schematic library.' });
         return;
       }
-      const line = `build ${design} ${form.querySelector('#build-x').value} ${form.querySelector('#build-y').value} ${form.querySelector('#build-z').value}${form.querySelector('#build-run').value ? ' run' : ''}`;
-      const ok = await confirmDialog({
-        title: 'Start build',
-        message: `Start building ${design}?`,
-        confirmLabel: 'Start build',
-        details: 'The builder clears and places blocks around the origin. Conflicts with existing builds or protected regions will block placement.'
-      });
-      if (!ok) return;
+      const x = form.querySelector('#build-x').value;
+      const y = form.querySelector('#build-y').value;
+      const z = form.querySelector('#build-z').value;
+      const run = Boolean(form.querySelector('#build-run').value);
       const button = form.querySelector('button[type="submit"]');
       setButtonLoading(button, true);
       try {
+        const previewResponse = await runCommand(`build preview ${design} ${x} ${y} ${z}`);
+        const preview = previewResponse.result || previewResponse;
+        if (!preview.ok) throw new Error(preview.error || 'preview failed');
+        const analysis = preview.analysis || {};
+        if (analysis.feasible === false) {
+          const missing = Object.entries(analysis.missingMaterials || {}).map(([item, count]) => `${count}× ${item}`).join(', ');
+          const blocked = (analysis.blocked || []).length;
+          const conflicts = (analysis.conflicts || []).length;
+          toast({
+            type: 'error',
+            title: 'Preview blocked',
+            message: [missing ? `missing ${missing}` : '', blocked ? `${blocked} blocked blocks` : '', conflicts ? `${conflicts} conflicts` : ''].filter(Boolean).join(' · ') || 'the site cannot be prepared',
+            duration: 9000
+          });
+          return;
+        }
+        const ok = await confirmDialog({
+          title: 'Start build',
+          message: `Start building ${design}?`,
+          confirmLabel: 'Start build',
+          details: `Preview: ${num(analysis.toPlace || 0)} blocks to place, ${num(analysis.alreadyBuilt || 0)} already present, ${num((analysis.conflicts || []).length)} conflicts and ${num((analysis.blocked || []).length)} blocked positions. The builder rescans the world and only counts verified placements.`
+        });
+        if (!ok) return;
+        const line = `build ${design} ${x} ${y} ${z}${run ? ' run' : ''}`;
         const result = await runCommand(line, { confirm: true });
         const message = resultMessage(result);
         toast({ type: message.type, title: message.title, message: message.message });

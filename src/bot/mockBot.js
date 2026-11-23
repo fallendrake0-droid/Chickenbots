@@ -65,7 +65,7 @@ class MockBot extends BotAdapter {
     this.startedAt = Date.now();
     this._lastDamage = 0;
     this._tickHandle = null;
-    this.stats = { dug: 0, placed: 0, moved: 0, attacked: 0, eaten: 0, crafted: 0, deaths: 0 };
+    this.stats = { dug: 0, placed: 0, moved: 0, attacked: 0, eaten: 0, crafted: 0, fished: 0, deaths: 0 };
     this._updateEquipment();
   }
 
@@ -245,6 +245,20 @@ class MockBot extends BotAdapter {
     this.stats.eaten++;
     await this._wait(1200);
     return { ok: true, item: food.name, food: this.food, saturation: this.saturation };
+  }
+
+  async fish({ timeoutMs = 2000 } = {}) {
+    if (!this.countItem('fishing_rod')) return { ok: false, error: 'no fishing_rod in inventory' };
+    const water = this.world && typeof this.world.findBlocks === 'function'
+      ? this.world.findBlocks(['water', 'flowing_water'], this.position, 16, 1)
+      : [];
+    if (!water.length) return { ok: false, error: 'no water within fishing range' };
+    await this._wait(Math.min(1800, Math.max(400, timeoutMs)));
+    const options = ['cod', 'cod', 'salmon', 'tropical_fish', 'pufferfish'];
+    const item = options[this.stats.fished % options.length];
+    this.addItem(item, 1);
+    this.stats.fished++;
+    return { ok: true, item, count: 1, items: [{ name: item, count: 1 }], water: { ...water[0] } };
   }
 
   async attack(entity, { token = null } = {}) {

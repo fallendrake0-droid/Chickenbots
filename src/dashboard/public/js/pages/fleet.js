@@ -497,7 +497,7 @@ export const teamPage = {
     const objectives = (state.snapshot && state.snapshot.taskManager && state.snapshot.taskManager.objectives) || [];
     const ledger = (state.snapshot && state.snapshot.inventory && state.snapshot.inventory.ledger) || {};
     const leader = stateTeam.leader || overview().leader;
-    const formations = ['FOLLOW', 'COMPACT', 'DEFENSIVE', 'EXPLORATION', 'MINING', 'BUILDING', 'RETREAT', 'REGROUP'];
+    const formations = ['FOLLOW', 'COMPACT', 'DEFENSIVE', 'EXPLORATION', 'MINING', 'FISHING', 'BUILDING', 'RETREAT', 'REGROUP'];
     const counts = tasks.reduce((acc, task) => { acc[task.status] = (acc[task.status] || 0) + 1; return acc; }, {});
     return `
       <div class="page">

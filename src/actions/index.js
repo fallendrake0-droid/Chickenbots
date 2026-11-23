@@ -10,6 +10,7 @@ const { FarmingController } = require('./farming');
 const { SleepController } = require('./sleep');
 const { ExplorationController } = require('./exploration');
 const { InventoryManager } = require('./inventory');
+const { FishingController } = require('./fishing');
 const { HomeBaseManager } = require('./homeBase');
 
 /**
@@ -41,6 +42,7 @@ class BotActions {
     this.woodcutting = new WoodcuttingController({ bot, memory, ledger, logger: this.logger });
     this.farming = new FarmingController({ bot, memory, logger: this.logger });
     this.sleep = new SleepController({ bot, memory, taskBoard, logger: this.logger });
+    this.fishing = new FishingController({ bot, memory, ledger, logger: this.logger });
     this.exploration = new ExplorationController({ bot, memory, home: this.home, logger: this.logger, teamIndex: index });
     this.inventory = new InventoryManager({ bot, ledger, memory, logger: this.logger });
     this.homeBase = new HomeBaseManager({ bots: [bot], world, memory, taskBoard, ledger, library, logger: this.logger });
@@ -63,6 +65,7 @@ class BotActions {
       woodcutting: this.woodcutting.status(),
       farming: this.farming.status(),
       sleep: this.sleep.status(),
+      fishing: this.fishing.status(),
       exploration: this.exploration.status(),
       inventory: this.inventory.status(),
       homeBase: this.homeBase.status(),
@@ -184,7 +187,7 @@ class BotActions {
     let result;
     switch (task.type) {
       case 'CHOP_WOOD': {
-        result = await this.woodcutting.tick({ maxTrees: 2 });
+        result = await this.woodcutting.tick({ maxTrees: 2, types: task.params?.types || null });
         const chopped = (result.results || []).reduce((sum, r) => sum + (r.chopped || 0), 0);
         result.quantity = chopped;
         result.verified = chopped > 0;
@@ -204,7 +207,7 @@ class BotActions {
         result.verified = result.mined > 0;
         break;
       case 'FARM_CROP':
-        result = await this.farming.harvestAll({ limit: 16 });
+        result = await this.farming.harvestAll({ limit: 16, crop: task.params?.crop || null });
         result.quantity = result.harvested;
         result.verified = result.harvested > 0;
         break;
@@ -229,6 +232,17 @@ class BotActions {
         result = { ok: Boolean(deposit.ok), ...deposit, verified: Boolean(deposit.ok) };
         break;
       }
+      case 'TRANSFER_ITEMS': {
+        const targetName = task.params?.to || task.params?.recipient;
+        const recipient = (context.bots && typeof context.bots.get === 'function' ? context.bots.get(targetName) : null) || context.recipient || null;
+        if (!recipient) { result = { ok: false, error: `transfer recipient '${targetName || 'unset'}' is unavailable` }; break; }
+        if (!task.params?.item) { result = { ok: false, error: 'transfer task has no item' }; break; }
+        const before = recipient.countItem(task.params.item);
+        const shared = await this.inventory.share(task.params.item, task.params.count || 1, recipient);
+        const after = recipient.countItem(task.params.item);
+        result = { ok: Boolean(shared.ok), ...shared, verified: Boolean(shared.ok && after - before >= (task.params.count || 1)) };
+        break;
+      }
       case 'PLACE_BED': {
         const bed = await this.sleep.ensureBed();
         result = { ok: Boolean(bed.ok), ...bed, verified: Boolean(bed.ok) };
@@ -242,6 +256,12 @@ class BotActions {
       case 'SMELT': {
         const smelt = await this.bot.smelt(task.params?.input || 'raw_iron', task.params?.count || 1);
         result = { ok: Boolean(smelt.ok), ...smelt, verified: Boolean(smelt.ok) };
+        break;
+      }
+      case 'FISH': {
+        result = await this.fishing.tick({ casts: task.params?.casts || 1 });
+        result.quantity = result.caught;
+        result.verified = result.caught > 0;
         break;
       }
       case 'DEFEND':
@@ -277,7 +297,7 @@ class BotActions {
   }
 
   /** Execute the coordinator's current assignment, if any. */
-  async step({ coordinator = null, builder = null } = {}) {
+  async step({ coordinator = null, builder = null, bots = null, recipient = null } = {}) {
     const assignment = coordinator ? coordinator.getAssignment(this.bot.name) : null;
     if (!assignment || !this.taskBoard) return { ok: true, idle: true };
     const task = this.taskBoard.getTask(assignment.taskId);
@@ -291,7 +311,7 @@ class BotActions {
       const started = this.taskBoard.start(task.id, this.bot.name);
       if (!started.ok) return { ok: false, error: started.error };
     }
-    const result = await this.performTask(task, { builder });
+    const result = await this.performTask(task, { builder, bots, recipient });
     let verified = result.verified === true;
     let progress = null;
     if (verified && task.units && task.units.target > 1) {

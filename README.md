@@ -72,9 +72,9 @@ src/
   schematics/
     blockGrid.js palettes.js primitives.js designHash.js generator.js library.js format.js validate.js
   builder/builder.js        cooperative phased construction with real material transfers
-  actions/                  survival, combat, mining, woodcutting, farming, sleep, exploration, inventory, home base
+  actions/                  survival, combat, mining, woodcutting, farming, fishing, sleep, exploration, inventory, home base
   commands/                 registry.js (validation/confirmation) + index.js (all commands)
-  dashboard/                Express API + modular operations console (23 pages)
+  dashboard/                Express API + modular operations console (25 pages)
 scripts/                    lint, validation, schematic generation/statistics
 tests/                      team, excavation, schematics, builder, survival, controllers, autonomy
 ```
@@ -187,19 +187,24 @@ requires an explicit `confirm` token or `confirmed:true`.
 
 ```
 help [command]                 status                         diagnostics
-ai [status|off]                team [state|memory|locks|tasks|roles|leader|formation]
-bot <name|all> <status|goto x y z|come|eat|where>
-inventory [bot]                eat [bot]                       sleep [bot]
+ai [status|off]                team [state|on|off|memory|locks|tasks|roles|leader|formation|resources|objectives|follow|regroup|retreat|defend|reassign]
+bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore]|chop [type]|farm [crop]|fish [n]|defend|explore [n]|sleep>
+inventory [bot]                eat [bot]                       sleep [bot|all|auto on|off]
 survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
-mine [bot] [ore]               chop [bot]                      farm [bot]
-defend [bot]                   explore [bot] [steps]
+auto <routine> [on|off] [bot|all]
+mine [bot] [ore|stone|stop]     chop [bot] [species|stop]       farm [bot] [crop|animals|stop]
+fish [bot|all] [casts]          fish stop [bot|all]
+defend [bot|stop]              explore [bot] [steps] | explore stop [bot|all]
+find <village|mineshaft|temple|ruin|forest|cave|diamonds|emeralds|iron|...> [bot]
+return home [bot|all]
 task <list|add|assign|priority|info|cancel|retry|objective> ...
 excavate preview <box|at|radius|quarry|trench|flatten|foundation> ...
 excavate start [previewId] confirm [authorized] [team]
 excavate status|pause|resume|stop|undo-preview|assign|team ...
+build select <designId|number|query> | build preview [designId]
+build start [run] confirm | build pause|resume|stop|run|status|list ...
 build <designId|number|query> [x y z] [run] confirm
-build status|list|run|stop ...
-home set x y z | home status | home build [tier]
+home set x y z | home status | home build [tier] [run] confirm
 schematics <list|search|info|stats|validate|export|import> ...
 pause | resume | stop
 ```
@@ -211,21 +216,26 @@ node src/cli.js --simulate "schematics info 0001_beginner_shelter"
 node src/cli.js --simulate "excavate preview quarry 100 64 100 10 10 6"
 node src/cli.js --simulate "excavate status"
 node src/cli.js --simulate "build 0001_beginner_shelter 60 72 60 confirm run"
+node src/cli.js --simulate "build select 0001_beginner_shelter"
+node src/cli.js --simulate "build preview"
+node src/cli.js --simulate "home set 10 64 -10"
+node src/cli.js --simulate "fish all 1"
 ```
 
 ---
 
 ## Dashboard
 
-A modular operations console served from `src/dashboard/public/` with 23 routed pages, grouped so
+A modular operations console served from `src/dashboard/public/` with 25 routed pages, grouped so
 that related tasks sit together rather than in one long tab strip:
 
 * **Overview** – fleet summary, live vitals chart, activity feed and objectives.
 * **Activity** – live activity, notifications and logs.
 * **Fleet** – all bots, team board, profiles and connection management.
 * **Gameplay** – survival, combat, inventory, mining, excavation, woodcutting, farming,
-  exploration and sleep.
-* **Building** – builder, schematic library (filters, pagination, isometric preview) and projects.
+  fishing, exploration and sleep.
+* **Construction** – home base, builder, schematic library (filters, pagination, isometric preview),
+  build projects and project history.
 * **System** – task manager, logs/diagnostics and settings.
 
 The shell is loaded per route (`js/app.js` + `js/router.js`) and hydrated from `/api/state`, `/api/logs`,
@@ -260,6 +270,7 @@ npm run test:team              # coordination, memory, ledger, locks, emergencie
 npm run test:excavation        # planning + execution against mock bots
 npm run test:schematics        # generator, hashes, .schem/.schematic round-trips, builder
 npm run test:survival          # survival, combat, mining, woodcutting, farming, sleep, inventory, runtime/autonomy
+npm run test:features          # fishing, structure clues, sleep automation, build pause/resume, command surface
 npm run validate               # lint + tests + full library validation + consistency
 ```
 

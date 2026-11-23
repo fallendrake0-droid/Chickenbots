@@ -3,9 +3,9 @@ import overview from './pages/overview.js';
 import { botsPage, profilesPage, profilePage, teamPage, connectionsPage } from './pages/fleet.js';
 import {
   survivalPage, combatPage, inventoryPage, miningPage, excavationPage,
-  woodcuttingPage, farmingPage, explorationPage, sleepPage
+  woodcuttingPage, farmingPage, fishingPage, explorationPage, sleepPage
 } from './pages/gameplay.js';
-import { builderPage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
+import { builderPage, homeBasePage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
 import { activityPage, notificationsPage, tasksPage, logsPage, settingsPage } from './pages/system.js';
 import { icon } from './icons.js';
 import { emptyState, pageHeader } from './ui.js';
@@ -39,6 +39,7 @@ export const NAV_GROUPS = [
       { path: 'excavation', label: 'Excavation', icon: 'shovel' },
       { path: 'woodcutting', label: 'Woodcutting', icon: 'axe' },
       { path: 'farming', label: 'Farming', icon: 'sprout' },
+      { path: 'fishing', label: 'Fishing', icon: 'fish' },
       { path: 'exploration', label: 'Exploration', icon: 'compass' },
       { path: 'sleep', label: 'Sleep', icon: 'bed' }
     ]
@@ -46,6 +47,7 @@ export const NAV_GROUPS = [
   {
     label: 'Construction',
     items: [
+      { path: 'home', label: 'Home Base', icon: 'home' },
       { path: 'builder', label: 'Builder', icon: 'hammer' },
       { path: 'schematics', label: 'Schematic Library', icon: 'book-open' },
       { path: 'projects', label: 'Build Projects', icon: 'folder' },
@@ -100,8 +102,10 @@ export function resolveRoute(hash = location.hash) {
     case 'excavation': return { ...base, page: excavationPage, label: 'Excavation' };
     case 'woodcutting': return { ...base, page: woodcuttingPage, label: 'Woodcutting' };
     case 'farming': return { ...base, page: farmingPage, label: 'Farming' };
+    case 'fishing': return { ...base, page: fishingPage, label: 'Fishing' };
     case 'exploration': return { ...base, page: explorationPage, label: 'Exploration' };
     case 'sleep': return { ...base, page: sleepPage, label: 'Sleep' };
+    case 'home': return { ...base, page: homeBasePage, label: 'Home Base' };
     case 'builder': return { ...base, page: builderPage, label: 'Builder' };
     case 'schematics': return { ...base, page: schematicsPage, label: 'Schematic Library' };
     case 'projects':

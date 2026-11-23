@@ -63,6 +63,7 @@ function statusSnapshot(services) {
     woodcutting: actionStatus.map((a) => a.woodcutting),
     farming: actionStatus.map((a) => a.farming),
     sleep: actionStatus.map((a) => a.sleep),
+    fishing: actionStatus.map((a) => a.fishing),
     exploration: actionStatus.map((a) => a.exploration),
     builder: {
       builds,
@@ -76,7 +77,7 @@ function statusSnapshot(services) {
     },
     homeBase: {
       home: services.runtime ? services.runtime.home : null,
-      builds: builds.filter((b) => String(b.buildId).startsWith('home-') || String(b.name || '').length),
+      builds: builds.filter((b) => String(b.buildId).startsWith('home-')),
       perBot: actionStatus.map((a) => ({ bot: a.bot, ...a.homeBase }))
     },
     taskManager: {

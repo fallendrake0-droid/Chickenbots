@@ -19,6 +19,7 @@ class SleepController {
     this.taskBoard = taskBoard;
     this.logger = logger || new Logger({ level: 'warn' });
     this.reservation = null;
+    this.auto = true;
     this.stats = { sleeps: 0, reservations: 0, denied: 0, bedsPlaced: 0 };
   }
 
@@ -34,11 +35,17 @@ class SleepController {
       time: timeOfDay(this.bot),
       night: isNight(timeOfDay(this.bot)),
       sleeping: Boolean(this.bot.isSleeping),
+      auto: this.auto,
       reservation: this.reservation ? { bed: this.reservation.bed, key: this.reservation.key } : null,
       nearbyBeds: this._statusCache.beds,
       hasBedItem: Boolean(this.bot.hasBed && this.bot.hasBed()),
       stats: { ...this.stats }
     };
+  }
+
+  setAuto(enabled) {
+    this.auto = Boolean(enabled);
+    return { ok: true, bot: this.bot.name, auto: this.auto };
   }
 
   findBeds({ radius = config.survival.bedSearchRadius, limit = 10 } = {}) {
@@ -139,6 +146,7 @@ class SleepController {
   }
 
   async tick() {
+    if (!this.auto) return { ok: true, skipped: true, reason: 'automatic sleep disabled', time: timeOfDay(this.bot) };
     const tod = timeOfDay(this.bot);
     if (!isNight(tod)) {
       if (this.reservation) this.release();

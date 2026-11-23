@@ -60,7 +60,13 @@ class CombatController {
     };
   }
 
+  stop() {
+    this.stopRequested = true;
+    return { ok: true, bot: this.bot.name, stopped: true };
+  }
+
   async defend({ maxAttacks = 12 } = {}) {
+    this.stopRequested = false;
     const assessment = this.assess();
     if (!assessment.threats.length) return { action: 'defend', ok: true, idle: true };
     if (this.bot.health <= config.survival.fleeHealth) {
@@ -72,7 +78,7 @@ class CombatController {
     }
     await this.bot.useShield?.(true);
     const results = [];
-    for (let i = 0; i < maxAttacks; i++) {
+    for (let i = 0; i < maxAttacks && !this.stopRequested; i++) {
       const current = this.assess();
       if (!current.threats.length) break;
       if (this.bot.health <= config.survival.fleeHealth) {
@@ -90,7 +96,7 @@ class CombatController {
       }
     }
     await this.bot.useShield?.(false);
-    return { action: 'defend', ok: true, attacks: results.length, results, remaining: this.assess().threats.length };
+    return { action: 'defend', ok: true, stopped: this.stopRequested, attacks: results.length, results, remaining: this.assess().threats.length };
   }
 
   async retreat(threat) {

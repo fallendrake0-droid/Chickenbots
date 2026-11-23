@@ -18,6 +18,17 @@ const ANIMALS = {
   cow: 'wheat', sheep: 'wheat', pig: 'carrot', chicken: 'wheat_seeds', rabbit: 'carrot', goat: 'wheat', mooshroom: 'wheat'
 };
 const SOIL = new Set(['farmland', 'dirt', 'grass_block', 'coarse_dirt']);
+const CROP_ALIASES = {
+  wheat: 'wheat', carrot: 'carrots', carrots: 'carrots', potato: 'potatoes', potatoes: 'potatoes',
+  beetroot: 'beetroots', beetroots: 'beetroots', pumpkin: 'pumpkin_stem', pumpkins: 'pumpkin_stem',
+  melon: 'melon_stem', melons: 'melon_stem', torchflower: 'torchflower_crop', pitcher: 'pitcher_crop'
+};
+
+function normalizeCrop(value) {
+  if (!value || value === 'all' || value === 'harvest') return null;
+  const key = String(value).toLowerCase();
+  return CROP_ALIASES[key] || (CROPS[key] ? key : null);
+}
 
 /**
  * Crop and animal farming. Mature crops are harvested with real drops and
@@ -33,6 +44,7 @@ class FarmingController {
     this.farmRadius = farmRadius;
     this.stats = { harvested: 0, replanted: 0, animalsFed: 0, farmsScanned: 0 };
     this.farmPlots = [];
+    this.stopRequested = false;
   }
 
   status() {
@@ -50,15 +62,27 @@ class FarmingController {
       seeds: Object.entries(CROPS).map(([crop, def]) => ({ crop, seed: def.seed, count: this.bot.countItem(def.seed) })).filter((s) => s.count > 0),
       animals: this.countAnimals(),
       farms: this.farmPlots.slice(-5),
+      stopped: Boolean(this.stopRequested),
       stats: { ...this.stats }
     };
   }
 
-  scanCrops({ radius = this.farmRadius } = {}) {
+  scanCrops({ radius = this.farmRadius, crop = null } = {}) {
     this.stats.farmsScanned++;
-    return findBlocks(this.bot, Object.keys(CROPS), { radius, limit: 120 })
-      .map((crop) => ({ ...crop, crop: crop.name, distance: Math.round(distance(this.bot.position, crop)) }))
+    const wanted = crop ? [crop] : Object.keys(CROPS);
+    return findBlocks(this.bot, wanted, { radius, limit: 120 })
+      .map((found) => ({ ...found, crop: found.name, distance: Math.round(distance(this.bot.position, found)) }))
       .sort((a, b) => a.distance - b.distance);
+  }
+
+  stop() {
+    this.stopRequested = true;
+    return { ok: true, bot: this.bot.name, stopped: true };
+  }
+
+  _begin() {
+    this.stopRequested = false;
+    return true;
   }
 
   cropCount() { return this.scanCrops().length; }
@@ -105,22 +129,26 @@ class FarmingController {
     return placed;
   }
 
-  async harvestAll({ radius = this.farmRadius, limit = 32 } = {}) {
-    const crops = this.scanCrops({ radius }).slice(0, limit);
-    if (!crops.length) return { ok: true, idle: true, reason: 'no crops nearby' };
+  async harvestAll({ radius = this.farmRadius, limit = 32, crop = null, types = null } = {}) {
+    this._begin();
+    const wanted = normalizeCrop(crop || types);
+    const crops = this.scanCrops({ radius, crop: wanted }).slice(0, limit);
+    if (!crops.length) return { ok: true, idle: true, reason: wanted ? `no ${wanted} crops nearby` : 'no crops nearby', crop: wanted };
     const results = [];
-    for (const crop of crops) {
-      const block = this.bot.getBlock(crop);
+    for (const target of crops) {
+      if (this.stopRequested) break;
+      const block = this.bot.getBlock(target);
       if (!block || !CROPS[block.name]) continue;
-      results.push(await this.harvest(crop));
+      results.push(await this.harvest(target));
     }
-    return { ok: results.some((r) => r.ok), harvested: results.filter((r) => r.ok).length, results };
+    return { ok: results.some((r) => r.ok), stopped: this.stopRequested, harvested: results.filter((r) => r.ok).length, results, crop: wanted };
   }
 
   async feedAnimals({ radius = this.farmRadius, max = 4 } = {}) {
     const animals = (this.bot.entitiesNear ? this.bot.entitiesNear(radius) : []).filter((e) => ANIMALS[e.name || e.type]);
     const fed = [];
     for (const animal of animals.slice(0, max)) {
+      if (this.stopRequested) break;
       const food = ANIMALS[animal.name || animal.type];
       if (!this.bot.countItem(food)) continue;
       if (typeof this.bot.feed !== 'function') break;
@@ -139,4 +167,4 @@ class FarmingController {
   }
 }
 
-module.exports = { FarmingController, CROPS, ANIMALS, SOIL };
+module.exports = { FarmingController, CROPS, ANIMALS, SOIL, CROP_ALIASES, normalizeCrop };

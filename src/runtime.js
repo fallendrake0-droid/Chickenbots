@@ -68,11 +68,25 @@ class TeamRuntime {
     this.connectionErrors = {};
     this.shutdownRequested = false;
     this.idleCounter = 0;
+    this.autonomyArmed = false;
+    this.disconnectedNotified = new Set();
+    this.reconnectTasks = new Map();
+    this.intentionalDisconnects = new Set();
   }
 
-  get autonomyAllowed() {
+  get allBotsReady() {
     if (this.bots.size !== BOT_NAMES.length) return false;
     return [...this.bots.values()].every((bot) => bot.connected && bot.spawned && bot.authenticated !== false);
+  }
+
+  /**
+   * The initial gate requires every bot. After the whole team has been ready
+   * once, the remaining healthy bots keep operating if one drops out.
+   */
+  get autonomyAllowed() {
+    if (this.allBotsReady) return true;
+    if (!this.autonomyArmed) return false;
+    return [...this.bots.values()].some((bot) => bot.connected && bot.spawned && bot.authenticated !== false && bot.health > 0);
   }
 
   async init() {
@@ -180,6 +194,7 @@ class TeamRuntime {
 
   async _tick() {
     if (!this.running || this.paused || this.ticking) return;
+    if (this.allBotsReady) this.autonomyArmed = true;
     if (!this.autonomyAllowed) return;
     this.ticking = true;
     this.ticks++;
@@ -189,15 +204,26 @@ class TeamRuntime {
         const summary = typeof bot.summary === 'function' ? bot.summary() : { name: bot.name };
         this.coordinator.updateBot(bot.name, summary);
         this.ledger.updateBotInventory(bot.name, bot.inventory);
+        if (!bot.ready || bot.connected === false) {
+          if (!this.disconnectedNotified.has(bot.name)) {
+            this.coordinator.setDisconnected(bot.name, 'connection lost');
+            this.disconnectedNotified.add(bot.name);
+          }
+        } else {
+          this.disconnectedNotified.delete(bot.name);
+        }
       }
       this.coordinator.tick();
+      if (!this.simulate && this.shouldConnect && this.ticks % 40 === 0) {
+        this._recoverDisconnected().catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`));
+      }
       for (const actions of this.actions.list()) {
         const bot = actions.bot;
         if (!bot.connected || !bot.spawned || bot.health <= 0) continue;
         await actions.safetyTick();
         const assignment = this.coordinator.getAssignment(bot.name);
         if (assignment) {
-          await actions.step({ coordinator: this.coordinator });
+          await actions.step({ coordinator: this.coordinator, bots: this.bots });
         } else if (this.ticks % 20 === 0) {
           await this._idleWork(actions);
         }
@@ -206,6 +232,28 @@ class TeamRuntime {
       if (home && home.position) this.home = home.position;
     } finally {
       this.ticking = false;
+    }
+  }
+
+  /**
+   * Reconnect one bot at a time in the background. A deliberate dashboard
+   * disconnect is respected until an explicit reconnect clears that intent.
+   */
+  async _recoverDisconnected() {
+    for (const name of BOT_NAMES) {
+      const bot = this.bots.get(name);
+      if (!bot || bot.connected !== false || this.intentionalDisconnects.has(name) || this.reconnectTasks.has(name)) continue;
+      const task = this._connectWithRetry(bot)
+        .then((result) => {
+          if (result && result.ok) this.logger.info(`[${name}] reconnect supervisor restored the bot`);
+          return result;
+        })
+        .catch((err) => {
+          this.connectionErrors[name] = err.message;
+          this.logger.error(`[${name}] reconnect supervisor failed: ${err.message}`);
+        })
+        .finally(() => this.reconnectTasks.delete(name));
+      this.reconnectTasks.set(name, task);
     }
   }
 
@@ -227,6 +275,9 @@ class TeamRuntime {
   async reconnectBot(name) {
     const bot = this.bots.get(name);
     if (!bot) return { ok: false, error: 'unknown bot' };
+    // Hold a supervisor slot for the whole manual reconnect so the background
+    // recovery loop cannot open a second socket at the same time.
+    this.reconnectTasks.set(name, Promise.resolve());
     try {
       if (typeof bot.disconnect === 'function') await bot.disconnect('dashboard reconnect');
       else { bot.connected = false; bot.spawned = false; bot.authenticated = false; }
@@ -244,6 +295,9 @@ class TeamRuntime {
     } catch (err) {
       this.connectionErrors[name] = err.message;
       return { ok: false, error: err.message, bot: this.botState(name) };
+    } finally {
+      this.intentionalDisconnects.delete(name);
+      this.reconnectTasks.delete(name);
     }
   }
 
@@ -251,6 +305,7 @@ class TeamRuntime {
   async disconnectBot(name, reason = 'dashboard') {
     const bot = this.bots.get(name);
     if (!bot) return { ok: false, error: 'unknown bot' };
+    this.intentionalDisconnects.add(name);
     try {
       if (typeof bot.disconnect === 'function') await bot.disconnect(reason);
       else { bot.connected = false; bot.spawned = false; bot.authenticated = false; }
@@ -280,7 +335,7 @@ class TeamRuntime {
   }
 
   resume() {
-    if (!this.autonomyAllowed) return { ok: false, error: 'cannot resume autonomy before all five bots are ready' };
+    if (!this.autonomyAllowed) return { ok: false, error: 'no ready bots; the five-bot connection gate is still closed' };
     this.paused = false;
     return { ok: true, paused: false, tick: this.ticks };
   }
@@ -291,6 +346,8 @@ class TeamRuntime {
       running: this.running,
       paused: this.paused,
       autonomyAllowed: this.autonomyAllowed,
+      allBotsReady: this.allBotsReady,
+      autonomyArmed: this.autonomyArmed,
       ticks: this.ticks,
       uptimeMs: this.startedAt ? Date.now() - this.startedAt : 0,
       home: this.home,

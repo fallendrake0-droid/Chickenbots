@@ -62,7 +62,7 @@ function consistency() {
   });
   check('dashboard exposes every navigation page', () => {
     const js = fs.readFileSync(path.join(ROOT, 'src/dashboard/public/js/router.js'), 'utf8');
-    const pages = ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Exploration', 'Sleep', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings'];
+    const pages = ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Fishing', 'Exploration', 'Sleep', 'Home Base', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings'];
     const missing = pages.filter((page) => !js.includes(page));
     return { ok: missing.length === 0, detail: missing.length ? missing.join(', ') : `${pages.length}/${pages.length}` };
   });

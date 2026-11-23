@@ -36,6 +36,7 @@ const paths = {
   hammer: '<path d="m15 12-8.4 8.4a2.1 2.1 0 1 1-3-3L12 9"/><path d="M17.6 3.4a2 2 0 0 1 3 3L17 10l-3-3Z"/><path d="m14 7 3 3"/>',
   heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8Z"/>',
   home: '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 21V12h6v9"/>',
+  fish: '<path d="M2 12s3.5-6 10-6c4.2 0 7 3 7 6s-2.8 6-7 6c-6.5 0-10-6-10-6Z"/><path d="M19 9l3-3v12l-3-3"/><circle cx="7" cy="11" r="1"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   layers: '<path d="m12 2 9 5-9 5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
   layout: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M9 9h12"/>',

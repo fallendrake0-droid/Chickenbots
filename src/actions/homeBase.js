@@ -75,7 +75,7 @@ class HomeBaseManager {
 
   status() {
     return {
-      home: this.home,
+      home: this.home && this.home.position ? this.home.position : this.home,
       design: this.builder ? { id: this.builder.schematic.id, name: this.builder.schematic.name } : null,
       build: this.builder ? this.builder.status() : null,
       availableDesigns: this.library.loaded ? this.library.count : 0,

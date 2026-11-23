@@ -12,7 +12,7 @@ const {
  * unchanged against a real Mineflayer connection (RealBot).
  *
  * Required primitives: getBlock, digBlock, goTo, placeBlock, attack, consume,
- * equipBestTool, sleep, openContainer, and the synchronous state fields.
+ * equipBestTool, sleep, fish, openContainer, and the synchronous state fields.
  */
 class BotAdapter {
   constructor({ name, world = null, logger = null, speed = 1 }) {

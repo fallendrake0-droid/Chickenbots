@@ -418,6 +418,38 @@ class RealBot extends BotAdapter {
     return { ok: true, position: { ...pos }, item: itemName };
   }
 
+  async fish({ timeoutMs = 20000 } = {}) {
+    const check = this._assertReady();
+    if (check) return check;
+    const rod = this._findItem('fishing_rod');
+    if (!rod) return { ok: false, error: 'no fishing_rod in inventory' };
+    const mcData = require('minecraft-data')(this.bot.version);
+    const waterIds = [mcData.blocksByName.water && mcData.blocksByName.water.id, mcData.blocksByName.flowing_water && mcData.blocksByName.flowing_water.id].filter((id) => id !== undefined && id !== null);
+    const water = this.bot.findBlock({ matching: waterIds, maxDistance: 16 });
+    if (!water) return { ok: false, error: 'no water within fishing range' };
+    const before = { ...this.inventory };
+    try {
+      const move = await this.goTo({ x: water.position.x, y: water.position.y + 1, z: water.position.z }, { range: 3, timeoutMs: Math.min(timeoutMs, 15000) });
+      if (move.ok === false) return { ok: false, error: move.error || 'cannot reach the shore' };
+      await this.bot.equip(rod, 'hand');
+      await Promise.race([
+        this.bot.fish(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('fishing timed out')), timeoutMs))
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      this._syncInventory();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const items = [];
+    for (const [name, count] of Object.entries(this.inventory)) {
+      const gained = count - (before[name] || 0);
+      if (gained > 0) items.push({ name, count: gained });
+    }
+    if (!items.length) return { ok: false, error: 'no catch appeared in inventory' };
+    return { ok: true, items, water: { x: water.position.x, y: water.position.y, z: water.position.z } };
+  }
+
   async attack(entity) {
     const check = this._assertReady();
     if (check) return check;

@@ -87,7 +87,32 @@ class TeamCoordinator {
   onLeaderChanged(fn) { this.leaderChangedListeners.push(fn); return () => { this.leaderChangedListeners = this.leaderChangedListeners.filter((f) => f !== fn); }; }
 
   enable() { this.enabled = true; return this; }
-  disable() { this.enabled = false; return this; }
+
+  disable() {
+    this.enabled = false;
+    // Stop issuing work and release active claims so the board stays reusable.
+    for (const [name, assignment] of [...this.assignments]) {
+      const task = this.board.getTask(assignment.taskId);
+      if (task && ['CLAIMED', 'ACTIVE'].includes(task.status)) {
+        this.board.release(task.id, name, 'team coordination disabled');
+        this.comms.send('TASK_RELEASED', name, { taskId: task.id, reason: 'team coordination disabled' });
+      }
+      this.assignments.delete(name);
+      this.roles.set(name, 'IDLE');
+    }
+    this.comms.send('TEAM_DISABLED', 'system', { at: this.now() });
+    return this;
+  }
+
+  setEnabled(enabled) {
+    if (enabled) {
+      this.enable();
+      this.comms.send('TEAM_ENABLED', 'system', { at: this.now() });
+    } else {
+      this.disable();
+    }
+    return { ok: true, enabled: this.enabled, leader: this.leader, formation: this.formation };
+  }
 
   setExtras(fn) { this.extrasFn = fn; }
 

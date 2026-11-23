@@ -8,6 +8,7 @@ const FORMATIONS = {
   DEFENSIVE: { spacing: 3, radius: 4, roles: ['lead', 'guard', 'guard', 'guard', 'support'] },
   EXPLORATION: { spacing: 4, radius: 6, roles: ['lead', 'scout', 'scout', 'scout', 'scout'] },
   MINING: { spacing: 2, radius: 0, roles: ['lead', 'miner', 'miner', 'guard', 'supply'] },
+  FISHING: { spacing: 3, radius: 4, roles: ['lead', 'fisher', 'fisher', 'guard', 'supply'] },
   BUILDING: { spacing: 3.5, radius: 5, roles: ['lead', 'builder', 'builder', 'builder', 'supply'] },
   RETREAT: { spacing: 2, radius: 0, roles: ['lead', 'guard', 'guard', 'medic', 'guard'] },
   REGROUP: { spacing: 1.5, radius: 1.5, roles: ['lead', 'follow', 'follow', 'follow', 'follow'] }
@@ -136,6 +137,7 @@ function formationForTask(type) {
     case 'RETREAT': return 'RETREAT';
     case 'REGROUP': return 'REGROUP';
     case 'MINE_ORE': case 'MINE_BLOCK': return 'MINING';
+    case 'FISH': return 'FISHING';
     default: return 'FOLLOW';
   }
 }

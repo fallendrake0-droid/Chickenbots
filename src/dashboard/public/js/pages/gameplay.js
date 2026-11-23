@@ -9,6 +9,12 @@ function perBot(key) {
   return (state.snapshot && state.snapshot[key]) || [];
 }
 
+function bedText(bed) {
+  if (!bed) return '—';
+  if (typeof bed === 'object') return `${bed.x}, ${bed.y}, ${bed.z}`;
+  return String(bed);
+}
+
 function botLinks(current, base) {
   return `<div class="chips">${botNames().map((name) => `<a class="chip${name === current ? ' is-active' : ''}" href="#/${base}/${encodeURIComponent(name)}">${esc(name)}</a>`).join('')}</div>`;
 }
@@ -620,6 +626,80 @@ function boundsText(bounds) {
   return JSON.stringify(bounds);
 }
 
+export const fishingPage = {
+  title: 'Fishing',
+  render() {
+    const rows = perBot('fishing');
+    const caught = (row) => sum(Object.values(row.caught || {}), (count) => Number(count) || 0);
+    const totalCaught = sum(rows, caught);
+    const casts = sum(rows, (row) => (row.stats && row.stats.casts) || 0);
+    const failed = sum(rows, (row) => (row.stats && row.stats.failed) || 0);
+    return `
+      <div class="page">
+        ${pageHeader({
+          eyebrow: 'Gameplay', title: 'Fishing',
+          description: 'Rod and water checks, casts and real catch counts. A cast is only counted as a catch when the fish appears in the live inventory.',
+          actions: `<button class="button button--primary" type="button" data-command="fish all 1">${icon('fish')} Fish all</button><button class="button" type="button" data-command="fish stop all">${icon('square')} Stop all</button>`
+        })}
+        <div class="grid grid--stats">
+          ${statCard({ label: 'Fish caught', value: num(totalCaught), iconName: 'fish', tone: totalCaught ? 'success' : 'neutral', context: 'Inventory-confirmed catches' })}
+          ${statCard({ label: 'Casts', value: num(casts), iconName: 'target', tone: 'accent', context: 'Lifetime cast attempts' })}
+          ${statCard({ label: 'Empty casts', value: num(failed), iconName: 'alert', tone: failed ? 'warning' : 'neutral', context: 'No catch, no water or no rod' })}
+          ${statCard({ label: 'Rods ready', value: `${rows.filter((row) => row.rod).length}<small> / ${rows.length || 5}</small>`, iconName: 'package', tone: rows.some((row) => row.rod) ? 'info' : 'warning', context: 'Bots holding a fishing rod' })}
+        </div>
+        <section class="card">
+          <div class="card-header"><div class="card-title">${icon('fish')} Shore status</div><span class="tiny muted">${rows.length} bots</span></div>
+          <div class="card-body">
+            <form data-fish-form class="row gap-2" style="align-items:flex-end;flex-wrap:wrap">
+              <div class="field"><label class="field-label" for="fish-bot">Bot</label><select class="select" id="fish-bot">${botNames().map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div>
+              <div class="field"><label class="field-label" for="fish-casts">Casts</label><input class="input" id="fish-casts" type="number" min="1" max="3" value="1"></div>
+              <button class="button button--primary" type="submit">${icon('fish')} Cast</button>
+            </form>
+            <div class="divider"></div>
+            <div class="table-wrap"><table class="table">
+              <thead><tr><th>Bot</th><th>Rod</th><th>Water blocks</th><th>Nearest water</th><th>Casts</th><th>Caught</th><th>Fish</th><th>State</th><th>Actions</th></tr></thead>
+              <tbody>${rows.length ? rows.map((row) => {
+                const fish = Object.entries(row.caught || {});
+                return `<tr>
+                  <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}">${esc(row.bot)}</a></td>
+                  <td>${row.rod ? badge('HELD', 'ok') : badge('MISSING', 'warn')}</td>
+                  <td class="mono">${num(row.water)}</td>
+                  <td class="mono tiny">${row.nearestWater ? `${row.nearestWater.x}, ${row.nearestWater.y}, ${row.nearestWater.z}${row.nearestWater.distance !== undefined ? ` · ${row.nearestWater.distance} m` : ''}` : '—'}</td>
+                  <td class="mono">${num(row.stats && row.stats.casts)}</td>
+                  <td class="mono">${num(caught(row))}</td>
+                  <td class="tiny">${fish.length ? fish.map(([name, count]) => `${esc(humanize(name))} ${num(count)}`).join(' · ') : '—'}</td>
+                  <td>${row.stopped ? badge('STOPPED', 'warn') : row.water ? badge('READY', 'ok') : badge('NO WATER', 'neutral')}</td>
+                  <td><div class="row gap-1">${actionButton('Fish', `fish ${row.bot} 1`, 'fish')}${actionButton('Stop', `fish stop ${row.bot}`, 'square', { danger: true, confirmTitle: 'Stop fishing', confirmMessage: `Stop fishing for ${row.bot}?` })}</div></td>
+                </tr>`;
+              }).join('') : `<tr><td colspan="9">${emptyState('No fishing status', 'The fishing action has not reported yet.', 'fish')}</td></tr>`}</tbody>
+            </table></div>
+          </div>
+        </section>
+        <div class="callout callout--info">${icon('info')}<div>Fishing requires a fishing rod and water in range. If either is missing the action reports the exact precondition instead of counting a catch.</div></div>
+      </div>`;
+  },
+  mount(root) {
+    const form = root.querySelector('[data-fish-form]');
+    if (!form) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const bot = form.querySelector('#fish-bot').value;
+      const casts = clamp(Number(form.querySelector('#fish-casts').value) || 1, 1, 3);
+      const button = form.querySelector('button[type="submit"]');
+      setButtonLoading(button, true);
+      try {
+        const result = await runCommand(`fish ${bot} ${casts}`);
+        const message = resultMessage(result);
+        toast({ type: message.type, title: message.title, message: message.message });
+      } catch (err) {
+        toast({ type: 'error', title: 'Fishing failed', message: err.message, duration: 7000 });
+      } finally {
+        setButtonLoading(button, false);
+      }
+    });
+  }
+};
+
 export const woodcuttingPage = {
   title: 'Woodcutting',
   render() {
@@ -801,30 +881,32 @@ export const sleepPage = {
     return `
       <div class="page">
         ${pageHeader({
-          eyebrow: 'Gameplay', title: 'Sleep', description: 'Bed reservations, world time and night state. Bots only attempt sleep when conditions allow.',
-          actions: `<button class="button button--primary" type="button" data-fleet-command="sleep">${icon('bed')} Sleep now</button>`
+          eyebrow: 'Gameplay', title: 'Sleep', description: 'Automatic night sleep, bed reservations, world time and night state. Bots only attempt sleep when conditions allow.',
+          actions: `<button class="button button--primary" type="button" data-fleet-command="sleep">${icon('bed')} Sleep now</button><button class="button" type="button" data-command="sleep auto on">${icon('moon')} Auto on</button><button class="button" type="button" data-command="sleep auto off">${icon('square')} Auto off</button>`
         })}
         <div class="grid grid--stats">
           ${statCard({ label: 'Sleeping', value: `${sleeping.length}<small> / ${rows.length}</small>`, iconName: 'moon', tone: sleeping.length ? 'info' : 'neutral', context: sleeping.length ? sleeping.map((row) => row.bot).join(', ') : 'No bot is asleep' })}
           ${statCard({ label: 'Night', value: rows.some((row) => row.night) ? 'Yes' : 'No', iconName: 'moon', tone: rows.some((row) => row.night) ? 'info' : 'neutral', context: rows.length ? `World time ${num(rows[0].time)}` : 'No time reported' })}
           ${statCard({ label: 'Nearby beds', value: num(sum(rows, (row) => (row.nearbyBeds || []).length)), iconName: 'bed', tone: 'neutral', context: 'Detected within scan range' })}
           ${statCard({ label: 'Reservations', value: num(rows.filter((row) => row.reservation).length), iconName: 'lock', tone: 'accent', context: 'Beds locked by the sleep manager' })}
+          ${statCard({ label: 'Auto sleep', value: rows.length && rows.every((row) => row.auto !== false) ? 'Enabled' : 'Mixed', iconName: 'moon', tone: rows.length && rows.every((row) => row.auto !== false) ? 'success' : 'warning', context: 'Automatic night routine per bot' })}
         </div>
         <section class="card">
           <div class="card-header"><div class="card-title">${icon('bed')} Sleep status</div></div>
           <div class="table-wrap"><table class="table">
-            <thead><tr><th>Bot</th><th>World time</th><th>Night</th><th>Sleeping</th><th>Reservation</th><th>Nearby beds</th><th>Bed item</th><th>Counters</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Bot</th><th>World time</th><th>Night</th><th>Auto</th><th>Sleeping</th><th>Reservation</th><th>Nearby beds</th><th>Bed item</th><th>Counters</th><th>Actions</th></tr></thead>
             <tbody>${rows.length ? rows.map((row) => `<tr>
               <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}/navigation">${esc(row.bot)}</a></td>
               <td class="mono">${num(row.time)}</td>
               <td>${row.night ? badge('Night', 'info') : badge('Day', 'neutral')}</td>
+              <td>${row.auto !== false ? badge('On', 'ok') : badge('Off', 'warn')}</td>
               <td>${row.sleeping ? badge('Sleeping', 'accent', { dot: true }) : badge('Awake', 'neutral')}</td>
-              <td class="tiny">${esc(row.reservation ? (row.reservation.bed || row.reservation.bedId || row.reservation.id || 'reserved') : '—')}</td>
+              <td class="tiny mono">${esc(row.reservation ? bedText(row.reservation.bed || row.reservation.bedId || row.reservation.id) : '—')}</td>
               <td class="mono">${num((row.nearbyBeds || []).length)}</td>
               <td>${row.hasBedItem ? badge('Yes', 'ok') : badge('No', 'neutral')}</td>
               <td class="tiny">${Object.entries(row.stats || {}).slice(0, 3).map(([key, value]) => `${esc(humanize(key))} ${num(value)}`).join(' · ') || '—'}</td>
-              <td>${actionButton('Sleep', `sleep ${row.bot}`, 'bed')}</td>
-            </tr>`).join('') : `<tr><td colspan="9">${emptyState('No sleep status', 'The sleep action has not reported yet.', 'bed')}</td></tr>`}</tbody>
+              <td><div class="row gap-1">${actionButton('Sleep', `sleep ${row.bot}`, 'bed')}${actionButton(row.auto !== false ? 'Auto off' : 'Auto on', `sleep ${row.bot} auto ${row.auto !== false ? 'off' : 'on'}`, 'moon')}</div></td>
+            </tr>`).join('') : `<tr><td colspan="10">${emptyState('No sleep status', 'The sleep action has not reported yet.', 'bed')}</td></tr>`}</tbody>
           </table></div>
         </section>
         <div class="grid grid--2" style="margin-top:16px">
@@ -837,7 +919,7 @@ export const sleepPage = {
           <section class="card">
             <div class="card-header"><div class="card-title">${icon('shield')} Behaviour</div></div>
             <div class="card-body">
-              <div class="callout callout--info">${icon('info')}<div>Bots reserve a bed before sleeping to avoid two bots claiming the same one. Sleep is only attempted at night or during thunderstorms; otherwise the action reports “not night”.</div></div>
+              <div class="callout callout--info">${icon('info')}<div>Bots reserve a bed before sleeping to avoid two bots claiming the same one. Sleep is only attempted at night or during thunderstorms; otherwise the action reports “not night”. Turning auto off suppresses the routine without disabling a deliberate manual sleep.</div></div>
               ${kvRows([['Sleeps', num(sum(rows, (row) => (row.stats && row.stats.sleeps) || 0))], ['Reservations', num(sum(rows, (row) => (row.stats && row.stats.reservations) || 0))], ['Denied attempts', num(sum(rows, (row) => (row.stats && row.stats.denied) || 0))], ['Beds placed', num(sum(rows, (row) => (row.stats && row.stats.bedsPlaced) || 0))]])}
             </div>
           </section>

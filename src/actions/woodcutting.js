@@ -10,6 +10,19 @@ const SAPLING_FOR = {
   cherry_log: 'cherry_sapling', mangrove_log: 'mangrove_propagule', pale_oak_log: 'pale_oak_sapling'
 };
 const SAPLINGS = new Set(Object.values(SAPLING_FOR));
+const LOG_TYPES = Object.keys(SAPLING_FOR);
+const TYPE_ALIASES = {
+  oak: 'oak_log', birch: 'birch_log', spruce: 'spruce_log', jungle: 'jungle_log',
+  acacia: 'acacia_log', dark_oak: 'dark_oak_log', dark: 'dark_oak_log',
+  cherry: 'cherry_log', mangrove: 'mangrove_log', pale_oak: 'pale_oak_log'
+};
+
+function normalizeLogTypes(value) {
+  if (value === undefined || value === null || value === '' || value === 'wood' || value === 'any') return LOG_TYPES.slice();
+  const list = Array.isArray(value) ? value : String(value).split(/[\s,]+/).filter(Boolean);
+  const resolved = list.map((entry) => TYPE_ALIASES[String(entry).toLowerCase()] || (LOG_TYPES.includes(entry) ? entry : null)).filter(Boolean);
+  return resolved.length ? [...new Set(resolved)] : LOG_TYPES.slice();
+}
 
 /**
  * Tree harvesting with replanting. Chop from the top down (so the trunk drops
@@ -26,6 +39,7 @@ class WoodcuttingController {
     this.reserveTarget = reserveTarget;
     this.stats = { treesChopped: 0, logsCollected: 0, replanted: 0, saplingsCollected: 0, leavesCleared: 0 };
     this.replanted = [];
+    this.stopRequested = false;
   }
 
   status() {
@@ -35,14 +49,25 @@ class WoodcuttingController {
       logs: Object.entries(this.bot.inventory).filter(([n]) => LOG_PATTERN.test(n)).reduce((s, [, c]) => s + c, 0),
       saplings: [...SAPLINGS].reduce((s, n) => s + (this.bot.countItem(n) || 0), 0),
       reserveTarget: this.reserveTarget,
+      stopped: Boolean(this.stopRequested),
       treesChopped: this.stats.treesChopped,
       replanted: this.replanted.slice(-10),
       stats: { ...this.stats }
     };
   }
 
-  findTrees({ radius = 24, limit = 10 } = {}) {
-    const logs = findBlocks(this.bot, ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'cherry_log', 'mangrove_log', 'pale_oak_log'], { radius, limit: 200 });
+  stop() {
+    this.stopRequested = true;
+    return { ok: true, bot: this.bot.name, stopped: true };
+  }
+
+  _begin() {
+    this.stopRequested = false;
+    return true;
+  }
+
+  findTrees({ radius = 24, limit = 10, types = null } = {}) {
+    const logs = findBlocks(this.bot, normalizeLogTypes(types), { radius, limit: 200 });
     const groups = [];
     for (const log of logs) {
       let group = groups.find((g) => Math.abs(g.base.x - log.x) <= 1 && Math.abs(g.base.z - log.z) <= 1 && Math.abs(g.base.y - log.y) <= 24);
@@ -70,6 +95,7 @@ class WoodcuttingController {
     if (!logs.length) return { ok: false, error: 'no trunk found' };
     let chopped = 0;
     for (const log of logs.slice().reverse()) {
+      if (this.stopRequested) break;
       const move = await this.bot.goTo(log, { range: 4 });
       if (move && move.ok === false) break;
       const dig = await this.bot.digBlock(log);
@@ -82,7 +108,7 @@ class WoodcuttingController {
       for (const [dx, dy, dz] of [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
         const pos = { x: top.x + dx, y: top.y + dy, z: top.z + dz };
         const block = this.bot.getBlock(pos);
-        if (block && /_leaves$/.test(block.name)) {
+        if (block && /_leaves$/.test(block.name) && !this.stopRequested) {
           const move = await this.bot.goTo(pos, { range: 4 });
           if (move && move.ok === false) continue;
           const dig = await this.bot.digBlock(pos);
@@ -129,16 +155,18 @@ class WoodcuttingController {
     return placed;
   }
 
-  async tick({ radius = 24, maxTrees = 2 } = {}) {
-    const trees = this.findTrees({ radius, limit: maxTrees });
+  async tick({ radius = 24, maxTrees = 2, types = null } = {}) {
+    this._begin();
+    const trees = this.findTrees({ radius, limit: maxTrees, types });
     if (!trees.length) return { ok: true, idle: true, reason: 'no trees nearby', status: this.status() };
     const results = [];
     for (const tree of trees) {
+      if (this.stopRequested) break;
       results.push(await this.chopTree(tree.base));
       if (this.bot.health <= 8) break;
     }
-    return { ok: results.some((r) => r.ok), results, status: this.status() };
+    return { ok: results.some((r) => r.ok), stopped: this.stopRequested, results, status: this.status() };
   }
 }
 
-module.exports = { WoodcuttingController, SAPLING_FOR, SAPLINGS, LOG_PATTERN };
+module.exports = { WoodcuttingController, SAPLING_FOR, SAPLINGS, LOG_PATTERN, LOG_TYPES, normalizeLogTypes };

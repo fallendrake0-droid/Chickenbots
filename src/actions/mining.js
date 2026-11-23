@@ -37,6 +37,7 @@ class MiningController {
     this.logger = logger || new Logger({ level: 'warn' });
     this.stats = { oresMined: 0, blocksDug: 0, hazardsAvoided: 0, torchesPlaced: 0, tunnels: 0 };
     this.mined = {};
+    this.stopRequested = false;
   }
 
   status() {
@@ -45,9 +46,20 @@ class MiningController {
       position: { ...this.bot.position },
       pickaxe: this.bot.bestToolFor('pickaxe'),
       oresMined: { ...this.mined },
+      stopped: Boolean(this.stopRequested),
       stats: { ...this.stats },
       nearbyOres: this.findOres({ radius: 12, limit: 8 }).map((o) => ({ name: o.name, position: { x: o.x, y: o.y, z: o.z }, distance: Math.round(distance(this.bot.position, o)) }))
     };
+  }
+
+  stop() {
+    this.stopRequested = true;
+    return { ok: true, bot: this.bot.name, stopped: true };
+  }
+
+  _begin() {
+    this.stopRequested = false;
+    return true;
   }
 
   findOres({ radius = config.mining.maxSearchRadius, limit = 32, near = this.bot.position } = {}) {
@@ -122,12 +134,14 @@ class MiningController {
 
   /** Mine a specific block type (stone, cobblestone, deepslate) with the same safety rules. */
   async mineBlocks({ block: blockName = 'stone', radius = 24, limit = 16 } = {}) {
+    this._begin();
     const names = [blockName, blockName === 'stone' ? 'deepslate' : null].filter(Boolean);
     const targets = findBlocks(this.bot, names, { near: this.bot.position, radius, limit })
       .map((b) => ({ ...b, distance: distance(this.bot.position, b) }))
       .sort((a, b) => a.distance - b.distance);
     const results = [];
     for (const target of targets) {
+      if (this.stopRequested) break;
       const block = this.bot.getBlock(target);
       if (!block || block.name === 'air') continue;
       const safety = this.checkSafety(target);
@@ -155,13 +169,13 @@ class MiningController {
       this.stats.blocksDug++;
       if (typeof this.bot.collectDrops === 'function') await this.bot.collectDrops(4);
       results.push({ ok: true, block: block.name, position: { x: target.x, y: target.y, z: target.z } });
-      if (this.bot.health <= config.mining.retreatHealth) break;
+      if (this.bot.health <= config.mining.retreatHealth || this.stopRequested) break;
     }
     let mined = results.filter((r) => r.ok).length;
     if (!mined) {
       // No reachable exposed block: sink a safe vertical access shaft and take
       // the requested block from below the bot (the same thing a player does).
-      for (let depth = 0; depth < 8 && mined < limit; depth++) {
+      for (let depth = 0; depth < 8 && mined < limit && !this.stopRequested; depth++) {
         const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
         const block = this.bot.getBlock(below);
         if (!block || block.name === 'air') {
@@ -194,9 +208,11 @@ class MiningController {
 
   /** Mine every safe ore in range, best-first by distance. */
   async mineNearby({ radius = 24, limit = 16 } = {}) {
+    this._begin();
     const ores = this.findOres({ radius, limit });
     const results = [];
     for (const ore of ores) {
+      if (this.stopRequested) break;
       const result = await this.mineOre({ x: ore.x, y: ore.y, z: ore.z });
       results.push(result);
       if (this.bot.health <= config.mining.retreatHealth) break;
@@ -211,11 +227,12 @@ class MiningController {
 
   /** Ore search that can sink a safe shaft when no ore is reachable from the surface. */
   async mineOresDeep({ radius = 48, limit = 6, maxDepth = 48 } = {}) {
+    this._begin();
     const shallow = await this.mineNearby({ radius, limit });
-    if (shallow.mined > 0) return shallow;
+    if (shallow.mined > 0 || this.stopRequested) return shallow;
     const results = [];
     let mined = 0;
-    for (let depth = 0; depth < maxDepth && mined < limit; depth++) {
+    for (let depth = 0; depth < maxDepth && mined < limit && !this.stopRequested; depth++) {
       const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
       const block = this.bot.getBlock(below);
       if (!block || block.name === 'air') {
@@ -250,11 +267,12 @@ class MiningController {
 
   /** A 1x2 branch tunnel with torches, stopping at hazards. */
   async branchMine({ length = 16, axis = 'x', direction = 1, torchEvery = config.mining.torchInterval } = {}) {
+    this._begin();
     const start = { ...this.bot.position };
     let mined = 0;
     let placed = 0;
     let stopped = null;
-    for (let step = 1; step <= length; step++) {
+    for (let step = 1; step <= length && !this.stopRequested; step++) {
       const feet = { x: Math.floor(start.x) + (axis === 'x' ? step * direction : 0), y: Math.floor(start.y), z: Math.floor(start.z) + (axis === 'z' ? step * direction : 0) };
       const head = { ...feet, y: feet.y + 1 };
       for (const pos of [feet, head]) {

@@ -5,6 +5,12 @@ const { distance } = require('../util/vec');
 const { isNight, timeOfDay, findBlocks } = require('./common');
 
 const STRUCTURE_BLOCKS = ['oak_planks', 'cobblestone', 'stone_bricks', 'glass', 'bookshelf', 'crafting_table', 'chest', 'furnace', 'torch'];
+const CLUE_BLOCKS = {
+  village: ['bell', 'composter', 'hay_block', 'white_bed', 'farmland', 'bookshelf', 'cartography_table', 'fletching_table', 'smithing_table', 'stonecutter', 'loom', 'barrel'],
+  mineshaft: ['rail', 'detector_rail', 'powered_rail', 'oak_fence', 'cobweb', 'dark_oak_planks', 'chest'],
+  temple: ['chiseled_stone_bricks', 'mossy_cobblestone', 'stone_bricks', 'dispenser'],
+  ruin: ['mossy_cobblestone', 'cracked_stone_bricks', 'chiseled_stone_bricks', 'gravel']
+};
 
 /**
  * Deterministic spiral exploration. Waypoints are derived from the home point
@@ -23,6 +29,7 @@ class ExplorationController {
     this.waypointIndex = teamIndex;
     this.discoveries = [];
     this.stats = { waypoints: 0, distance: 0, discoveries: 0, nightReturns: 0 };
+    this.stopRequested = false;
   }
 
   status() {
@@ -33,6 +40,7 @@ class ExplorationController {
       waypointIndex: this.waypointIndex,
       discoveries: this.discoveries.slice(-10),
       night: isNight(timeOfDay(this.bot)),
+      stopped: Boolean(this.stopRequested),
       stats: { ...this.stats }
     };
   }
@@ -73,9 +81,56 @@ class ExplorationController {
     return found;
   }
 
+  /**
+   * Look for block-level evidence of a structure in the loaded area. This is
+   * deliberately labelled evidence, not a claim that a complete village or
+   * mineshaft exists outside the scanned radius.
+   */
+  findClue(kind, { radius = 32 } = {}) {
+    const target = String(kind || '').toLowerCase();
+    const spec = CLUE_BLOCKS[target];
+    if (!spec) return { ok: false, error: `unknown structure clue '${kind}'; available: ${Object.keys(CLUE_BLOCKS).join(', ')}` };
+    const blocks = findBlocks(this.bot, spec, { radius, limit: 80 });
+    if (blocks.length < 3) {
+      return { ok: true, found: false, kind: target, evidence: blocks.length, blocks: blocks.slice(0, 10), radius };
+    }
+    const position = {
+      x: Math.round(blocks.reduce((sum, block) => sum + block.x, 0) / blocks.length),
+      y: Math.round(blocks.reduce((sum, block) => sum + block.y, 0) / blocks.length),
+      z: Math.round(blocks.reduce((sum, block) => sum + block.z, 0) / blocks.length)
+    };
+    const confidence = Math.min(0.95, Number((0.35 + blocks.length * 0.08).toFixed(2)));
+    const discovery = {
+      kind: target,
+      position,
+      evidence: blocks.length,
+      blocks: [...new Set(blocks.map((block) => block.name))],
+      confidence,
+      radius,
+      note: 'Block evidence found in the loaded area; the full structure may extend beyond the scan.'
+    };
+    if (this.memory) {
+      this.memory.observe({
+        type: target === 'village' ? 'VILLAGE' : 'STRUCTURE',
+        resource: target,
+        position,
+        reportedBy: this.bot.name,
+        confidence,
+        data: { evidence: discovery.evidence, blocks: discovery.blocks, radius }
+      });
+    }
+    return { ok: true, found: true, ...discovery };
+  }
+
+  stop() {
+    this.stopRequested = true;
+    return { ok: true, bot: this.bot.name, stopped: true };
+  }
+
   async explore({ steps = 4, scanRadius = 12 } = {}) {
+    this.stopRequested = false;
     const results = [];
-    for (let i = 0; i < steps; i++) {
+    for (let i = 0; i < steps && !this.stopRequested; i++) {
       const waypoint = this.nextWaypoint();
       const clamped = {
         x: Math.max(this.home.x - this.radius, Math.min(this.home.x + this.radius, waypoint.x)),
@@ -104,7 +159,7 @@ class ExplorationController {
       }
       results.push({ waypoint: clamped, ok: true, discoveries: discoveries.length, position: { ...this.bot.position } });
     }
-    return { ok: results.some((r) => r.ok), results, discoveries: this.discoveries.slice(-10), status: this.status() };
+    return { ok: results.some((r) => r.ok), stopped: this.stopRequested, results, discoveries: this.discoveries.slice(-10), status: this.status() };
   }
 
   async tick(options = {}) {

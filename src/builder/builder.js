@@ -57,6 +57,7 @@ class SchematicBuilder {
     this.startedAt = null;
     this.state = 'READY';
     this.cancelled = false;
+    this.paused = false;
     this.events = [];
     this.stats = { placed: 0, cleared: 0, skipped: 0, transferred: 0, failedPlacements: 0 };
   }
@@ -319,6 +320,7 @@ class SchematicBuilder {
       t.taskId = res.task.id;
     }
     this.startedAt = Date.now();
+    this.paused = false;
     this.state = 'RUNNING';
     this._event('build.started', { buildId: this.id, tasks: tasks.length });
     if (this.memory) {
@@ -328,7 +330,7 @@ class SchematicBuilder {
   }
 
   nextTask() {
-    if (!this.taskBoard) return null;
+    if (!this.taskBoard || this.paused) return null;
     for (const t of this.tasks) {
       const task = this.taskBoard.getTask(t.taskId || t.id);
       if (!task) continue;
@@ -354,6 +356,7 @@ class SchematicBuilder {
    * calls taskBoard.complete(..., {verified:true}) when every block is real.
    */
   async executeTask(bot, taskId) {
+    if (this.paused) return { ok: true, paused: true, verified: false };
     if (!bot) return { ok: false, error: 'no bot' };
     if (!this.taskBoard) return { ok: false, error: 'builder requires a task board' };
     const task = this.taskBoard.getTask(taskId);
@@ -474,7 +477,7 @@ class SchematicBuilder {
     let iterations = 0;
     const results = [];
     while (iterations < maxIterations) {
-      if (this.cancelled) break;
+      if (this.cancelled || this.paused) break;
       const next = this.nextTask();
       if (!next) break;
       const bot = this.selectBot(next.task) || this.bots[iterations % Math.max(1, this.bots.length)];
@@ -535,6 +538,7 @@ class SchematicBuilder {
     const total = analysis.toPlace;
     const percent = total ? Math.round((placedBlocks / total) * 1000) / 10 : 100;
     let state = this.state;
+    if (this.paused && state === 'RUNNING') state = 'PAUSED';
     if (state === 'RUNNING') {
       if (taskStats.COMPLETED === taskStats.total && taskStats.total > 0) state = 'COMPLETE';
       else if (taskStats.FAILED > 0) state = 'FAILED';
@@ -563,6 +567,22 @@ class SchematicBuilder {
       stats: { ...this.stats },
       recentEvents: this.events.slice(-12)
     };
+  }
+
+  pause(reason = 'paused by operator') {
+    if (this.state !== 'RUNNING') return { ok: false, error: `cannot pause a ${this.state} build` };
+    this.paused = true;
+    this._event('build.paused', { reason });
+    return { ok: true, status: this.status() };
+  }
+
+  resume() {
+    if (this.cancelled) return { ok: false, error: 'build was cancelled' };
+    if (!this.paused && this.state === 'RUNNING') return { ok: false, error: 'build is not paused' };
+    this.paused = false;
+    this.state = 'RUNNING';
+    this._event('build.resumed', {});
+    return { ok: true, status: this.status() };
   }
 
   cancel(reason = 'cancelled') {
