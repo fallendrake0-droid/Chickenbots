@@ -467,8 +467,9 @@ commissioning.
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
   Bots join one at a time with jitter, and throttled joins use a 30-second floor before retrying.
   When `MC_LOGIN_PASSWORD` is set (the default is `chickenbot12345`), every join sends only `/login`
-  because the accounts already exist. Set `MC_AUTH_REGISTER_ON_FIRST_JOIN=true` to send `/register`
-  once before `/login` for a brand-new account. Movement is frozen and autonomy stays gated until the
+  because the accounts already exist. If the server answers `You are not registered.`, Chickenbots
+  creates that account once (`/register`) and retries `/login`. Set
+  `MC_AUTH_REGISTER_ON_FIRST_JOIN=true` to register before the first login attempt instead. Movement is frozen and autonomy stays gated until the
   server confirms authentication in chat; all position/look/flying packets are held so Paper or AuthMe
   cannot kick the bot for moving before login. A failed or unconfirmed password disconnects the bot
   instead of letting it move.

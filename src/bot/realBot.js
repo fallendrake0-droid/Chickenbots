@@ -509,7 +509,19 @@ class RealBot extends BotAdapter {
     }
     if (this.loginPassword) {
       const command = config.server.loginCommand.replace(/\{password\}/g, this.loginPassword);
-      const result = await this._sendAuthCommand(command, 'login');
+      let result = await this._sendAuthCommand(command, 'login');
+      // Existing accounts are login-only. A brand-new account (or one that was
+      // never created) answers "You are not registered."; create it once and
+      // retry the login instead of retrying forever.
+      if (!result.ok && this.registerPassword && /not registered|please register|register first/i.test(result.error || '')) {
+        this.logger.info(`[${this.name}] login says not registered; sending /register once, then /login`);
+        const registerCommand = config.server.registerCommand.replace(/\{password\}/g, this.registerPassword);
+        const created = await this._sendAuthCommand(registerCommand, 'register');
+        if (!created.ok) return created;
+        this.hasRegistered = true;
+        registered = !created.alreadyRegistered;
+        result = await this._sendAuthCommand(command, 'login');
+      }
       if (!result.ok) return result;
     }
     if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password confirmation' };

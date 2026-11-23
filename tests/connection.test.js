@@ -108,6 +108,23 @@ test('existing accounts send only /login and never /register by default', async 
   assert.equal(real.hasRegistered, false);
 });
 
+test('a login for an unregistered account automatically registers once then logs in', async () => {
+  let loginAttempts = 0;
+  const { real, commands } = authHarness({
+    registerPassword: 'secret', loginPassword: 'secret', registerOnFirstJoin: false,
+    reply: (line) => {
+      if (line.startsWith('/register')) return 'Successfully registered!';
+      loginAttempts++;
+      return loginAttempts === 1 ? 'You are not registered.' : 'Login successful.';
+    }
+  });
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(commands, ['/login secret', '/register secret secret', '/login secret']);
+  assert.equal(real.hasRegistered, true);
+  assert.equal(real.authenticated, true);
+});
+
 test('status scans are skipped until a live bot is ready', () => {
   const { findBlocks } = require('../src/actions/common');
   const fake = {
