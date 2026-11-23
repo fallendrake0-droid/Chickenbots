@@ -12,10 +12,9 @@
  * known-good version instead.
  */
 
-const NOT_READY_CODES = new Set(['SERVER_NOT_READY', 'SERVER_UNREACHABLE']);
-
-function versionFromStatus(status, data = null) {
+function versionFromStatus(status, data = null, supportedVersions = null) {
   const source = data || require('minecraft-data');
+  const supported = new Set(supportedVersions || require('minecraft-protocol').supportedVersions);
   const name = String(status?.name || '').replace(/\u00a7./g, '').trim();
   const protocol = Number(status?.protocol);
   if (!Number.isFinite(protocol) || protocol <= 0) {
@@ -28,19 +27,24 @@ function versionFromStatus(status, data = null) {
   }
 
   const byName = source.versionsByMinecraftVersion?.pc || {};
+  const usable = (entry) => Boolean(entry && entry.minecraftVersion && supported.has(entry.minecraftVersion));
+  // A proxy/ViaVersion status name can advertise a newer release than the
+  // protocol it actually answered with (e.g. "26.3" with protocol 775). Never
+  // trust the name over the protocol, and never pass a version that
+  // minecraft-protocol itself does not list as supported.
   const exact = byName[name];
-  if (exact && exact.minecraftVersion) {
+  if (usable(exact) && Number(exact.version) === protocol) {
     return { ok: true, version: exact.minecraftVersion, protocol, source: 'status-name' };
   }
   const match = name.match(/\b\d+\.\d+(?:\.\d+)?\b/);
   const named = match ? byName[match[0]] : null;
-  if (named && named.minecraftVersion) {
+  if (usable(named) && Number(named.version) === protocol) {
     return { ok: true, version: named.minecraftVersion, protocol, source: 'status-name' };
   }
 
   const candidates = source.postNettyVersionsByProtocolVersion?.pc?.[protocol];
   if (Array.isArray(candidates) && candidates.length) {
-    const known = candidates.find((entry) => entry && entry.minecraftVersion);
+    const known = candidates.find(usable);
     if (known) return { ok: true, version: known.minecraftVersion, protocol, source: 'protocol' };
   }
 
@@ -48,23 +52,24 @@ function versionFromStatus(status, data = null) {
     ok: false,
     code: 'UNSUPPORTED_PROTOCOL',
     retryable: false,
-    error: `server protocol ${protocol} (${name || 'unknown version'}) is newer than this install; run npm update`
+    error: `server protocol ${protocol} (${name || 'unknown version'}) is not supported by minecraft-protocol ${require('minecraft-protocol/package.json').version}; run npm update`
   };
 }
 
-function configuredVersion(version, data = null) {
+function configuredVersion(version, data = null, supportedVersions = null) {
   const source = data || require('minecraft-data');
+  const supported = new Set(supportedVersions || require('minecraft-protocol').supportedVersions);
   const wanted = String(version || '').trim();
   if (!wanted) return { ok: false, code: 'INVALID_VERSION', retryable: false, error: 'MC_VERSION is empty' };
   const known = source.versionsByMinecraftVersion?.pc?.[wanted];
-  if (known && known.minecraftVersion) {
+  if (known && known.minecraftVersion && supported.has(wanted)) {
     return { ok: true, version: wanted, protocol: known.version, source: 'configured' };
   }
   return {
     ok: false,
     code: 'UNSUPPORTED_VERSION',
     retryable: false,
-    error: `MC_VERSION=${wanted} is not known to minecraft-data; use a supported release or auto`
+    error: `MC_VERSION=${wanted} is not supported by minecraft-protocol; use one of ${[...supported].slice(-8).join(', ')} or auto`
   };
 }
 
@@ -74,10 +79,12 @@ async function resolveServerVersion({
   version = 'auto',
   timeoutMs = 8000,
   ping = null,
-  minecraftData = null
+  minecraftData = null,
+  supportedVersions = null
 } = {}) {
   const data = minecraftData || require('minecraft-data');
-  if (String(version).toLowerCase() !== 'auto') return configuredVersion(version, data);
+  const supported = supportedVersions || require('minecraft-protocol').supportedVersions;
+  if (String(version).toLowerCase() !== 'auto') return configuredVersion(version, data, supported);
 
   const pingFn = ping || require('minecraft-protocol').ping;
   let timer;
@@ -88,7 +95,7 @@ async function resolveServerVersion({
         timer = setTimeout(() => reject(Object.assign(new Error(`version probe timed out after ${timeoutMs}ms`), { code: 'ETIMEDOUT' })), timeoutMs);
       })
     ]);
-    return versionFromStatus(status?.version, data);
+    return versionFromStatus(status?.version, data, supported);
   } catch (err) {
     const code = err && err.code ? err.code : 'PROBE_FAILED';
     return {
@@ -103,4 +110,4 @@ async function resolveServerVersion({
   }
 }
 
-module.exports = { resolveServerVersion, versionFromStatus, configuredVersion, NOT_READY_CODES };
+module.exports = { resolveServerVersion, versionFromStatus, configuredVersion };

@@ -99,3 +99,24 @@ test('runtime preflight applies the resolved version to all five bots before con
     await runtime.shutdown('test');
   }
 });
+
+test('a status name newer than the answered protocol is ignored in favour of a supported protocol version', async () => {
+  const result = await resolveServerVersion({
+    version: 'auto',
+    ping: async () => ({ version: { name: '26.3', protocol: 775 } }),
+    timeoutMs: 100
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.version, '26.1');
+  assert.equal(result.protocol, 775);
+  assert.equal(result.source, 'protocol');
+});
+
+test('an explicit MC_VERSION must be supported by minecraft-protocol, not just minecraft-data', () => {
+  const ok = configuredVersion('26.1');
+  assert.equal(ok.ok, true);
+  assert.equal(ok.protocol, 775);
+  const bad = configuredVersion('26.3');
+  assert.equal(bad.ok, false);
+  assert.equal(bad.code, 'UNSUPPORTED_VERSION');
+});

@@ -473,6 +473,8 @@ commissioning.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
   real version instead of sending five bots into mineflayer's autoVersion crash path.
+  The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy
+  advertises a newer status name than the protocol it answered with, the protocol mapping wins.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
   real placement; a Grandmaster design is a multi-session project, not instant.
 * The construction pipeline is validated against `MockWorld`. Live operation still depends on the

@@ -212,7 +212,8 @@ class TeamRuntime {
           this.serverVersionSource = result.source;
           this.serverVersionError = null;
           delete this.connectionErrors.server;
-          this.logger.info(`server version: ${result.version} (protocol ${result.protocol}, ${result.source})`);
+          const sourceLabel = result.source === 'protocol' ? 'protocol map' : result.source === 'status-name' ? 'status name' : 'configured';
+          this.logger.info(`server version: ${result.version} (protocol ${result.protocol}, ${sourceLabel})`);
           for (const bot of this.bots.values()) {
             if (typeof bot.setVersion === 'function') bot.setVersion(result.version);
           }
