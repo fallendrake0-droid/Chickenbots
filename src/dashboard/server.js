@@ -18,7 +18,14 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   app.disable('x-powered-by');
   app.use(express.json({ limit: '2mb' }));
   const publicDir = path.join(__dirname, 'public');
-  app.use('/', express.static(publicDir, { index: 'index.html' }));
+  app.use('/', express.static(publicDir, {
+    index: 'index.html',
+    setHeaders(res, file) {
+      // A running dashboard is frequently updated during commissioning; force
+      // browsers to revalidate JS/CSS/HTML instead of showing an old roster.
+      if (/\.(?:html|js|css)$/i.test(file)) res.setHeader('Cache-Control', 'no-cache');
+    }
+  }));
 
   // Snapshot assembly is comparatively expensive (live action scans), so all
   // HTTP and SSE consumers share one freshly-built value per interval.

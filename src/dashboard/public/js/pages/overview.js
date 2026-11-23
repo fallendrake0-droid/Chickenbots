@@ -30,6 +30,7 @@ export default {
     const server = (snap.diagnostics && snap.diagnostics.config && snap.diagnostics.config.server) || {};
     const autonomyPaused = runtime && runtime.paused;
     const uptime = runtime && runtime.uptimeMs;
+    const rosterNames = botNames();
 
     return `
       <div class="page">
@@ -44,6 +45,9 @@ export default {
               <span class="status">${statusDot(online.length === fleet.length && fleet.length ? 'ok' : online.length ? 'warn' : 'danger', true)} ${online.length}/${fleet.length} bots ready</span>
               ${leader ? `<span class="status">${icon('users')} Leader <strong style="color:var(--text)">${esc(leader)}</strong></span>` : ''}
               ${runtime ? `<span class="status">${autonomyPaused ? badge('Autonomy paused', 'warn') : badge('Autonomy running', 'ok', { dot: true })}</span>` : ''}
+            </div>
+            <div class="chips" aria-label="Bot roster" style="margin-top:.85rem">
+              ${rosterNames.map((name) => `<span class="chip mono">${esc(name)}</span>`).join('')}
             </div>
           </div>
           <div class="hero-actions">
