@@ -216,6 +216,10 @@ class RealBot extends BotAdapter {
         version: this.version === 'auto' ? undefined : this.version,
         checkTimeoutInterval: config.server.keepAliveMs,
         hideErrors: false,
+        // Mineflayer's default logErrors handler console.log()s the raw Error
+        // object before our structured logger sees it. Keep the event, drop
+        // the duplicate raw dump.
+        logErrors: false,
         // Never let mineflayer's own physics fight the deterministic controller loop.
         physicsEnabled: true
       });

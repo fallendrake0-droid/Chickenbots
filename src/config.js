@@ -96,8 +96,8 @@ const config = {
     keepAliveMs: envInt('MC_KEEPALIVE_MS', 10000),
     // Aternos and vanilla proxies throttle rapid joins. Open one socket at a
     // time, with jitter, instead of starting all five bots simultaneously.
-    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 7000),
-    connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 2000),
+    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 2000),
+    connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 500),
     // Registration / login (Aternos + AuthMe style plugins). Set
     // MC_AUTH_ENABLED=false for a server without a password plugin.
     authEnabled: envBool('MC_AUTH_ENABLED', true),
@@ -107,7 +107,7 @@ const config = {
     registerCommand: env('MC_REGISTER_COMMAND', '/register {password} {password}'),
     // AuthMe-style plugins confirm in chat; stay unready and frozen until that
     // confirmation arrives so no bot can move before authenticating.
-    authDelayMs: envInt('MC_AUTH_DELAY_MS', 1000),
+    authDelayMs: envInt('MC_AUTH_DELAY_MS', 300),
     authTimeoutMs: envInt('MC_AUTH_TIMEOUT_MS', 12000),
     reconnect: {
       maxAttempts: envInt('MC_RECONNECT_MAX', 0), // 0 = unlimited

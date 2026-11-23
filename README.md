@@ -290,11 +290,11 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
-| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `7000` / `2000` | gap between joining bots; avoids Aternos join throttling |
+| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `2000` / `500` | gap between joining bots; raise these if Aternos throttles the joins |
 | `MC_THROTTLE_DELAY_MS` | `30000` | minimum retry delay after a throttled join |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | `chickenbot12345` | AuthMe-style register/login after spawn; bots stay frozen and unready until confirmed. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
-| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `1000` / `12000` | settle delay and confirmation timeout for password auth |
+| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
