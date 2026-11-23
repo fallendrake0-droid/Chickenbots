@@ -11,6 +11,7 @@ const { ExcavationManager } = require('./excavate/manager');
 const { ConstructionManager } = require('./construction/manager');
 const { SchematicLibrary } = require('./schematics/library');
 const { ActionRegistry } = require('./actions');
+const { TeamCombatCoordinator } = require('./combat/team');
 const { createCommandHandler } = require('./commands');
 const { createDashboard } = require('./dashboard/server');
 const { MockWorld } = require('./bot/mockWorld');
@@ -123,6 +124,13 @@ class TeamRuntime {
     }
     this.memory.setHome({ position: this.home, setAt: Date.now() });
     this.coordinator.enable();
+    this.combatTeam = new TeamCombatCoordinator({
+      controllers: this.actions.list().map((actions) => actions.combat),
+      comms: this.comms, memory: this.memory
+    });
+    for (const actions of this.actions.list()) actions.combat.attachTeam(this.combatTeam);
+    this.combatTeam.home = this.home;
+    this.combatTeam.assignRoles({ force: true });
     this.construction = new ConstructionManager({
       library: this.library, bots: [...this.bots.values()], actions: this.actions,
       world: this.world, taskBoard: this.board, ledger: this.ledger, memory: this.memory,
@@ -134,7 +142,7 @@ class TeamRuntime {
       coordinator: this.coordinator, leadership: this.coordinator.leadership, memory: this.memory,
       taskBoard: this.board, ledger: this.ledger, comms: this.comms, excavation: this.excavation,
       library: this.library, bots: this.bots, actions: this.actions, builders: this.builders,
-      construction: this.construction, imported: this.imported, world: this.world, runtime: this
+      construction: this.construction, combatTeam: this.combatTeam, imported: this.imported, world: this.world, runtime: this
     };
     this.services = services;
     this.commands = createCommandHandler(services);
@@ -214,6 +222,10 @@ class TeamRuntime {
         const summary = typeof bot.summary === 'function' ? bot.summary() : { name: bot.name };
         this.coordinator.updateBot(bot.name, summary);
         this.ledger.updateBotInventory(bot.name, bot.inventory);
+        if (bot.health <= 0) {
+          const actions = this.actions && typeof this.actions.get === 'function' ? this.actions.get(bot.name) : null;
+          if (actions && actions.combat) actions.combat.onDeath('runtime observed death');
+        }
         if (!bot.ready || bot.connected === false) {
           if (!this.disconnectedNotified.has(bot.name)) {
             this.coordinator.setDisconnected(bot.name, 'connection lost');
@@ -231,6 +243,7 @@ class TeamRuntime {
         const bot = actions.bot;
         if (!bot.connected || !bot.spawned || bot.health <= 0) continue;
         await actions.safetyTick();
+        if (this.ticks % 5 === 0) this.combatTeam.assignRoles();
         const assignment = this.coordinator.getAssignment(bot.name);
         if (assignment) {
           await actions.step({ coordinator: this.coordinator, bots: this.bots });
@@ -238,8 +251,15 @@ class TeamRuntime {
           await this._idleWork(actions);
         }
       }
+      if (this.combatTeam && this.ticks % 8 === 0) {
+        await this.combatTeam.autoRescue().catch((err) => this.logger.warn(`team rescue: ${err.message}`));
+      }
+      if (this.combatTeam && this.ticks % 16 === 0) {
+        await this.combatTeam.assistHealing().catch((err) => this.logger.warn(`team healing: ${err.message}`));
+      }
       const home = this.memory.getHome();
       if (home && home.position) this.home = home.position;
+      if (this.combatTeam) this.combatTeam.home = this.home;
       if (this.construction && config.construction.autoAdvance && !this.constructionBusy && this.ticks % Math.max(2, config.construction.tickEvery) === 0) {
         this.constructionBusy = true;
         this.construction.autoAdvance()
@@ -371,6 +391,7 @@ class TeamRuntime {
       connectionErrors: { ...this.connectionErrors },
       dashboard: this.dashboard ? this.dashboard.url : null,
       construction: this.construction ? { activeId: this.construction.activeId, projects: this.construction.projects.size } : null,
+      combat: this.combatTeam ? this.combatTeam.status() : null,
       pausedAt: this.paused ? Date.now() : null
     };
   }

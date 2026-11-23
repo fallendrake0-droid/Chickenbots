@@ -5,6 +5,7 @@ const { MockWorld, DROPS } = require('./mockWorld');
 const { delay, CancelledError } = require('../util/async');
 const { distance, key } = require('../util/vec');
 const { PICKAXES, AXES, SHOVELS, SWORDS, toolTier, BED_NAMES, FOODS } = require('../world/items');
+const { config } = require('../config');
 
 const PICK_REQUIRED = {
   stone: 1, cobblestone: 1, deepslate: 1, cobbled_deepslate: 1, andesite: 1, diorite: 1, granite: 1, tuff: 1,
@@ -65,7 +66,12 @@ class MockBot extends BotAdapter {
     this.startedAt = Date.now();
     this._lastDamage = 0;
     this._tickHandle = null;
-    this.stats = { dug: 0, placed: 0, moved: 0, attacked: 0, eaten: 0, crafted: 0, fished: 0, deaths: 0 };
+    this.stats = { dug: 0, placed: 0, moved: 0, attacked: 0, eaten: 0, crafted: 0, fished: 0, deaths: 0, potions: 0, totemActivations: 0, damageDealt: 0, damageTaken: 0 };
+    this.itemMeta = {};
+    this.combatEvents = [];
+    this.heldItem = null;
+    this.equipment.offhand = null;
+    this.equipment.armorPieces = null;
     this._updateEquipment();
   }
 
@@ -94,7 +100,9 @@ class MockBot extends BotAdapter {
     const axe = this.bestToolFor('axe');
     const shovel = this.bestToolFor('shovel');
     const sword = this.bestToolFor('sword');
+    if (this.heldItem && !this.countItem(this.heldItem)) this.heldItem = null;
     this.equipment = {
+      ...this.equipment,
       pickaxe: pick ? pick.tier : 0,
       axe: axe ? axe.tier : 0,
       shovel: shovel ? shovel.tier : 0,
@@ -104,7 +112,9 @@ class MockBot extends BotAdapter {
       bow: Boolean(this.inventory.bow),
       pickaxeName: pick ? pick.name : null,
       axeName: axe ? axe.name : null,
-      swordName: sword ? sword.name : null
+      swordName: sword ? sword.name : null,
+      heldItem: this.heldItem || (sword ? sword.name : null),
+      offhand: this.equipment?.offhand && this.countItem(this.equipment.offhand) ? this.equipment.offhand : null
     };
   }
 
@@ -131,9 +141,57 @@ class MockBot extends BotAdapter {
 
   async equipItem(name, destination = 'hand') {
     if (!this.countItem(name)) return { ok: false, error: 'not in inventory' };
-    if (destination === 'off-hand') this.equipment.shield = name === 'shield';
+    if (destination === 'off-hand') {
+      this.equipment.offhand = name;
+      this.equipment.shield = name === 'shield';
+    } else {
+      this.heldItem = name;
+      this.equipment.heldItem = name;
+    }
     this._updateEquipment();
-    return { ok: true, name };
+    return { ok: true, name, destination, verified: destination === 'off-hand' ? this.getOffhand() === name : this.heldItem === name };
+  }
+
+  getOffhand() { return this.equipment?.offhand || null; }
+
+  async equipArmor(pieces = []) {
+    const available = pieces.filter((piece) => piece && this.countItem(piece.name));
+    this.equipment.armorPieces = available.map((piece) => piece.name);
+    this.equipment.armor = available.reduce((sum, piece) => sum + (piece.points || 0), 0);
+    return { ok: available.length > 0, pieces: available.map((piece) => piece.name), points: this.equipment.armor };
+  }
+
+  recordCombatEvent(event) {
+    this.combatEvents.push(event);
+    if (this.combatEvents.length > 200) this.combatEvents.shift();
+    return true;
+  }
+
+  drainCombatEvents() { return this.combatEvents.splice(0); }
+
+  async strafe(direction = 'left', { durationMs = 120 } = {}) {
+    const sign = direction === 'left' ? 1 : -1;
+    const start = { ...this.position };
+    const candidates = [
+      { x: this.position.x + sign, y: this.position.y, z: this.position.z },
+      { x: this.position.x, y: this.position.y, z: this.position.z + sign },
+      { x: this.position.x + sign, y: this.position.y, z: this.position.z + sign }
+    ];
+    for (const candidate of candidates) {
+      const foot = this.getBlock(candidate);
+      if (!foot || foot.name === 'air' || foot.name === 'water') {
+        this.position = candidate;
+        this.stats.moved++;
+        await this._wait(durationMs);
+        return { ok: true, direction, position: { ...this.position }, moved: distance(start, this.position) };
+      }
+    }
+    return { ok: false, error: 'no safe strafe square' };
+  }
+
+  applyEffect(effect, { level = 1, duration = 180 } = {}) {
+    this.effects[String(effect)] = { level, duration, at: Date.now() };
+    return { ok: true, effect, level, duration };
   }
 
   async goTo(pos, { range = 1, token = null, timeoutMs = 15000 } = {}) {
@@ -234,17 +292,49 @@ class MockBot extends BotAdapter {
   }
 
   async consume(itemName = null) {
-    const food = itemName ? { name: itemName, ...(FOODS[itemName] || {}) } : this.bestFoodItem({ critical: this.food <= 6 });
-    if (!food || !food.name) return { ok: false, error: 'no food' };
-    if (!this.countItem(food.name)) return { ok: false, error: `no ${food.name} in inventory` };
-    this.removeItem(food.name, 1);
-    const hunger = (FOODS[food.name] && FOODS[food.name].hunger) || 4;
-    const saturation = (FOODS[food.name] && FOODS[food.name].saturation) || 2;
+    const name = itemName || (this.bestFoodItem({ critical: this.food <= 6 }) || {}).name;
+    if (!name) return { ok: false, error: 'no food' };
+    if (!this.countItem(name)) return { ok: false, error: `no ${name} in inventory` };
+    const before = { health: this.health, food: this.food, effects: { ...this.effects } };
+    if (name === 'milk_bucket') {
+      this.removeItem(name, 1);
+      this.effects = {};
+      await this._wait(600);
+      return { ok: true, item: name, effect: 'milk', cleared: true, before, health: this.health, food: this.food };
+    }
+    const potion = /potion/.test(name) ? name.toLowerCase() : null;
+    if (potion) {
+      this.removeItem(name, 1);
+      const kind = potion.startsWith('splash_') ? 'splash' : potion.startsWith('lingering_') ? 'lingering' : 'drink';
+      const text = potion.replace(/^(splash_|lingering_)/, '').replace(/^potion_of_/, '').replace(/^potion_/, '').replace(/_potion$/, '');
+      const map = { healing: 'healing', strong_healing: 'healing', regeneration: 'regeneration', strength: 'strength', swiftness: 'speed', speed: 'speed', resistance: 'resistance', fire_resistance: 'fire_resistance', absorption: 'absorption', slow_falling: 'slow_falling', water_breathing: 'water_breathing', invisibility: 'invisibility', turtle_master: 'turtle_master', poison: 'poison', wither: 'wither', slowness: 'slowness', weakness: 'weakness' };
+      const effect = map[text] || text;
+      if (effect === 'healing') this.health = Math.min(20, this.health + (text.includes('strong') ? 8 : 4));
+      else this.applyEffect(effect, { level: text.includes('strong') ? 2 : 1, duration: 45 });
+      this.stats.potions++;
+      await this._wait(600);
+      return { ok: true, item: name, kind, effect, before, health: this.health, food: this.food };
+    }
+    const food = { name, ...(FOODS[name] || {}) };
+    this.removeItem(name, 1);
+    const hunger = food.hunger || 4;
+    const saturation = food.saturation || 2;
     this.food = Math.min(20, this.food + hunger);
     this.saturation = Math.min(20, this.saturation + saturation);
+    if (name === 'enchanted_golden_apple') {
+      this.health = Math.min(20, this.health + 4);
+      this.applyEffect('regeneration', { level: 2, duration: 30 });
+      this.applyEffect('absorption', { level: 4, duration: 120 });
+      this.applyEffect('resistance', { level: 1, duration: 300 });
+      this.applyEffect('fire_resistance', { level: 1, duration: 300 });
+    } else if (name === 'golden_apple') {
+      this.health = Math.min(20, this.health + 4);
+      this.applyEffect('regeneration', { level: 2, duration: 5 });
+      this.applyEffect('absorption', { level: 1, duration: 120 });
+    }
     this.stats.eaten++;
     await this._wait(1200);
-    return { ok: true, item: food.name, food: this.food, saturation: this.saturation };
+    return { ok: true, item: name, food: this.food, saturation: this.saturation, health: this.health, before };
   }
 
   async fish({ timeoutMs = 2000 } = {}) {
@@ -261,24 +351,34 @@ class MockBot extends BotAdapter {
     return { ok: true, item, count: 1, items: [{ name: item, count: 1 }], water: { ...water[0] } };
   }
 
-  async attack(entity, { token = null } = {}) {
+  async attack(entity, { token = null, authorizedPlayer = false } = {}) {
     if (token && token.cancelled) throw new CancelledError(token.reason);
     if (!entity) return { ok: false, error: 'no target' };
-    if (entity.type === this.name) return { ok: false, error: 'never attack teammates' };
-    if (distance(this.position, entity.position) > 4) return { ok: false, error: 'out of reach' };
-    const swordTier = this.equipment.sword || 0;
-    const damage = 1 + swordTier * 1.5 + (this.effects.strength ? 3 : 0);
+    if (entity.type === this.name || (entity.username && config.team.names.includes(entity.username))) return { ok: false, error: 'never attack teammates' };
+    if (entity.username && !authorizedPlayer) return { ok: false, error: 'player attacks require explicit PvP authorisation' };
+    const held = this.heldItem || (this.bestToolFor('sword') || {}).name || null;
+    const ranged = held === 'bow' || held === 'crossbow';
+    if (ranged && !this.countItem('arrow')) return { ok: false, error: 'no arrows' };
+    const reach = ranged ? 32 : held === 'trident' ? 4.5 : 4;
+    if (distance(this.position, entity.position) > reach) return { ok: false, error: 'out of reach' };
+    const damageTable = { wooden_sword: 4, golden_sword: 4, stone_sword: 5, iron_sword: 6, diamond_sword: 7, netherite_sword: 8, wooden_axe: 7, golden_axe: 7, stone_axe: 9, iron_axe: 9, diamond_axe: 9, netherite_axe: 10, trident: 9, mace: 6, bow: 6, crossbow: 7 };
+    const meta = this.itemMeta[held] || {};
+    const sharp = Number((meta.enchantments || {}).sharpness || 0);
+    const damage = (damageTable[held] || 1) + (sharp ? 0.5 * sharp + 0.5 : 0) + (this.effects.strength ? 3 : 0);
+    if (ranged) this.removeItem('arrow', 1);
+    if (meta.durability !== undefined && meta.durability > 0) meta.durability = Math.max(0, meta.durability - 1);
     // Controllers pass snapshots; always mutate the live world entity.
     const live = this.world.entities.find((e) => e.id === entity.id) || entity;
     live.health = (live.health === undefined ? 20 : live.health) - damage;
     this.stats.attacked++;
+    this.stats.damageDealt += damage;
     await this._wait(600);
     if (live.health <= 0) {
       live.alive = false;
       this.world.removeMob(live.id);
-      return { ok: true, killed: true, entity: live.type };
+      return { ok: true, killed: true, entity: live.type, damage, weapon: held, health: 0 };
     }
-    return { ok: true, killed: false, entity: live.type, health: live.health };
+    return { ok: true, killed: false, entity: live.type, damage, weapon: held, health: live.health };
   }
 
   async useShield(on) {
@@ -396,8 +496,21 @@ class MockBot extends BotAdapter {
   }
 
   damage(amount, cause = 'mob') {
+    const before = this.health;
     this.health = Math.max(0, this.health - amount);
+    this.stats.damageTaken += amount;
     this._lastDamage = Date.now();
+    if (this.health <= 0 && this.getOffhand() === 'totem_of_undying' && this.countItem('totem_of_undying') > 0) {
+      this.removeItem('totem_of_undying', 1);
+      this.equipment.offhand = null;
+      this.health = 1;
+      this.applyEffect('regeneration', { level: 2, duration: 45 });
+      this.applyEffect('absorption', { level: 2, duration: 5 });
+      this.applyEffect('fire_resistance', { level: 1, duration: 40 });
+      this.stats.totemActivations++;
+      this.recordCombatEvent({ at: new Date().toISOString(), type: 'totem_activated', bot: this.name, damage: amount, health: this.health });
+      return { dead: false, totem: true, health: this.health, before };
+    }
     if (this.health <= 0) {
       this.deaths++;
       this.stats.deaths++;

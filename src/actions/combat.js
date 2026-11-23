@@ -3,121 +3,733 @@
 const { config } = require('../config');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { isTeammate, isHostile, moveAway } = require('./common');
+const { isTeammate, isHostile: legacyHostile, moveAway } = require('./common');
+const { COMBAT_STATES, ACTION_PRIORITY, COMBAT_MODES } = require('../combat/constants');
+const { isHostile, isNeutral, isPlayer, profileFor } = require('../combat/mobs');
+const { selectWeapon, optimizeArmor, gearStatus } = require('../combat/equipment');
+const { TotemManager } = require('../combat/totems');
+const { chooseFood, choosePotion, consumeItem, suppliesStatus } = require('../combat/supplies');
+const { PvpPolicy } = require('../combat/players');
 
 const ANIMALS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', 'mushroom_cow', 'horse', 'donkey', 'mule', 'llama', 'goat']);
-const NEVER_ATTACK = new Set(['villager', 'wandering_trader', 'iron_golem', 'snow_golem', 'wolf', 'cat', 'ocelot', 'parrot', 'fox', 'panda', 'polar_bear', 'bee', 'allay', 'axolotl', 'turtle', 'dolphin', 'squid', 'glow_squid', 'bat', 'frog', 'tadpole', 'strider', 'zombified_piglin']);
+const NEVER_ATTACK = new Set(['villager', 'wandering_trader', 'iron_golem', 'snow_golem', 'wolf', 'cat', 'ocelot', 'parrot', 'fox', 'panda', 'polar_bear', 'bee', 'allay', 'axolotl', 'turtle', 'dolphin', 'squid', 'glow_squid', 'bat', 'frog', 'tadpole', 'strider', 'zombified_piglin', 'piglin']);
+
+function sleep(ms) {
+  if (!ms || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
- * PvE combat. PvP is disabled by default and hard-disabled for teammates and
- * ordinary players regardless of configuration. The controller can retreat,
- * regroup, defend the team and hunt animals for food.
+ * V6 combat agent. One instance per bot owns its state machine, equipment,
+ * totem, supply and target decisions. A shared TeamCombatCoordinator supplies a
+ * focus target, role and approach bearing but never overrides local survival.
  */
 class CombatController {
-  constructor({ bot, team = null, memory = null, logger = null, pvp = config.autonomy.pvp } = {}) {
+  constructor({
+    bot, team = null, combatTeam = null, memory = null, logger = null, comms = null,
+    pvp = config.autonomy.pvp, pvpTargets = [], protectedPlayers = [], mode = 'BALANCED',
+    meta = null, config: combatConfig = {}
+  } = {}) {
     if (!bot) throw new Error('CombatController requires a bot');
     this.bot = bot;
     this.team = team;
+    this.combatTeam = combatTeam;
     this.memory = memory;
+    this.comms = comms;
     this.logger = logger || new Logger({ level: 'warn' });
-    this.pvpEnabled = Boolean(pvp);
-    this.stats = { attacks: 0, kills: 0, retreats: 0, threatAssessments: 0 };
+    this.pvp = new PvpPolicy({ enabled: Boolean(pvp), targets: pvpTargets, protectedPlayers, teamNames: config.team.names });
+    this.mode = COMBAT_MODES.includes(String(mode).toUpperCase()) ? String(mode).toUpperCase() : 'BALANCED';
+    this.state = 'IDLE';
+    this.stateSince = Date.now();
+    this.policy = {
+      autoTotem: true, autoHeal: true, autoArmour: true, autoWeapon: true,
+      autoFood: true, autoPotions: true, autoShield: true, autoRetreat: true,
+      allowEnchantedGoldenApple: true,
+      retreatHealth: config.survival.fleeHealth,
+      criticalHealth: config.survival.criticalHealth,
+      eatHealth: config.survival.eatAtHealth,
+      ...combatConfig
+    };
+    this.stats = {
+      attacks: 0, hits: 0, misses: 0, kills: 0, retreats: 0, threatAssessments: 0,
+      damageDealt: 0, damageReceived: 0, totemActivations: 0, goldenApples: 0,
+      potions: 0, deaths: 0, rescues: 0, weaponSwitches: 0, armourSwitches: 0,
+      shieldBlocks: 0, dodges: 0, playerKills: 0, verifiedKills: 0
+    };
+    this.events = [];
+    this.stopRequested = false;
+    this.target = null;
     this.lastAction = null;
+    this.lastAttackAt = 0;
+    this.lastWeapon = null;
+    this.lastArmorSignature = null;
+    this.killedIds = new Set();
+    this.totems = new TotemManager({ bot, team, comms, reserve: 1, criticalReserve: 1 });
+    this.guardPosition = null;
+    this.pveEnabled = true;
+    this.armed = true;
+    this._meta = meta || bot.itemMeta || {};
+    this.serverPvp = Boolean(bot.serverPvp === undefined ? config.autonomy.serverPvp !== false : bot.serverPvp);
+    this.lastPlan = null;
+    this.followTarget = null;
+    this._deadNotified = false;
   }
 
+  get ready() { return this.bot.ready !== false && this.bot.health > 0; }
+  get meta() { return this._meta || this.bot.itemMeta || {}; }
+
+  _setState(state, detail = null) {
+    if (!COMBAT_STATES.includes(state)) throw new Error(`invalid combat state ${state}`);
+    if (this.state !== state) {
+      this.events.push({ at: new Date().toISOString(), type: 'state', from: this.state, to: state, detail });
+      if (this.events.length > 250) this.events.shift();
+      this.state = state;
+      this.stateSince = Date.now();
+    }
+    return state;
+  }
+
+  _record(type, payload = {}) {
+    const entry = { at: new Date().toISOString(), type, ...payload };
+    this.events.push(entry);
+    if (this.events.length > 250) this.events.shift();
+    if (this.bot && typeof this.bot.recordCombatEvent === 'function') this.bot.recordCombatEvent(entry);
+    return entry;
+  }
+
+  attachTeam(combatTeam) {
+    this.combatTeam = combatTeam;
+    return { ok: true, team: Boolean(combatTeam) };
+  }
+
+  setPolicy(patch = {}) {
+    const allowed = ['autoTotem', 'autoHeal', 'autoArmour', 'autoWeapon', 'autoFood', 'autoPotions', 'autoShield', 'autoRetreat', 'allowEnchantedGoldenApple'];
+    for (const [key, value] of Object.entries(patch)) if (allowed.includes(key)) this.policy[key] = Boolean(value);
+    return { ok: true, policy: { ...this.policy } };
+  }
+
+  setMode(mode) {
+    const value = String(mode || '').toUpperCase();
+    if (!COMBAT_MODES.includes(value)) return { ok: false, error: `unknown combat mode ${mode}` };
+    this.mode = value;
+    return { ok: true, mode: this.mode };
+  }
+
+  arm() { this.armed = true; return { ok: true, armed: true }; }
+  disarm() { this.armed = false; return { ok: true, armed: false }; }
+  setPve(enabled) { this.pveEnabled = Boolean(enabled); this.armed = this.pveEnabled || this.pvp.enabled; return { ok: true, pveEnabled: this.pveEnabled, armed: this.armed }; }
+  setAuto(key, enabled) {
+    const map = { armour: 'autoArmour', weapon: 'autoWeapon', totem: 'autoTotem', food: 'autoFood', potions: 'autoPotions', shield: 'autoShield', retreat: 'autoRetreat', heal: 'autoHeal' };
+    const field = map[String(key || '').toLowerCase()];
+    if (!field) return { ok: false, error: `unknown automation '${key}'` };
+    this.policy[field] = Boolean(enabled);
+    return { ok: true, automation: key, enabled: this.policy[field] };
+  }
+
+  setPvp(enabled) {
+    const body = this.pvp.setEnabled(enabled);
+    if (enabled) this.armed = true;
+    return body;
+  }
+
+  addTarget(name) { return this.pvp.addTarget(name); }
+  removeTarget(name) { return this.pvp.removeTarget(name); }
+  protect(name) { return this.pvp.protect(name); }
+  unprotect(name) { return this.pvp.unprotect(name); }
+
+  /** Hostile/authorised entities only. Teammates and neutrals are filtered out. */
   assess(radius = 16) {
     this.stats.threatAssessments++;
-    const raw = typeof this.bot.hostileNear === 'function'
-      ? this.bot.hostileNear(this.bot.position, radius)
-      : (this.bot.threatsNear && Array.isArray(this.bot.threatsNear(this.bot.position, radius)) ? this.bot.threatsNear(this.bot.position, radius) : []);
-    const threats = raw
-      .filter((e) => !isTeammate(e, this.team) && isHostile(e) !== false)
-      .map((e) => ({ ...e, distance: Number(distance(e.position, this.bot.position).toFixed(1)) }))
-      .sort((a, b) => a.distance - b.distance);
+    const raw = typeof this.bot.entitiesNear === 'function'
+      ? this.bot.entitiesNear(radius)
+      : [];
+    const threats = [];
+    for (const entity of raw) {
+      if (!entity || entity.alive === false || !entity.position) continue;
+      if (isTeammate(entity, this.team)) continue;
+      const profile = profileFor(entity);
+      const name = String(entity.name || entity.type || '').toLowerCase();
+      if (isPlayer(entity)) {
+        if (!this.pvp.enabled) continue;
+        if (!this.pvp.isAuthorized(entity)) continue;
+      } else if (!this.pveEnabled || !isHostile(entity) || NEVER_ATTACK.has(name) || profile.neutral) {
+        // Neutrals, pets and conditional hostiles require an explicit order;
+        // PvE combat disabled means no hostile mob is auto-engaged either.
+        continue;
+      }
+      const dist = Number(distance(entity.position, this.bot.position).toFixed(1));
+      threats.push({
+        ...entity,
+        distance: dist,
+        profile,
+        player: isPlayer(entity),
+        danger: profile.threat + (entity.health === undefined ? 0 : (20 - entity.health)) * 0.5 - dist * 0.5
+      });
+    }
+    threats.sort((a, b) => b.danger - a.danger);
+    const nearest = [...threats].sort((a, b) => a.distance - b.distance)[0] || null;
+    const focus = this.combatTeam && this.combatTeam.enabled ? this.combatTeam.chooseFocus(threats) : null;
     return {
-      threats,
-      count: threats.length,
-      nearest: threats[0] || null,
-      health: this.bot.health,
-      outmatched: threats.length >= 3 || (threats[0] && /creeper|warden|ravager|witch/i.test(threats[0].name || '')),
-      pvpEnabled: this.pvpEnabled
+      threats, count: threats.length, nearest, focus,
+      health: this.bot.health, food: this.bot.food,
+      outmatched: threats.length >= 3 || threats.some((threat) => threat.profile.boss || threat.profile.keepDistance),
+      totems: this.totems.count(),
+      pvpEnabled: this.pvp.enabled,
+      state: this.state
     };
   }
 
   status() {
     const assessment = this.assess();
+    const gear = gearStatus({ inventory: this.bot.inventory, meta: this.meta, target: this.target });
     return {
       bot: this.bot.name,
       health: this.bot.health,
+      food: this.bot.food,
+      state: this.state,
+      mode: this.mode,
+      armed: this.armed,
+      pveEnabled: this.pveEnabled,
       threats: assessment.threats.length,
       nearestThreat: assessment.nearest,
+      target: this.target ? { id: this.target.id, name: this.target.name || this.target.username || this.target.type, distance: this.target.distance } : null,
+      plan: this.lastPlan ? { role: this.lastPlan.role, offset: this.lastPlan.offset, focus: this.lastPlan.focus ? (this.lastPlan.focus.name || this.lastPlan.focus.username || this.lastPlan.focus.type) : null } : null,
       outmatched: assessment.outmatched,
-      pvpEnabled: this.pvpEnabled,
-      sword: this.bot.bestToolFor('sword'),
+      pvpEnabled: this.pvp.enabled,
+      pvp: { ...this.pvp.status(), serverPvp: this.serverPvp },
+      sword: this.bot.bestToolFor ? this.bot.bestToolFor('sword') : null,
       shield: Boolean(this.bot.countItem('shield')),
+      weapon: gear.bestWeapon ? { name: gear.bestWeapon.name, damage: gear.bestWeapon.effectiveDamage, dps: gear.bestWeapon.dps, durability: gear.bestWeapon.durability } : null,
+      armor: gear.armor,
+      armorPoints: gear.armor.points,
+      offhand: this.totems.offhand(),
+      totems: this.totems.count(),
+      goldenApples: Number(this.bot.countItem('golden_apple') || 0),
+      enchantedGoldenApples: Number(this.bot.countItem('enchanted_golden_apple') || 0),
+      supplies: suppliesStatus({ inventory: this.bot.inventory, meta: this.meta, bot: this.bot }),
+      loadout: { gear, role: this.combatTeam ? this.combatTeam.roleFor(this) : null },
+      policy: { ...this.policy },
       lastAction: this.lastAction,
-      stats: { ...this.stats }
+      stats: { ...this.stats },
+      totemStatus: this.totems.status(),
+      events: this.events.slice(-15)
     };
+  }
+
+  /** Follow a teammate bot or an observed player without ever auto-attacking a protected player. */
+  async follow(target, { distance = 4 } = {}) {
+    if (!target) return { ok: false, error: 'follow requires a bot or player name' };
+    if (typeof target === 'string') {
+      this.followTarget = { kind: 'player', name: String(target).toLowerCase(), distance };
+      this.mode = 'FOLLOW';
+      this._setState('FOLLOWING', this.followTarget.name);
+      return { ok: true, mode: this.mode, follow: { kind: 'player', name: this.followTarget.name, distance }, visible: false };
+    }
+    if (!target.position && !target.name) return { ok: false, error: 'invalid follow target' };
+    this.followTarget = { kind: 'bot', bot: target, name: target.name, distance };
+    this.mode = 'FOLLOW';
+    this._setState('FOLLOWING', target.name);
+    return { ok: true, mode: this.mode, follow: { kind: 'bot', name: target.name, distance }, distance };
+  }
+
+  stopFollow() {
+    this.followTarget = null;
+    if (this.mode === 'FOLLOW') this.mode = 'BALANCED';
+    this._setState('IDLE', 'follow stopped');
+    return { ok: true, mode: this.mode };
+  }
+
+  async followTick() {
+    if (this.mode !== 'FOLLOW' || !this.followTarget) return { ok: false, reason: 'not following' };
+    let target = this.followTarget.kind === 'bot' ? this.followTarget.bot : null;
+    if (!target) {
+      target = typeof this.bot.entitiesNear === 'function'
+        ? this.bot.entitiesNear(32).find((entity) => String(entity.username || entity.name || '').toLowerCase() === this.followTarget.name)
+        : null;
+      if (!target) return { ok: false, follow: this.followTarget, visible: false, reason: 'follow target is not visible' };
+    }
+    if (!target.position) return { ok: false, reason: 'follow target has no position' };
+    const dist = distance(this.bot.position, target.position);
+    const wanted = this.followTarget.distance || 4;
+    if (dist > wanted + 1.5) {
+      const move = typeof this.bot.goNear === 'function'
+        ? await this.bot.goNear(target, wanted)
+        : await this.bot.goTo(target.position, { range: wanted });
+      return { ok: move.ok !== false, action: 'follow', target: target.name, distance: Number(dist.toFixed(1)), move, visible: true };
+    }
+    return { ok: true, action: 'follow', target: target.name, distance: Number(dist.toFixed(1)), inRange: true, visible: true };
+  }
+
+  /** Called when the bot actually dies; clears stale target and releases team locks. */
+  onDeath(reason = 'death') {
+    if (!this._deadNotified) {
+      this.stats.deaths++;
+      this._record('death', { reason, position: { ...this.bot.position } });
+      this._deadNotified = true;
+    }
+    this.target = null;
+    this.stopRequested = true;
+    this._setState('DEAD', reason);
+    if (this.combatTeam && typeof this.combatTeam.releaseBot === 'function') this.combatTeam.releaseBot(this.bot.name);
+    return { ok: true, dead: true, state: this.state };
+  }
+
+  /** Called after a respawn is observed. Never resumes the old target. */
+  onRespawn() {
+    if (this.state !== 'DEAD') return { ok: false, reason: 'not dead' };
+    this._deadNotified = false;
+    this.target = null;
+    this.stopRequested = false;
+    this._setState('RECOVERING', 'respawned');
+    return { ok: true, state: this.state };
   }
 
   stop() {
     this.stopRequested = true;
-    return { ok: true, bot: this.bot.name, stopped: true };
+    this._setState('DISENGAGED', 'operator stop');
+    return { ok: true, bot: this.bot.name, stopped: true, state: this.state };
   }
 
-  async defend({ maxAttacks = 12 } = {}) {
+  /**
+   * Prepare equipment before an engagement. Armour is optimised as a set; the
+   * weapon is selected for the actual target profile.
+   */
+  async prepare(target = null) {
+    this._setState('PREPARING', target ? (target.name || target.type) : 'general');
+    const result = { armor: null, weapon: null, offhand: null };
+    if (this.policy.autoArmour) {
+      const armor = optimizeArmor({ inventory: this.bot.inventory, meta: this.meta, target, preferFlight: false });
+      const signature = armor.selected.map((piece) => piece.name).join('|');
+      if (signature && signature !== this.lastArmorSignature && typeof this.bot.equipArmor === 'function') {
+        const equipped = await this.bot.equipArmor(armor.selected);
+        if (equipped && equipped.ok !== false) {
+          this.stats.armourSwitches++;
+          this.lastArmorSignature = signature;
+        }
+        result.armor = { ...armor, equipped: Boolean(equipped && equipped.ok !== false) };
+      } else {
+        result.armor = armor;
+      }
+    }
+    if (this.policy.autoWeapon) {
+      const choice = selectWeapon({ inventory: this.bot.inventory, meta: this.meta, target, distance: target ? target.distance : undefined });
+      if (choice.ok && choice.weapon.name !== this.lastWeapon && typeof this.bot.equipItem === 'function') {
+        const equipped = await this.bot.equipItem(choice.weapon.name, 'hand');
+        if (equipped && equipped.ok !== false) {
+          if (this.lastWeapon) this.stats.weaponSwitches++;
+          this.lastWeapon = choice.weapon.name;
+          this._setState('WEAPON_SWITCHING', choice.weapon.name);
+          this._setState('PREPARING', 'weapon ready');
+        }
+        result.weapon = { ...choice, equipped: Boolean(equipped && equipped.ok !== false) };
+      } else {
+        result.weapon = { ...choice, equipped: choice.ok && choice.weapon.name === this.lastWeapon };
+      }
+    }
+    if (this.policy.autoTotem) {
+      const assessment = this.assess();
+      result.offhand = await this.totems.chooseOffhand({
+        threat: target || assessment.nearest,
+        health: this.bot.health,
+        totalThreats: assessment.count,
+        shieldAvailable: this.policy.autoShield ? null : 0
+      });
+    }
+    return result;
+  }
+
+  /** Emergency survival pass. Returns a priority action or null. */
+  async survivalPass(target = null) {
+    const activations = this.totems.checkActivation();
+    if (activations.length) {
+      this.stats.totemActivations += activations.length;
+      this._setState('TOTEM_EMERGENCY', 'totem activated');
+      const handled = await this.totems.handleActivation();
+      this._record('totem_activated', { handled });
+      const healing = await this.heal({ emergency: true, threat: target });
+      if (this.bot.health <= this.policy.retreatHealth || (!handled.reserveSafe && this.bot.health <= 12)) {
+        return { priority: ACTION_PRIORITY.TOTEM_EMERGENCY, action: 'retreat', reason: 'totem consumed and reserve is low', handled, healing };
+      }
+      return { priority: ACTION_PRIORITY.TOTEM_EMERGENCY, action: 'totem', handled, healing };
+    }
+    if (this.bot.health <= this.policy.retreatHealth) {
+      if (this.policy.autoRetreat) return { priority: ACTION_PRIORITY.RETREAT, action: 'retreat', reason: `health ${this.bot.health}` };
+    }
+    if (this.bot.health <= 14 || this.bot.food <= 16) {
+      const healed = await this.heal({ threat: target });
+      if (healed.did) return { priority: this.bot.health <= 8 ? ACTION_PRIORITY.CRITICAL_HEAL : ACTION_PRIORITY.EAT, action: 'heal', ...healed };
+    }
+    return null;
+  }
+
+  async heal({ emergency = false, threat = null } = {}) {
+    if (!this.policy.autoHeal) return { did: false, reason: 'auto healing disabled' };
+    const foodChoice = chooseFood({
+      inventory: this.bot.inventory, health: this.bot.health, food: this.bot.food,
+      saturation: this.bot.saturation, threat,
+      allowEnchanted: this.policy.allowEnchantedGoldenApple && emergency,
+      emergency
+    });
+    let used = null;
+    if (foodChoice.ok) {
+      used = await consumeItem(this.bot, foodChoice.name);
+      if (used.consumed !== false) {
+        if (/golden_apple/.test(foodChoice.name)) this.stats.goldenApples++;
+        this.lastAction = `used ${foodChoice.name}`;
+        this._record('consume', { item: foodChoice.name, reason: foodChoice.reason, healthGained: used.healthGained });
+        return { did: true, kind: 'food', choice: foodChoice, result: used, verified: used.consumed !== false };
+      }
+    }
+    if (this.policy.autoPotions) {
+      const potion = choosePotion({
+        inventory: this.bot.inventory, meta: this.meta, bot: this.bot,
+        health: this.bot.health, threat
+      });
+      if (potion && potion.name) {
+        const drunk = await consumeItem(this.bot, potion.name);
+        if (drunk.consumed !== false) {
+          this.stats.potions++;
+          this.lastAction = `used ${potion.name}`;
+          this._record('potion', { item: potion.name, reason: potion.reason, healthGained: drunk.healthGained });
+          return { did: true, kind: 'potion', choice: potion, result: drunk, verified: drunk.consumed !== false };
+        }
+      }
+    }
+    return { did: false, food: foodChoice, reason: foodChoice.error || 'no healing item' };
+  }
+
+  /** Drink useful buffs before the first swing; never replaces emergency healing. */
+  async prebuff(target = null) {
+    if (!this.policy.autoPotions) return { ok: false, reason: 'auto potions disabled', used: [] };
+    const used = [];
+    for (let i = 0; i < 2; i++) {
+      const potion = choosePotion({
+        inventory: this.bot.inventory, meta: this.meta, bot: this.bot,
+        health: this.bot.health, threat: target
+      });
+      if (!potion || !potion.name) break;
+      if (['healing', 'strong_healing', 'regeneration', 'milk'].includes(potion.effect)) break;
+      const drunk = await consumeItem(this.bot, potion.name);
+      if (drunk.consumed === false) break;
+      this.stats.potions++;
+      this.lastAction = `used ${potion.name}`;
+      this._record('potion', { item: potion.name, reason: potion.reason, prebuff: true });
+      used.push({ item: potion.name, effect: potion.effect, reason: potion.reason });
+    }
+    return { ok: used.length > 0, used };
+  }
+
+  /** Brief shield window before an attack. Never blocks while swinging. */
+  async shieldWindow(target) {
+    if (!this.policy.autoShield || !this.bot.countItem('shield')) return { ok: false, reason: 'no shield' };
+    const profile = target ? profileFor(target) : null;
+    if (!profile || (!profile.ranged && !profile.projectile)) return { ok: false, reason: 'no projectile threat' };
+    if (this.totems.equipped()) return { ok: false, reason: 'totem is in the offhand' };
+    const on = await this.bot.useShield?.(true);
+    if (on && on.ok !== false) {
+      this.stats.shieldBlocks++;
+      this._setState('DEFENDING', 'incoming projectile');
+      await sleep(this.bot.speed ? 80 : 0);
+      await this.bot.useShield?.(false);
+      return { ok: true, blocked: true };
+    }
+    return { ok: false, reason: (on && on.error) || 'shield unavailable' };
+  }
+
+  async dodge(target, direction = null) {
+    if (!target || !target.position) return { ok: false, error: 'no target' };
+    const profile = profileFor(target);
+    if (profile.explosive && target.distance <= (profile.retreatBefore || 4)) return { ok: false, reason: 'creeper: create distance instead of strafing' };
+    const side = direction || (Date.now() % 2 ? 'left' : 'right');
+    if (typeof this.bot.strafe === 'function') {
+      const result = await this.bot.strafe(side, { durationMs: 120 });
+      if (result && result.ok !== false) {
+        this.stats.dodges++;
+        this._setState('DODGING', side);
+        return { ok: true, direction: side, verified: result.position !== undefined };
+      }
+    }
+    return { ok: false, reason: 'adapter has no strafe primitive' };
+  }
+
+  _verifyTarget(target) {
+    if (!target) return { alive: false, missing: true };
+    if (target.alive === false) return { alive: false, health: 0 };
+    if (target.health !== undefined && target.health <= 0) return { alive: false, health: 0 };
+    const live = typeof this.bot.entitiesNear === 'function'
+      ? this.bot.entitiesNear(64).find((entity) => entity.id === target.id)
+      : null;
+    return { alive: Boolean(live) || target.health === undefined || target.health > 0, health: live ? live.health : target.health };
+  }
+
+  async engage(options = {}) {
+    const maxAttacks = options.maxAttacks || 10;
+    const maxTicks = options.maxTicks || Math.max(20, maxAttacks * 4);
     this.stopRequested = false;
-    const assessment = this.assess();
-    if (!assessment.threats.length) return { action: 'defend', ok: true, idle: true };
-    if (this.bot.health <= config.survival.fleeHealth) {
-      return this.retreat(assessment.nearest);
+    this._setState('SCANNING');
+    let assessment = this.assess(options.radius || 20);
+    if (!assessment.threats.length) {
+      this._setState('IDLE', 'no threats');
+      return { action: 'defend', ok: true, idle: true, state: this.state, remaining: 0, results: [] };
     }
-    if (assessment.outmatched && this.bot.health < 14) {
-      const regroup = await this.regroup();
-      return { action: 'regroup', ...regroup, outmatched: true };
+    let target = options.target || assessment.focus || assessment.threats[0];
+    if (target) {
+      target = {
+        ...target,
+        player: isPlayer(target),
+        profile: target.profile || profileFor(target),
+        distance: target.distance === undefined ? Number(distance(target.position, this.bot.position).toFixed(1)) : target.distance
+      };
     }
-    await this.bot.useShield?.(true);
+    if (isPlayer(target)) {
+      const validation = this.pvp.canEngage(target, { position: this.bot.position, serverPvp: this.serverPvp });
+      if (!validation.ok) {
+        this._setState('IDLE', validation.error);
+        return { action: 'defend', ok: false, error: validation.error, code: validation.code, state: this.state, results: [] };
+      }
+    }
+    if (target.profile && target.profile.avoid && !options.authorizeHighRisk) {
+      this._setState('IDLE', 'high-risk entity avoided');
+      return { action: 'defend', ok: true, avoided: true, target: target.name || target.type, reason: `${target.name || target.type} requires an explicit high-risk order`, state: this.state, results: [] };
+    }
+    this.target = target;
+    await this.prepare(target);
     const results = [];
-    for (let i = 0; i < maxAttacks && !this.stopRequested; i++) {
-      const current = this.assess();
-      if (!current.threats.length) break;
-      if (this.bot.health <= config.survival.fleeHealth) {
-        results.push(await this.retreat(current.nearest));
+    const prebuff = await this.prebuff(target);
+    if (prebuff.used.length) results.push({ action: 'potion', ...prebuff });
+    let ticks = 0;
+    let confirmedKill = false;
+    while (ticks < maxTicks && !this.stopRequested) {
+      ticks++;
+      if (!this.ready) { this._setState('IDLE', 'bot not ready'); break; }
+      const survival = await this.survivalPass(target);
+      if (survival && survival.action === 'retreat') {
+        const retreat = await this.retreat(target, { reason: survival.reason });
+        results.push({ action: 'retreat', ...retreat });
         break;
       }
-      const target = current.threats[0];
-      const attack = await this.bot.attack(target);
-      this.stats.attacks++;
-      results.push({ action: 'attack', target: target.name || target.type, ...attack });
-      if (!attack.ok) break;
-      if (attack.killed) {
-        this.stats.kills++;
-        this.lastAction = `killed ${target.name || target.type}`;
+      if (survival && survival.action === 'totem') {
+        results.push({ action: 'totem', ...survival });
       }
+      if (survival && survival.action === 'heal') {
+        this._setState('HEALING', 'consumed healing item');
+        results.push({ action: 'heal', ...survival });
+      }
+      const verified = this._verifyTarget(target);
+      if (!verified.alive) break;
+      let current = assessment.threats.find((threat) => threat.id === target.id) || null;
+      if (!current || !current.position) {
+        assessment = this.assess(options.radius || 20);
+        current = assessment.threats.find((threat) => threat.id === target.id) || null;
+        if (!current) {
+          this._setState('DISENGAGED', 'target lost');
+          results.push({ action: 'lost-target', target: target.name || target.type });
+          break;
+        }
+      }
+      target = current;
+      const live = typeof this.bot.entitiesNear === 'function'
+        ? this.bot.entitiesNear(64).find((entity) => entity.id === target.id)
+        : null;
+      if (live && live.position) {
+        target = { ...target, position: { ...live.position }, health: live.health, distance: Number(distance(live.position, this.bot.position).toFixed(1)) };
+      }
+      this.target = target;
+      if (target.distance > 3) {
+        this._setState('APPROACHING', `closing ${target.distance}`);
+        let destination = target.position;
+        let planned = false;
+        if (this.combatTeam && this.combatTeam.enabled) {
+          const plan = this.combatTeam.plan(this, assessment.threats);
+          this.lastPlan = plan;
+          if (plan.offset) { destination = { y: target.position.y, ...plan.offset }; planned = true; }
+        }
+        const hasBow = Boolean(this.bot.countItem('bow') || this.bot.countItem('crossbow')) && Boolean(this.bot.countItem('arrow') || this.bot.countItem('firework_rocket'));
+        const wantsDistance = hasBow && target.profile && (target.profile.keepDistance || target.profile.ranged);
+        const desiredRange = wantsDistance
+          ? Math.max(4, Math.min(8, target.profile.preferredRange || 6))
+          : Math.min(3, target.profile?.preferredRange || 3);
+        const move = planned && typeof this.bot.goTo === 'function'
+          ? await this.bot.goTo(destination, { range: wantsDistance ? desiredRange : 1.5 })
+          : typeof this.bot.goNear === 'function'
+            ? await this.bot.goNear(target, desiredRange)
+            : await this.bot.goTo(destination, { range: 2 });
+        if (move && move.ok === false) {
+          results.push({ action: 'move', ok: false, error: move.error });
+          this._setState('DISENGAGED', 'cannot reach target');
+          break;
+        }
+        const afterMove = typeof this.bot.entitiesNear === 'function'
+          ? this.bot.entitiesNear(64).find((entity) => entity.id === target.id)
+          : null;
+        if (afterMove && afterMove.position) {
+          target = { ...target, position: { ...afterMove.position }, health: afterMove.health, distance: Number(distance(afterMove.position, this.bot.position).toFixed(1)) };
+          this.target = target;
+        }
+      }
+      const explosiveClose = Boolean(target.profile && target.profile.explosive && target.distance <= (target.profile.retreatBefore || 4));
+      if (explosiveClose && this.bot.health <= 10) {
+        await this.retreat(target, { reason: 'explosive proximity and low health' });
+        results.push({ action: 'retreat', reason: 'explosive proximity and low health' });
+        break;
+      }
+      const weapon = selectWeapon({ inventory: this.bot.inventory, meta: this.meta, target, distance: target.distance });
+      if (!weapon.ok) {
+        results.push({ action: 'attack', ok: false, error: weapon.error });
+        break;
+      }
+      if (weapon.weapon.name !== this.lastWeapon && this.policy.autoWeapon && typeof this.bot.equipItem === 'function') {
+        const equipped = await this.bot.equipItem(weapon.weapon.name, 'hand');
+        if (equipped && equipped.ok !== false) {
+          if (this.lastWeapon) this.stats.weaponSwitches++;
+          this.lastWeapon = weapon.weapon.name;
+        }
+      }
+      if (target.distance <= 3.2 && target.profile && target.profile.ranged) {
+        await this.shieldWindow(target);
+        if (typeof this.bot.strafe === 'function') await this.dodge(target);
+      }
+      this._setState('ENGAGING', weapon.weapon.name);
+      const attack = await this.bot.attack(target, { authorizedPlayer: isPlayer(target) && this.pvp.isAuthorized(target), pvpAuthorized: isPlayer(target) && this.pvp.isAuthorized(target) });
+      this.stats.attacks++;
+      if (attack.ok !== false) {
+        this.stats.hits++;
+        if (attack.damage) this.stats.damageDealt += Number(attack.damage) || 0;
+      } else {
+        this.stats.misses++;
+      }
+      this.lastAttackAt = Date.now();
+      results.push({ action: 'attack', target: target.name || target.username || target.type, weapon: weapon.weapon.name, ...attack });
+      if (attack.killed) {
+        confirmedKill = true;
+        this._recordKill(target, { verified: true });
+        results.push({ action: 'killed', target: target.name || target.type, verified: true });
+        break;
+      }
+      if (explosiveClose) {
+        // Creeper hit-and-run: land one hit, immediately leave the blast radius,
+        // then re-approach instead of standing in fuse range.
+        const away = await moveAway(this.bot, target.position, 8);
+        this._setState('REPOSITIONING', 'creeper hit-and-run');
+        results.push({ action: 'retreat', reason: 'creeper hit-and-run', ...away });
+        continue;
+      }
+      const post = this._verifyTarget(target);
+      if (!post.alive) {
+        confirmedKill = true;
+        this._recordKill(target, { verified: true });
+        results.push({ action: 'killed', target: target.name || target.type, verified: true });
+        break;
+      }
+      await sleep(this.bot.speed ? Math.max(50, Math.round(1000 / (weapon.weapon.attackSpeed || 1))) : 0);
     }
-    await this.bot.useShield?.(false);
-    return { action: 'defend', ok: true, stopped: this.stopRequested, attacks: results.length, results, remaining: this.assess().threats.length };
+    this._setState('VERIFYING');
+    const finalTarget = this.target;
+    const finalState = confirmedKill ? { alive: false, killed: true } : finalTarget ? this._verifyTarget(finalTarget) : { alive: false };
+    if (!finalState.alive && finalTarget) this._recordKill(finalTarget, { verified: true });
+    if (finalState.alive) this._setState('DISENGAGED', 'attack budget exhausted');
+    else this._setState('LOOTING', 'target defeated');
+    if (!finalState.alive && typeof this.bot.collectDrops === 'function') {
+      const loot = await this.bot.collectDrops();
+      results.push({ action: 'loot', ...loot });
+    }
+    if (this.state === 'LOOTING') this._setState('RECOVERING');
+    const remaining = this.assess().threats.length;
+    if (remaining === 0) this._setState('IDLE', 'area clear');
+    const onlyRetreat = results.length > 0 && results[results.length - 1].action === 'retreat' && !results.some((entry) => entry.action === 'attack');
+    return {
+      action: onlyRetreat ? 'retreat' : 'defend', ok: results.every((entry) => entry.ok !== false || entry.action === 'retreat'),
+      state: this.state, target: finalTarget ? (finalTarget.name || finalTarget.type) : null,
+      targetDefeated: !finalState.alive, remaining, attacks: results.filter((entry) => entry.action === 'attack').length,
+      results, stats: { ...this.stats }
+    };
   }
 
-  async retreat(threat) {
+  _recordKill(target, { verified = false } = {}) {
+    if (!target || this.killedIds.has(target.id)) return;
+    this.killedIds.add(target.id);
+    this.stats.kills++;
+    if (verified) this.stats.verifiedKills++;
+    if (target.player) this.stats.playerKills++;
+    this.lastAction = `killed ${target.name || target.username || target.type}`;
+    this._record('kill', { target: target.name || target.username || target.type, verified, player: Boolean(target.player) });
+  }
+
+  async defend(options = {}) {
+    return this.engage(options);
+  }
+
+  async retreat(threat = null, { reason = null, team = false } = {}) {
     this.stats.retreats++;
-    const result = await moveAway(this.bot, threat ? threat.position : this.bot.position, 10);
-    if (this.bot.useShield) await this.bot.useShield(true);
+    this._setState('RETREATING', reason || 'low health');
+    await this.totems.equip({ force: false }).catch(() => null);
+    if (this.bot.health <= 12) await this.heal({ emergency: true, threat });
+    const origin = threat && threat.position
+      ? threat.position
+      : this.target && this.target.position
+        ? this.target.position
+        : { x: this.bot.position.x - 1, y: this.bot.position.y, z: this.bot.position.z - 1 };
+    const result = await moveAway(this.bot, origin, team ? 14 : 10);
+    if (this.policy.autoShield && this.bot.useShield && this.totems.offhand() !== 'totem_of_undying') await this.bot.useShield(true);
+    const away = threat && threat.position ? distance(this.bot.position, threat.position) : null;
     this.lastAction = 'retreated';
-    return { action: 'retreat', ok: result.ok !== false, threat: threat ? threat.name || threat.type : null };
+    this._record('retreat', { reason, distance: away, team });
+    if (this.comms && typeof this.comms.send === 'function' && team) {
+      try { this.comms.send('RETURN_TO_BASE', this.bot.name, { bot: this.bot.name, reason }); } catch (_) { /* ignore */ }
+    }
+    this._setState('DISENGAGED', 'retreated');
+    return {
+      action: 'retreat', ok: result.ok !== false, threat: threat ? threat.name || threat.type : null,
+      reason, distance: away, verified: result.ok !== false, state: this.state
+    };
   }
 
   async regroup() {
-    const home = this.team && this.team.home ? this.team.home : null;
+    const home = (this.combatTeam && this.combatTeam.home) || (this.team && this.team.home) || null;
     if (home && home.position) {
       const result = await this.bot.goTo(home.position, { range: 3 });
       this.lastAction = 'regrouped at home';
+      this._setState('RECOVERING', 'regrouped');
       return { ok: result.ok !== false, position: home.position, reason: 'outmatched' };
     }
     const away = { x: this.bot.position.x + 8, y: this.bot.position.y, z: this.bot.position.z + 8 };
     const result = await this.bot.goTo(away, { range: 2 });
     this.lastAction = 'regrouped';
+    this._setState('RECOVERING', 'regrouped');
     return { ok: result.ok !== false, reason: 'no home set' };
+  }
+
+  async protectTeammate(victim) {
+    if (!victim) return { ok: false, error: 'no teammate' };
+    this.stats.rescues++;
+    this._setState('APPROACHING', `protecting ${victim.bot.name}`);
+    await this.bot.goNear(victim.bot, 3);
+    const threats = this.assess(12).threats.filter((threat) => distance(threat.position, victim.bot.position) <= 10);
+    if (!threats.length) return { ok: true, protected: victim.bot.name, threats: 0 };
+    const result = await this.engage({ target: threats[0], maxAttacks: 6 });
+    return { ok: result.ok !== false, protected: victim.bot.name, threats: threats.length, engagement: result };
+  }
+
+  async guard(position = null) {
+    if (position) this.guardPosition = { x: Number(position.x), y: Number(position.y), z: Number(position.z) };
+    this.mode = 'GUARD';
+    const assessment = this.assess(16);
+    if (assessment.threats.length) return this.engage({ radius: 16, maxAttacks: 6 });
+    if (this.guardPosition) {
+      const move = await this.bot.goTo(this.guardPosition, { range: 3 });
+      return { ok: move.ok !== false, action: 'guard', idle: true, position: this.guardPosition, move };
+    }
+    return { ok: true, action: 'guard', idle: true, position: this.bot.position };
+  }
+
+  async duel(name) {
+    if (!name) return { ok: false, error: 'duel requires an authorised player name' };
+    this.pvp.setEnabled(true);
+    const added = this.pvp.addTarget(name);
+    if (!added.ok) return added;
+    this.mode = 'DUEL';
+    this.armed = true;
+    return { ok: true, mode: this.mode, target: String(name).toLowerCase(), note: 'authorisation is explicit; server PvP rules still apply' };
   }
 
   /** Hunt a food animal only. Never targets teammates, players or pets. */
@@ -127,9 +739,7 @@ class CombatController {
       .sort((a, b) => distance(a.position, this.bot.position) - distance(b.position, this.bot.position));
     const target = animals[0];
     if (!target) return { action: 'hunt', ok: true, idle: true, reason: 'no animals nearby' };
-    const move = typeof this.bot.goNear === 'function'
-      ? await this.bot.goNear(target, 2)
-      : await this.bot.goTo(target.position, { range: 2 });
+    const move = typeof this.bot.goNear === 'function' ? await this.bot.goNear(target, 2) : await this.bot.goTo(target.position, { range: 2 });
     if (move && move.ok === false) return { action: 'hunt', ok: false, error: move.error };
     const attack = await this.bot.attack(target);
     if (attack.ok) { this.stats.attacks++; if (attack.killed) this.stats.kills++; }
@@ -137,21 +747,40 @@ class CombatController {
     return { action: 'hunt', target: target.name || target.type, ...attack };
   }
 
-  /** Guard against accidental PvP: only hostile mobs are ever valid targets. */
+  /** Explicit target validation: teammates, neutrals, protected players and unauthorised players are refused. */
   async attackEntity(entity) {
     if (!entity) return { ok: false, error: 'no target' };
     if (isTeammate(entity, this.team)) return { ok: false, error: 'never attack teammates' };
     const name = entity.name || entity.type || '';
-    if (entity.username) {
-      if (!this.pvpEnabled) return { ok: false, error: 'PvP is disabled' };
-      return { ok: false, error: 'ordinary players are never auto-attacked' };
+    if (isPlayer(entity)) {
+      if (!this.pvp.enabled) return { ok: false, error: 'PvP is disabled; ordinary players are never auto-attacked' };
+      const validation = this.pvp.canEngage(entity, { position: this.bot.position, serverPvp: this.serverPvp });
+      if (!validation.ok) return { ok: false, error: validation.error, code: validation.code };
+      const attack = await this.bot.attack(entity, { authorizedPlayer: true, pvpAuthorized: true });
+      if (attack.ok) {
+        this.stats.attacks++;
+        if (attack.damage) this.stats.damageDealt += Number(attack.damage) || 0;
+        if (attack.killed) this._recordKill({ ...entity, player: true }, { verified: true });
+      }
+      return { ...attack, player: true };
     }
-    if (NEVER_ATTACK.has(name) || ANIMALS.has(name)) return { ok: false, error: `not a hostile target: ${name}` };
-    if (!isHostile(entity)) return { ok: false, error: `refusing to attack ${name}` };
+    if (!this.pveEnabled) return { ok: false, error: 'PvE combat is disabled' };
+    if (NEVER_ATTACK.has(name) || ANIMALS.has(name) || isNeutral(entity)) return { ok: false, error: `not a hostile target: ${name}` };
+    if (!isHostile(entity) && legacyHostile(entity) === false) return { ok: false, error: `refusing to attack ${name}` };
+    const prep = await this.prepare(entity);
     const result = await this.bot.attack(entity);
-    if (result.ok) this.stats.attacks++;
-    return result;
+    if (result.ok) {
+      this.stats.attacks++;
+      if (result.damage) this.stats.damageDealt += Number(result.damage) || 0;
+      if (result.killed) this._recordKill(entity, { verified: true });
+    }
+    return { ...result, prepared: prep };
   }
+
+  totemStatus() { return this.totems.status(); }
+  foodStatus() { return suppliesStatus({ inventory: this.bot.inventory, meta: this.meta, bot: this.bot }); }
+  potionStatus() { return this.foodStatus().potions; }
+  gearStatus() { return gearStatus({ inventory: this.bot.inventory, meta: this.meta, target: this.target }); }
 }
 
 module.exports = { CombatController, ANIMALS, NEVER_ATTACK };

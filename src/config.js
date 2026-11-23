@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Chickenbots V5 configuration.
+ * Chickenbots V6 configuration.
  *
  * Everything is deterministic and local. No AI service, API key or cloud
  * inference is used anywhere in this project.
@@ -122,6 +122,7 @@ const config = {
     actionTimeoutMs: envInt('ACTION_TIMEOUT_MS', 60000),
     maxConsecutiveFailures: envInt('MAX_ACTION_FAILURES', 4),
     pvp: envBool('PvP_ENABLED', false), // PvP is off by default, always.
+    serverPvp: envBool('SERVER_PVP_ENABLED', true), // set false when the Minecraft server itself has pvp=false
     // Optional AI hook. Disabled by default; the deterministic engine is
     // complete without it.
     ai: {

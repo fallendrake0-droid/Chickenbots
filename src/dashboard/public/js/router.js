@@ -2,9 +2,10 @@ import { parseHash } from './utils.js';
 import overview from './pages/overview.js';
 import { botsPage, profilesPage, profilePage, teamPage, connectionsPage } from './pages/fleet.js';
 import {
-  survivalPage, combatPage, inventoryPage, miningPage, excavationPage,
+  survivalPage, inventoryPage, miningPage, excavationPage,
   woodcuttingPage, farmingPage, fishingPage, explorationPage, sleepPage
 } from './pages/gameplay.js';
+import { combatPage, combatTeamPage, combatGearPage, combatSuppliesPage, combatTargetsPage } from './pages/combat.js';
 import { builderPage, homeBasePage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
 import {
   operationsOverview, builderProjectsPage, siteSurveyPage, sitePreparationPage,
@@ -37,7 +38,6 @@ export const NAV_GROUPS = [
     label: 'Gameplay',
     items: [
       { path: 'survival', label: 'Survival', icon: 'heart' },
-      { path: 'combat', label: 'Combat', icon: 'sword' },
       { path: 'inventory', label: 'Inventory', icon: 'package' },
       { path: 'mining', label: 'Mining', icon: 'pickaxe' },
       { path: 'excavation', label: 'Excavation', icon: 'shovel' },
@@ -46,6 +46,16 @@ export const NAV_GROUPS = [
       { path: 'fishing', label: 'Fishing', icon: 'fish' },
       { path: 'exploration', label: 'Exploration', icon: 'compass' },
       { path: 'sleep', label: 'Sleep', icon: 'bed' }
+    ]
+  },
+  {
+    label: 'Combat Operations',
+    items: [
+      { path: 'combat', label: 'Combat Overview', icon: 'sword' },
+      { path: 'combat-team', label: 'Team Fight', icon: 'users' },
+      { path: 'combat-gear', label: 'Equipment', icon: 'shield' },
+      { path: 'combat-supplies', label: 'Totems & Supplies', icon: 'shield-check' },
+      { path: 'combat-targets', label: 'PvP & Targets', icon: 'target' }
     ]
   },
   {
@@ -109,7 +119,11 @@ export function resolveRoute(hash = location.hash) {
     case 'team': return { ...base, page: teamPage, label: 'Team Management' };
     case 'connections': return { ...base, page: connectionsPage, label: 'Connection Management' };
     case 'survival': return { ...base, page: survivalPage, label: 'Survival' };
-    case 'combat': return { ...base, page: combatPage, label: 'Combat' };
+    case 'combat': return { ...base, page: combatPage, label: 'Combat Overview' };
+    case 'combat-team': return { ...base, page: combatTeamPage, label: 'Team Fight' };
+    case 'combat-gear': return { ...base, page: combatGearPage, label: 'Equipment' };
+    case 'combat-supplies': return { ...base, page: combatSuppliesPage, label: 'Totems & Supplies' };
+    case 'combat-targets': return { ...base, page: combatTargetsPage, label: 'PvP & Targets' };
     case 'inventory': return { ...base, page: inventoryPage, label: 'Inventory' };
     case 'mining': return { ...base, page: miningPage, label: 'Mining' };
     case 'excavation': return { ...base, page: excavationPage, label: 'Excavation' };

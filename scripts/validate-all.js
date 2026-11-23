@@ -89,7 +89,7 @@ function consistency() {
 }
 
 function main() {
-  process.stdout.write('Chickenbots V5 validation\n');
+  process.stdout.write('Chickenbots V6 validation\n');
   process.stdout.write(quick ? 'Mode: quick (sampled schematics)\n' : 'Mode: full\n');
   const results = [];
   results.push(step('lint', process.execPath, ['scripts/lint.js']));

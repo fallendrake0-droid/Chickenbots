@@ -135,10 +135,21 @@ class InventoryManager {
   async share(itemName, count, recipient) {
     if (!recipient || recipient === this.bot) return { ok: false, error: 'invalid recipient' };
     if (this.bot.countItem(itemName) < count) return { ok: false, error: `not enough ${itemName}` };
+    const before = typeof recipient.countItem === 'function' ? recipient.countItem(itemName) : 0;
     const toss = await this.bot.tossItem(itemName, count);
     if (!toss.ok) return toss;
-    if (typeof recipient.addItem === 'function') recipient.addItem(itemName, count);
-    else return { ok: false, error: 'recipient cannot receive tossed items through this adapter' };
+    if (typeof recipient.addItem === 'function') {
+      recipient.addItem(itemName, count);
+    } else if (typeof recipient.refreshInventory === 'function') {
+      // Real adapters cannot be mutated locally: wait for the pickup and then
+      // verify the recipient's actual inventory before claiming the transfer.
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      recipient.refreshInventory();
+      const after = recipient.countItem(itemName);
+      if (after < before + count) return { ok: false, error: 'recipient did not pick up the tossed item', tossed: true, item: itemName, count };
+    } else {
+      return { ok: false, error: 'recipient cannot receive tossed items through this adapter', tossed: true };
+    }
     this.stats.shared += count;
     if (this.ledger) {
       const request = this.ledger.requestTransfer({ from: this.bot.name, to: recipient.name, item: itemName, count, reason: 'inventory share' });

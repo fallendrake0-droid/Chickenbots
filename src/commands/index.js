@@ -238,12 +238,31 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'team', category: 'team', summary: 'Inspect team state and control formations, resources and coordination', usage: 'team [state|on|off|follow|regroup|retreat|defend|memory|locks|tasks|roles|leader|resources|objectives|assignments|assist <bot>|sleep [bot|all]|reassign|formation <name>]',
+    name: 'team', category: 'team', summary: 'Inspect team state and control formations, resources and coordination', usage: 'team [state|on|off|follow|regroup|retreat|defend|memory|locks|tasks|roles|leader|resources|objectives|assignments|assist <bot>|sleep [bot|all]|reassign|formation <name>|combat heal]',
     execute: async (args) => {
       const sub = (args[0] || 'state').toLowerCase();
       const coordinator = services.coordinator;
       if (!coordinator) return { ok: false, error: 'no coordinator' };
       if (sub === 'state' || sub === 'status') return { ok: true, state: coordinator.getState(), enabled: coordinator.enabled, formation: coordinator.formation };
+      if (sub === 'combat') {
+        const teamCombat = combatCoordinator(services);
+        const value = String(args[1] || 'status').toLowerCase();
+        if (value === 'on' || value === 'off') return { ok: true, ...teamCombat.setEnabled(value === 'on'), status: teamCombat.status() };
+        if (value === 'defend' || value === 'defensive') return { ok: true, ...teamCombat.setMode('DEFENSIVE') };
+        if (value === 'retreat') return { ok: true, ...(await teamCombat.retreat('operator team combat retreat')) };
+        if (value === 'regroup') return { ok: true, ...(await teamCombat.regroup()) };
+        if (value === 'rescue') return { ok: true, ...(await teamCombat.autoRescue({ cooldownMs: 0 })) };
+        if (value === 'heal') return { ok: true, ...(await teamCombat.assistHealing({ cooldownMs: 0 })) };
+        if (value === 'attack') {
+          if (!args[2]) throw new CommandError('usage: team combat attack <authorised-player>');
+          return teamAttack(services, args[2]);
+        }
+        return { ok: true, combat: teamCombat.status() };
+      }
+      if (sub === 'attack') {
+        if (!args[1]) throw new CommandError('usage: team attack <authorised-player>');
+        return teamAttack(services, args[1]);
+      }
       if (sub === 'leader') return { ok: true, leader: coordinator.leader, election: services.leadership ? services.leadership.status() : null };
       if (sub === 'on' || sub === 'off') return { ok: true, ...coordinator.setEnabled(sub === 'on') };
       if (sub === 'memory') {
@@ -319,8 +338,8 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'bot', category: 'team', summary: 'Per-bot status, movement and action controls', usage: 'bot <name|all> <status|goto x y z|come|follow|eat|mine [ore]|chop [type]|farm [crop]|fish|defend|explore|sleep|return home|where>',
-    execute: async (args) => {
+    name: 'bot', category: 'team', summary: 'Per-bot status, movement and action controls', usage: 'bot <name|all> <status|goto x y z|come|follow|eat|mine [ore]|chop [type]|farm [crop]|fish|defend|combat|guard [x y z]|duel <player>|explore|sleep|return home|where>',
+    execute: async (args, context = {}) => {
       const target = String(args[0] || '').toLowerCase();
       if (target === 'all') return { ok: true, bots: [...services.bots.values()].map((b) => (b.summary ? b.summary() : { name: b.name })) };
       const bot = pickBot(services, args[0]);
@@ -374,6 +393,16 @@ function registerAll(services, registry) {
         const result = await actions.combat.defend({ maxAttacks: 10 });
         return { ok: result.ok !== false, ...result };
       }
+      if (action === 'combat') return { ok: true, bot: bot.name, combat: actions.combat.status() };
+      if (action === 'guard') {
+        const position = args.length >= 5 ? parseOrigin(args, 2) : null;
+        return { ok: true, bot: bot.name, ...(await actions.combat.guard(position)) };
+      }
+      if (action === 'duel') {
+        if (!args[2]) throw new CommandError('usage: bot <name> duel <authorised-player> confirm');
+        if (!context.confirmed) return { ok: false, error: 'duel requires explicit confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+        return { ok: true, bot: bot.name, ...(await actions.combat.duel(args[2])) };
+      }
       if (action === 'explore') {
         if (String(args[2] || '').toLowerCase() === 'stop') return actions.exploration.stop();
         const steps = args[2] ? intArg(args[2], 'steps', { min: 1, max: 20 }) : 2;
@@ -418,13 +447,24 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'auto', category: 'survival', summary: 'Fleet or per-bot automatic routine switches', usage: 'auto <eat|healing|armour|tools|crafting|shield> [on|off] [bot|all]',
+    name: 'auto', category: 'survival', summary: 'Fleet or per-bot automatic routine switches', usage: 'auto <eat|healing|armour|tools|crafting|shield|weapon|totem|potions|food|heal> [on|off] [bot|all]',
     execute: async (args) => {
-      const feature = String(args[0] || '').toLowerCase();
+      const rawFeature = String(args[0] || '').toLowerCase();
+      const feature = rawFeature === 'armor' ? 'armour' : rawFeature;
       if (!feature || feature === 'status') return orchestrateSurvival(services, 'all', null, true);
       const value = String(args[1] || 'on').toLowerCase();
       if (!['on', 'off'].includes(value)) throw new CommandError('usage: auto <routine> [on|off] [bot|all]');
       const target = args[2] || 'all';
+      const combatAutomation = ['weapon', 'totem', 'potions', 'food', 'armour', 'shield', 'heal'];
+      if (combatAutomation.includes(feature)) {
+        const combatResults = combatControllers(services)
+          .filter((controller) => target === 'all' || controller.bot.name === target)
+          .map((controller) => ({ bot: controller.bot.name, ...controller.setAuto(feature, value === 'on') }));
+        const survivalResults = ['armour', 'shield'].includes(feature)
+          ? [orchestrateSurvival(services, target, feature, value === 'on')]
+          : [];
+        return { ok: true, automation: feature, enabled: value === 'on', combat: combatResults, survival: survivalResults };
+      }
       return orchestrateSurvival(services, target, feature, value === 'on');
     }
   });
@@ -693,6 +733,7 @@ function registerAll(services, registry) {
 
   registerExcavation(registry, services);
   registerBuild(registry, services);
+  registerCombat(registry, services);
   registerConstruction(registry, services);
   registerSchematics(registry, services);
 
@@ -1042,6 +1083,258 @@ function registerSchematics(registry, services) {
   });
 }
 
+
+function combatControllers(services) {
+  if (!services.actions) throw new CommandError('action layer unavailable');
+  return services.actions.list().map((actions) => actions.combat);
+}
+
+function combatCoordinator(services) {
+  if (!services.combatTeam) throw new CommandError('team combat coordinator unavailable');
+  return services.combatTeam;
+}
+
+async function teamAttack(services, playerName) {
+  const name = String(playerName || '').toLowerCase();
+  const controllers = combatControllers(services);
+  for (const controller of controllers) {
+    controller.addTarget(name);
+    controller.setPvp(true);
+  }
+  const results = [];
+  for (const controller of controllers) {
+    const target = controller.bot.entitiesNear(64).find((entity) => String(entity.username || entity.name || '').toLowerCase() === name);
+    if (!target) { results.push({ bot: controller.bot.name, ok: false, error: 'authorised player is not currently visible' }); continue; }
+    results.push({ bot: controller.bot.name, ...(await controller.engage({ target, maxAttacks: 10 })) });
+  }
+  return { ok: results.some((result) => result.ok !== false), target: name, results };
+}
+
+function registerCombat(registry, services) {
+  const team = () => combatCoordinator(services);
+  const controllers = () => combatControllers(services);
+
+  registry.register({
+    name: 'combat', category: 'combat', summary: 'Inspect or control the V6 combat engine and team fight', usage: 'combat [status|on|off|start|stop|mode|guard|duel|rescue|heal]',
+    execute: async (args) => {
+      const sub = String(args[0] || 'status').toLowerCase();
+      if (sub === 'status') return { ok: true, team: team().status(), bots: controllers().map((controller) => controller.status()) };
+      if (sub === 'on' || sub === 'off') {
+        team().setEnabled(sub === 'on');
+        const results = controllers().map((controller) => (sub === 'on' ? controller.arm() : controller.disarm()));
+        return { ok: true, enabled: sub === 'on', results };
+      }
+      if (sub === 'start') {
+        team().setEnabled(true);
+        const results = [];
+        for (const controller of controllers()) results.push({ bot: controller.bot.name, ...(await controller.engage({ maxAttacks: 10 })) });
+        return { ok: results.some((result) => result.ok !== false), results };
+      }
+      if (sub === 'stop') {
+        const stopped = controllers().map((controller) => controller.stop());
+        team().releaseLocks();
+        return { ok: true, stopped, team: team().status() };
+      }
+      if (sub === 'mode') {
+        if (!args[1]) return { ok: true, mode: team().mode, modes: ['TEAM_FIGHT', 'DEFENSIVE', 'GUARD', 'ARENA', 'RETREAT', 'ESCORT'] };
+        return { ok: true, ...team().setMode(args[1]) };
+      }
+      if (sub === 'rescue') return { ok: true, ...(await team().autoRescue({ cooldownMs: 0 })) };
+      if (sub === 'heal') return { ok: true, ...(await team().assistHealing({ cooldownMs: 0 })) };
+      if (sub === 'guard') {
+        const position = args.length >= 4 ? parseOrigin(args, 1) : null;
+        const results = [];
+        for (const controller of controllers()) results.push({ bot: controller.bot.name, ...(await controller.guard(position)) });
+        return { ok: results.some((result) => result.ok !== false), results };
+      }
+      if (sub === 'duel') {
+        if (!args[1]) throw new CommandError('usage: combat duel <authorised-player>');
+        const results = controllers().map((controller) => ({ bot: controller.bot.name, ...controller.duel(args[1]) }));
+        return { ok: results.every((result) => result.ok !== false), results };
+      }
+      return { ok: false, error: `unknown combat subcommand '${sub}'` };
+    }
+  });
+
+  registry.register({
+    name: 'pve', category: 'combat', summary: 'Enable or disable autonomous hostile-mob combat', usage: 'pve [on|off|status]',
+    execute: async (args) => {
+      const value = String(args[0] || 'status').toLowerCase();
+      if (!['on', 'off', 'status'].includes(value)) throw new CommandError('usage: pve [on|off|status]');
+      if (value === 'status') return { ok: true, pve: controllers().map((controller) => ({ bot: controller.bot.name, enabled: controller.pveEnabled, armed: controller.armed })) };
+      const results = controllers().map((controller) => ({ bot: controller.bot.name, ...controller.setPve(value === 'on') }));
+      return { ok: true, pveEnabled: value === 'on', results };
+    }
+  });
+
+  registry.register({
+    name: 'pvp', category: 'combat', summary: 'Explicit PvP gate; no random player is ever auto-targeted', usage: 'pvp [on|off|status]',
+    execute: async (args) => {
+      const value = String(args[0] || 'status').toLowerCase();
+      if (!['on', 'off', 'status'].includes(value)) throw new CommandError('usage: pvp [on|off|status]');
+      if (value === 'status') return { ok: true, pvp: controllers().map((controller) => ({ bot: controller.bot.name, ...controller.pvp.status() })), serverPvp: config.autonomy.serverPvp !== false };
+      const results = controllers().map((controller) => ({ bot: controller.bot.name, ...controller.setPvp(value === 'on') }));
+      return { ok: true, pvpEnabled: value === 'on', targets: controllers()[0] ? controllers()[0].pvp.list() : [], results };
+    }
+  });
+
+  registry.register({
+    name: 'target', aliases: ['targets'], category: 'combat', summary: 'Manage the explicit authorised PvP target list', usage: 'target <player> | target add <player> | target remove <player> | target clear | target list',
+    execute: async (args) => {
+      const sub = String(args[0] || 'list').toLowerCase();
+      const list = controllers();
+      if (sub === 'list') return { ok: true, targets: list[0] ? list[0].pvp.list() : [], protectedPlayers: list[0] ? list[0].pvp.listProtected() : [] };
+      if (sub === 'clear') {
+        for (const controller of list) { for (const target of controller.pvp.list()) controller.removeTarget(target); }
+        return { ok: true, targets: [] };
+      }
+      const action = ['add', 'remove', 'protect', 'unprotect'].includes(sub) ? sub : 'add';
+      const name = action === 'add' && sub !== 'add' ? args[0] : args[1];
+      if (!name) throw new CommandError('usage: target <player> | target add|remove|protect|unprotect <player>');
+      const results = list.map((controller) => {
+        if (action === 'add') return { bot: controller.bot.name, ...controller.addTarget(name) };
+        if (action === 'remove') return { bot: controller.bot.name, ...controller.removeTarget(name) };
+        if (action === 'protect') return { bot: controller.bot.name, ...controller.protect(name) };
+        return { bot: controller.bot.name, ...controller.unprotect(name) };
+      });
+      return { ok: results.every((result) => result.ok !== false), action, name, targets: list[0] ? list[0].pvp.list() : [], protectedPlayers: list[0] ? list[0].pvp.listProtected() : [], results };
+    }
+  });
+
+  registry.register({
+    name: 'gear', category: 'combat', summary: 'Evaluate weapons, armour, durability and upgrade priorities from real inventory', usage: 'gear [status|optimise|durability|progression|layout] [bot]',
+    execute: async (args) => {
+      const sub = String(args[0] || 'status').toLowerCase();
+      const bot = pickBot(services, args[1] || null);
+      const controller = actionsFor(services, bot.name).combat;
+      if (sub === 'optimise' || sub === 'optimize') {
+        const prepared = await controller.prepare(controller.assess().nearest);
+        return { ok: true, bot: bot.name, prepared, gear: controller.gearStatus() };
+      }
+      if (sub === 'durability') return { ok: true, bot: bot.name, broken: controller.gearStatus().broken, weapon: controller.gearStatus().bestWeapon, shield: controller.gearStatus().shield };
+      if (sub === 'layout') {
+        if (typeof bot.layoutHotbar !== 'function') {
+          const { itemSlot } = require('../combat/equipment');
+          const layout = Object.keys(bot.inventory || {}).filter((name) => bot.countItem(name) > 0).map((name) => ({ name, slot: itemSlot(name) })).filter((row) => String(row.slot).startsWith('hotbar'));
+          return { ok: false, bot: bot.name, error: 'this adapter cannot reorder the hotbar; conceptual layout only', layout };
+        }
+        return { ok: true, bot: bot.name, ...(await bot.layoutHotbar()) };
+      }
+      if (sub === 'progression' || sub === 'progress') {
+        const { upgradePlan } = require('../combat/equipment');
+        const plan = upgradePlan({ inventory: controller.bot.inventory || {}, meta: controller.meta || {}, target: controller.assess().nearest });
+        return { ok: true, bot: bot.name, tier: plan.tier, next: plan.next, goals: plan.goals, objectives: plan.objectives, note: plan.note };
+      }
+      return { ok: true, bot: bot.name, gear: controller.gearStatus(), status: controller.status() };
+    }
+  });
+
+  registry.register({
+    name: 'totem', category: 'combat', summary: 'Inspect totems and refill reserves with verified physical transfers', usage: 'totem [status|reserve <n>|refill]',
+    execute: async (args) => {
+      const sub = String(args[0] || 'status').toLowerCase();
+      const list = controllers();
+      if (sub === 'status') return { ok: true, ledger: require('../combat/totems').teamTotemLedger(list), bots: list.map((controller) => controller.totemStatus()) };
+      if (sub === 'reserve') {
+        if (args[1] === undefined) return { ok: true, reserve: list[0] ? list[0].totems.reserve : 0, ledger: require('../combat/totems').teamTotemLedger(list) };
+        const reserve = intArg(args[1], 'reserve', { min: 0, max: 9 });
+        for (const controller of list) { controller.totems.reserve = reserve; controller.totems.criticalReserve = Math.min(reserve, 1); }
+        return { ok: true, reserve, ledger: require('../combat/totems').teamTotemLedger(list) };
+      }
+      if (sub === 'refill') {
+        const rows = [];
+        for (const recipient of list) {
+          if (recipient.totems.count() >= recipient.totems.reserve) { rows.push({ bot: recipient.bot.name, ok: true, already: true, totems: recipient.totems.count() }); continue; }
+          const donor = list.find((entry) => entry !== recipient && entry.totems.count() > Math.max(entry.totems.reserve, 1) && entry.bot.countItem('totem_of_undying') > 0);
+          if (!donor) { rows.push({ bot: recipient.bot.name, ok: false, error: 'no donor with surplus totems' }); continue; }
+          await recipient.bot.goNear(donor.bot, 2);
+          const shared = await actionsFor(services, donor.bot.name).inventory.share('totem_of_undying', 1, recipient.bot);
+          const equipped = shared.ok ? await recipient.totems.equip({ force: true }) : { ok: false, error: shared.error };
+          rows.push({ bot: recipient.bot.name, donor: donor.bot.name, shared, equipped, totems: recipient.totems.count() });
+        }
+        return { ok: rows.every((row) => row.ok !== false || row.already), rows, ledger: require('../combat/totems').teamTotemLedger(list) };
+      }
+      return { ok: false, error: `unknown totem subcommand '${sub}'` };
+    }
+  });
+
+  registry.register({
+    name: 'food', category: 'combat', summary: 'Show real food, golden apple and emergency supply inventory', usage: 'food [status] [bot]',
+    execute: async (args) => {
+      const name = String(args[0] || '').toLowerCase() === 'status' ? args[1] : args[0];
+      const bot = pickBot(services, name);
+      return { ok: true, bot: bot.name, supplies: actionsFor(services, bot.name).combat.foodStatus() };
+    }
+  });
+
+  registry.register({
+    name: 'potions', category: 'combat', summary: 'Show identified potions, effects and reserves', usage: 'potions status [bot]',
+    execute: async (args) => {
+      const bot = pickBot(services, args[1] || null);
+      return { ok: true, bot: bot.name, supplies: actionsFor(services, bot.name).combat.foodStatus(), effects: { ...bot.effects } };
+    }
+  });
+
+  registry.register({
+    name: 'follow', category: 'combat', summary: 'Follow a teammate or visible player while defending against real threats', usage: 'follow <bot|player> [distance] | follow stop',
+    execute: async (args) => {
+      const requested = String(args[0] || '').trim();
+      if (!requested) throw new CommandError('usage: follow <bot|player> [distance] | follow stop');
+      if (requested.toLowerCase() === 'stop') {
+        return { ok: true, stopped: combatControllers(services).map((controller) => ({ bot: controller.bot.name, ...controller.stopFollow() })) };
+      }
+      const distance = args[1] === undefined ? 4 : intArg(args[1], 'distance', { min: 2, max: 16 });
+      const targetBot = services.bots ? services.bots.get(requested) : null;
+      const results = [];
+      for (const controller of combatControllers(services)) {
+        if (targetBot && controller.bot === targetBot) { results.push({ bot: controller.bot.name, ok: true, skipped: 'follow target is this bot' }); continue; }
+        const target = targetBot || requested.toLowerCase();
+        results.push({ bot: controller.bot.name, ...(await controller.follow(target, { distance })) });
+      }
+      return { ok: results.some((result) => result.ok !== false), target: targetBot ? targetBot.name : requested.toLowerCase(), distance, results };
+    }
+  });
+
+  registry.register({
+    name: 'guard', category: 'combat', summary: 'Guard an area and attack hostile mobs that enter range', usage: 'guard <x> <y> <z> [bot] | guard stop',
+    execute: async (args) => {
+      if (String(args[0] || '').toLowerCase() === 'stop') return { ok: true, stopped: controllers().map((controller) => controller.stop()) };
+      const position = parseOrigin(args, 0);
+      const target = args[3] ? actionsFor(services, pickBot(services, args[3]).name).combat : controllers()[0];
+      return { ok: true, ...(await target.guard(position)) };
+    }
+  });
+
+  registry.register({
+    name: 'duel', category: 'combat', summary: 'Authorise one explicit duel target; server PvP rules still apply', usage: 'duel <authorised-player> [confirm]',
+    dangerous: true,
+    requiresConfirmation: true,
+    execute: async (args) => {
+      if (!args[0]) throw new CommandError('usage: duel <authorised-player> confirm');
+      return { ok: true, results: controllers().map((controller) => ({ bot: controller.bot.name, ...controller.duel(args[0]) })) };
+    }
+  });
+
+  registry.register({
+    name: 'arena', category: 'combat', summary: 'Restrict PvP to an explicit arena around home or a supplied radius', usage: 'arena on [radius] | arena off',
+    execute: async (args) => {
+      const value = String(args[0] || 'status').toLowerCase();
+      const list = controllers();
+      if (value === 'off') {
+        for (const controller of list) controller.pvp.arenas = [];
+        return { ok: true, arenas: [] };
+      }
+      if (value === 'on') {
+        const radius = intArg(args[1] === undefined ? 24 : args[1], 'radius', { min: 4, max: 128 });
+        const home = services.runtime ? services.runtime.home : { x: 0, y: 64, z: 0 };
+        const arena = { name: 'home-arena', enabled: true, min: { x: home.x - radius, y: home.y - 16, z: home.z - radius }, max: { x: home.x + radius, y: home.y + 32, z: home.z + radius } };
+        for (const controller of list) controller.pvp.arenas = [arena];
+        return { ok: true, arena };
+      }
+      return { ok: true, arenas: list[0] ? list[0].pvp.arenas : [] };
+    }
+  });
+}
 
 function registerConstruction(registry, services) {
   const manager = () => {

@@ -3,8 +3,8 @@
 
 /**
  * Deployment sanity check. Fast, read-only and safe to run before commissioning:
- * verifies the frozen roster/config, V5 construction surface, dashboard assets
- * and browser-safe URLs. Pass --url to also probe a running dashboard over HTTP.
+ * verifies the frozen roster/config, V6 combat and V5 construction surfaces,
+ * dashboard assets and browser-safe URLs. Pass --url to also probe a running dashboard over HTTP.
  *
  *   node scripts/deploy-check.js
  *   node scripts/deploy-check.js --url http://127.0.0.1:3000
@@ -81,6 +81,32 @@ async function main() {
     return `${required.length} modules`;
   });
 
+  check('V6 combat modules and commands are present', () => {
+    const modules = [
+      'src/combat/constants.js', 'src/combat/mobs.js', 'src/combat/equipment.js', 'src/combat/supplies.js',
+      'src/combat/totems.js', 'src/combat/players.js', 'src/combat/team.js', 'src/actions/combat.js'
+    ];
+    for (const file of modules) read(file);
+    const commands = read('src/commands/index.js');
+    const families = ['combat', 'pve', 'pvp', 'target', 'follow', 'gear', 'totem', 'food', 'potions', 'guard', 'duel', 'arena'];
+    for (const family of families) assert(commands.includes(`name: '${family}'`), `${family} command is missing`);
+    for (const auto of ['weapon', 'totem', 'potions', 'food']) assert(commands.includes(`'${auto}'`), `auto ${auto} is missing`);
+    return `${modules.length} modules, ${families.length} command families`;
+  });
+
+  check('dashboard combat operations surface is routable', () => {
+    const router = read('src/dashboard/public/js/router.js');
+    const pages = read('src/dashboard/public/js/pages/combat.js');
+    const routes = ['combat', 'combat-team', 'combat-gear', 'combat-supplies', 'combat-targets'];
+    for (const route of routes) assert(router.includes(`'${route}'`), `combat route ${route} is not registered`);
+    for (const page of ['combatPage', 'combatTeamPage', 'combatGearPage', 'combatSuppliesPage', 'combatTargetsPage']) {
+      assert(pages.includes(`export const ${page}`), `combat page export ${page} is missing`);
+    }
+    assert(router.includes('Combat Operations'), 'Combat Operations navigation group is missing');
+    assert(pages.includes('PvP is off by default'), 'PvP safety copy is missing');
+    return `${routes.length} routes`;
+  });
+
   check('dashboard operations surface is routable', () => {
     const router = read('src/dashboard/public/js/router.js');
     const pages = read('src/dashboard/public/js/pages/operations.js');
@@ -111,11 +137,12 @@ async function main() {
     return 'relative URLs only';
   });
 
-  check('package metadata is V5', () => {
+  check('package metadata is V6', () => {
     const pkg = JSON.parse(read('package.json'));
-    assert(/^5\./.test(pkg.version), `version is ${pkg.version}`);
+    assert(/^6\./.test(pkg.version), `version is ${pkg.version}`);
     assert(Boolean(pkg.scripts['deploy:check']), 'deploy:check script missing');
     assert(Boolean(pkg.scripts['test:construction']), 'test:construction script missing');
+    assert(Boolean(pkg.scripts['test:combat']), 'test:combat script missing');
     return `version ${pkg.version}`;
   });
 
@@ -149,20 +176,25 @@ async function main() {
       assert(Array.isArray(body.state.bots) && body.state.bots.length === 5, `got ${body.state.bots?.length} bots`);
       assert(body.state.construction, 'construction snapshot missing');
       assert(Array.isArray(body.state.construction.projects), 'construction projects missing');
-      return `${body.state.bots.length} bots, ${body.state.construction.projects.length} project(s)`;
+      assert(Array.isArray(body.state.combat) && body.state.combat.length === 5, 'combat state is missing');
+      assert(body.state.combatTeam && Array.isArray(body.state.combatTeam.bots), 'team combat state is missing');
+      return `${body.state.bots.length} bots, ${body.state.construction.projects.length} project(s), ${body.state.combat.length} combat controllers`;
     });
 
-    await probe('live command surface exposes V5 families', async () => {
+    await probe('live command surface exposes V5 and V6 families', async () => {
       const body = await getJson('/api/commands');
       assert(body.ok === true, 'commands did not report ok');
       const names = new Set((body.commands || []).map((command) => command.name));
       for (const name of ['builder', 'site', 'materials', 'storage', 'build']) {
         assert(names.has(name), `${name} command family is missing`);
       }
+      for (const name of ['combat', 'pve', 'pvp', 'target', 'follow', 'gear', 'totem', 'guard', 'duel', 'arena']) {
+        assert(names.has(name), `${name} combat command is missing`);
+      }
       return `${names.size} command families`;
     });
 
-    await probe('live dashboard serves the V5 shell', async () => {
+    await probe('live dashboard serves the V6 shell', async () => {
       const response = await fetch(`${base}/`, { signal: AbortSignal.timeout(8000) });
       assert(response.ok, `root returned HTTP ${response.status}`);
       const html = await response.text();

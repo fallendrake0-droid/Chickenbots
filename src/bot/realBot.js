@@ -54,6 +54,11 @@ class RealBot extends BotAdapter {
     this._spawnWaiters = new Set();
     this._blockCache = new Map();
     this._inventoryDirty = false;
+    this._lastHealth = undefined;
+    this._lastTotemCount = 0;
+    this.itemMeta = {};
+    this._itemAliases = new Map();
+    this.combatEvents = [];
     this.uptimeMs = 0;
     this.startedAt = 0;
     this.stats = { dug: 0, placed: 0, attacked: 0, eaten: 0, crafted: 0, deaths: 0, connections: 0 };
@@ -130,6 +135,12 @@ class RealBot extends BotAdapter {
       this.onGround = bot.entity?.onGround;
     });
     bot.on('health', () => {
+      const count = Number(this.inventory.totem_of_undying || 0);
+      if (bot.health > 0 && count < this._lastTotemCount) {
+        this.recordCombatEvent({ at: new Date().toISOString(), type: 'totem_activated', bot: this.name, health: bot.health, detectedBy: 'health-transition' });
+      }
+      this._lastHealth = bot.health;
+      this._lastTotemCount = count;
       this.health = bot.health;
       this.food = bot.food;
       this.saturation = bot.foodSaturation || 0;
@@ -274,6 +285,34 @@ class RealBot extends BotAdapter {
     return { timeOfDay, day: this.bot?.time?.day ?? 1 };
   }
 
+  entitiesNear(radius = 16, position = this.position) {
+    return this.entities
+      .filter((entity) => entity.alive !== false && entity.position && distance(entity.position, position) <= radius)
+      .map((entity) => ({
+        id: entity.id,
+        type: entity.type,
+        kind: entity.kind,
+        name: entity.name || entity.username || entity.type,
+        username: entity.username,
+        position: { ...entity.position },
+        health: entity.health,
+        hostile: Boolean(entity.hostile),
+        blocking: Boolean(entity.usingItem || entity.blocking),
+        equipment: Array.isArray(entity.equipment) ? entity.equipment.filter(Boolean).map((item) => item.name || item) : [],
+        heldItem: entity.heldItem ? (entity.heldItem.name || entity.heldItem) : null
+      }));
+  }
+
+  threatsNear(position = this.position, radius = 8) {
+    return this.entitiesNear(radius, position).filter((entity) => entity.hostile).length;
+  }
+
+  nearestThreat(position = this.position) {
+    const list = this.entitiesNear(24, position).filter((entity) => entity.hostile);
+    if (!list.length) return null;
+    return list.sort((a, b) => distance(a.position, position) - distance(b.position, position))[0];
+  }
+
   _assertReady() {
     if (!this.ready) {
       const error = `bot ${this.name} is not ready (connected=${this.connected}, authenticated=${this.authenticated}, spawned=${this.spawned})`;
@@ -285,13 +324,102 @@ class RealBot extends BotAdapter {
   // ------------------------------------------------------------------
   // Inventory
   // ------------------------------------------------------------------
+  _potionEffect(item) {
+    if (!item || !/potion$/.test(String(item.name || ''))) return null;
+    const nbt = item.nbt && (item.nbt.value || item.nbt);
+    const raw = nbt && (nbt.Potion || nbt.potion);
+    const value = raw && typeof raw === 'object' ? (raw.value ?? raw) : raw;
+    return value ? String(value).replace(/^minecraft:/, '') : null;
+  }
+
   _syncInventory() {
     if (!this.bot || !this.bot.inventory) return;
     const counts = {};
-    for (const item of this.bot.inventory.items()) counts[item.name] = (counts[item.name] || 0) + item.count;
+    const meta = {};
+    this._itemAliases = new Map();
+    const record = (item) => {
+      if (!item || !item.name) return;
+      let name = item.name;
+      const potion = this._potionEffect(item);
+      if (potion) {
+        const prefix = name.startsWith('splash_') ? 'splash_' : name.startsWith('lingering_') ? 'lingering_' : '';
+        name = `${prefix}potion_of_${potion}`;
+        this._itemAliases.set(name, item);
+      }
+      counts[name] = (counts[name] || 0) + (item.count || 1);
+      const enchants = {};
+      for (const entry of item.enchants || []) {
+        const effectName = typeof entry.name === 'string' ? entry.name : (entry.name && entry.name.name) || entry.name;
+        if (effectName) enchants[effectName] = entry.lvl || entry.level || 1;
+      }
+      meta[name] = {
+        durability: item.durabilityUsed !== undefined && item.maxDurability ? item.maxDurability - item.durabilityUsed : item.durability,
+        maxDurability: item.maxDurability || undefined,
+        enchantments: enchants
+      };
+      if (potion) meta[name].effect = potion;
+    };
+    for (const item of this.bot.inventory.items()) record(item);
+    // `inventory.items()` covers the main inventory and hotbar only. Armour
+    // slots (5-8) and the offhand (45) are part of what the bot actually owns,
+    // so include them or the controller would think equipped gear disappeared.
+    for (const index of [5, 6, 7, 8, 45]) {
+      const item = this.bot.inventory.slots && this.bot.inventory.slots[index];
+      if (item) record(item);
+    }
     this.inventory = counts;
+    this.itemMeta = meta;
+    this._lastTotemCount = Number(counts.totem_of_undying || 0);
     this.uptimeMs = this.startedAt ? Date.now() - this.startedAt : 0;
     this._updateEquipmentFromBot();
+  }
+
+  refreshInventory() { this._syncInventory(); return { ok: true, items: Object.keys(this.inventory).length }; }
+
+  getOffhand() {
+    if (!this.bot || !this.bot.inventory) return null;
+    const slot = this.bot.inventory.slots && this.bot.inventory.slots[45];
+    return slot ? slot.name : null;
+  }
+
+  async equipArmor(pieces = []) {
+    const check = this._assertReady();
+    if (check) return check;
+    this._syncInventory();
+    const equipped = [];
+    const destinations = { head: 'head', torso: 'torso', legs: 'legs', feet: 'feet' };
+    const armorSlot = { head: 5, torso: 6, legs: 7, feet: 8 };
+    for (const piece of pieces || []) {
+      if (!piece || !piece.name) continue;
+      const currentlyWorn = this.bot.inventory.slots && this.bot.inventory.slots[armorSlot[piece.slot]];
+      if (currentlyWorn && currentlyWorn.name === piece.name) { equipped.push(piece.name); continue; }
+      const item = this._findItem(piece.name, { includeEquipped: true });
+      if (!item) continue;
+      try {
+        await this.bot.equip(item, destinations[piece.slot] || 'torso');
+        equipped.push(piece.name);
+      } catch (_) { /* leave the slot unchanged rather than dropping gear */ }
+    }
+    this._syncInventory();
+    return { ok: equipped.length > 0, pieces: equipped };
+  }
+
+  recordCombatEvent(event) {
+    this.combatEvents.push(event);
+    if (this.combatEvents.length > 200) this.combatEvents.shift();
+    return true;
+  }
+
+  drainCombatEvents() { return this.combatEvents.splice(0); }
+
+  async strafe(direction = 'left', { durationMs = 120 } = {}) {
+    if (!this.bot || !this.ready) return { ok: false, error: 'not ready' };
+    const control = direction === 'left' ? 'left' : 'right';
+    this.bot.setControlState(control, true);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500, Math.max(30, durationMs))));
+    this.bot.setControlState(control, false);
+    this.position = this._vec(this.bot.entity?.position);
+    return { ok: true, direction, position: { ...this.position } };
   }
 
   _updateEquipmentFromBot() {
@@ -307,9 +435,16 @@ class RealBot extends BotAdapter {
     };
   }
 
-  _findItem(name) {
+  _findItem(name, { includeEquipped = false } = {}) {
     if (!this.bot) return null;
-    return this.bot.inventory.items().find((item) => item.name === name) || null;
+    if (this._itemAliases && this._itemAliases.has(name)) return this._itemAliases.get(name);
+    const found = this.bot.inventory.items().find((item) => item.name === name);
+    if (found || !includeEquipped) return found || null;
+    for (const index of [5, 6, 7, 8, 45]) {
+      const item = this.bot.inventory.slots && this.bot.inventory.slots[index];
+      if (item && item.name === name) return item;
+    }
+    return null;
   }
 
   async equipBestTool(category) {
@@ -328,7 +463,8 @@ class RealBot extends BotAdapter {
   async equipItem(name, destination = 'hand') {
     const check = this._assertReady();
     if (check) return check;
-    const item = this._findItem(name);
+    if (destination === 'off-hand' && this.getOffhand() === name) return { ok: true, already: true, item: name };
+    const item = this._findItem(name, { includeEquipped: true });
     if (!item) return { ok: false, error: `no ${name}` };
     await this.bot.equip(item, destination);
     this._syncInventory();
@@ -450,24 +586,55 @@ class RealBot extends BotAdapter {
     return { ok: true, items, water: { x: water.position.x, y: water.position.y, z: water.position.z } };
   }
 
-  async attack(entity) {
+  async attack(entity, { authorizedPlayer = false, critical = false } = {}) {
     const check = this._assertReady();
     if (check) return check;
     if (!entity || !entity.id) return { ok: false, error: 'no target' };
     if (entity.username && BOT_NAMES.includes(entity.username)) return { ok: false, error: 'never attack teammates' };
-    if (entity.username && !config.autonomy.pvp) return { ok: false, error: 'PvP is disabled' };
+    if (entity.username && config.autonomy.serverPvp === false) return { ok: false, error: 'server configuration has PvP disabled', code: 'SERVER_PVP_DISABLED' };
+    if (entity.username && !authorizedPlayer) return { ok: false, error: 'PvP is disabled or the player is not explicitly authorised' };
     if (!entity.username && !entity.hostile && !HOSTILE.has(entity.name)) return { ok: false, error: `refusing to attack ${entity.name}` };
     const target = this.bot.entities[entity.id];
     if (!target) return { ok: false, error: 'target not visible' };
-    if (distance(this.position, target.position) > 4) {
+    const held = this.bot.heldItem ? this.bot.heldItem.name : null;
+    const reach = held === 'bow' || held === 'crossbow' ? 32 : 4;
+    if (distance(this.position, target.position) > reach) {
       const move = await this.goTo(target.position, { range: 2 });
       if (move.ok === false) return { ok: false, error: move.error || 'cannot reach target' };
     }
-    await this.equipBestTool('sword');
-    await this.bot.lookAt(target.position.offset(0, target.height || 1.5, 0), true);
-    await this.bot.attack(target);
+    const ranged = held === 'bow' || held === 'crossbow';
+    const beforeHealth = target.health;
+    await this._aimAt(target, { lead: ranged ? distance(this.position, target.position) / 45 : 0 });
+    if (ranged) {
+      await this.bot.activateItem();
+      await new Promise((resolve) => setTimeout(resolve, held === 'bow' ? 1000 : 1250));
+      await this.bot.deactivateItem();
+    } else {
+      if (critical && this.bot.entity && this.bot.entity.onGround && !this.bot.entity.sprinting) {
+        this.bot.setControlState('jump', true);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        this.bot.setControlState('jump', false);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await this._aimAt(target);
+      }
+      await this.bot.attack(target);
+    }
     this.stats.attacked++;
-    return { ok: true, target: entity.name || entity.username };
+    // Damage and kills are only reported when the server exposes a health drop.
+    await new Promise((resolve) => setTimeout(resolve, ranged ? 700 : 250));
+    const observed = this.bot.entities && this.bot.entities[entity.id] ? this.bot.entities[entity.id].health : target.health;
+    const damage = beforeHealth !== undefined && observed !== undefined ? Math.max(0, Number(beforeHealth) - Number(observed)) : undefined;
+    const killed = observed !== undefined && Number(observed) <= 0;
+    this._syncInventory();
+    return { ok: true, target: entity.name || entity.username, weapon: held, damage, health: observed, killed: killed || undefined };
+  }
+
+  /** Aim at an observed entity; for projectiles lead its measured velocity. */
+  async _aimAt(target, { lead = 0 } = {}) {
+    const point = target.position.clone();
+    if (lead > 0 && target.velocity && typeof target.velocity.clone === 'function') point.add(target.velocity.clone().scale(lead));
+    point.y += target.height || 1.5;
+    return this.bot.lookAt(point, true);
   }
 
   async consume(itemName = null) {
@@ -481,7 +648,7 @@ class RealBot extends BotAdapter {
     }
     const item = this._findItem(foodName);
     if (!item) return { ok: false, error: `no ${foodName} in inventory` };
-    if (this.bot.food >= 20 && !FOODS[foodName]?.special) return { ok: false, error: 'not hungry' };
+    if (this.bot.food >= 20 && !FOODS[foodName]?.special && !/potion|milk_bucket/.test(foodName)) return { ok: false, error: 'not hungry' };
     try {
       await this.bot.equip(item, 'hand');
       await this.bot.consume();
@@ -577,6 +744,61 @@ class RealBot extends BotAdapter {
     return { ok: true, item: itemName, count: toss };
   }
 
+  /** Drop only a short allow-list of junk; combat gear, totems, food and valuables are never touched. */
+  async dropJunk() {
+    const check = this._assertReady();
+    if (check) return check;
+    const junk = new Set(['dirt', 'gravel', 'andesite', 'diorite', 'granite', 'tuff', 'cobblestone', 'netherrack']);
+    const dropped = [];
+    const items = this.bot.inventory && typeof this.bot.inventory.items === 'function' ? this.bot.inventory.items() : [];
+    for (const item of items) {
+      if (dropped.length >= 3) break;
+      if (!junk.has(item.name)) continue;
+      try {
+        await this.bot.toss(item.type, null, item.count);
+        dropped.push({ name: item.name, count: item.count });
+      } catch (err) { return { ok: false, error: err.message, dropped }; }
+    }
+    this._syncInventory();
+    return { ok: true, dropped, preservedCombatItems: true };
+  }
+
+  /** Move combat items into stable hotbar slots without displacing other protected combat gear. */
+  async layoutHotbar() {
+    const check = this._assertReady();
+    if (check) return check;
+    const inventory = this.bot.inventory;
+    if (!inventory || !Array.isArray(inventory.slots) || typeof this.bot.moveSlotItem !== 'function') {
+      return { ok: false, error: 'adapter cannot reorder the hotbar' };
+    }
+    const desired = [
+      ['sword', 36, (name) => /_sword$/.test(name)],
+      ['axe', 37, (name) => /_axe$/.test(name)],
+      ['ranged', 38, (name) => name === 'bow' || name === 'crossbow'],
+      ['golden_apple', 39, (name) => name === 'golden_apple' || name === 'enchanted_golden_apple'],
+      ['potion', 40, (name) => /potion$/.test(name)],
+      ['pickaxe', 41, (name) => /_pickaxe$/.test(name)],
+      ['food', 42, (name) => Boolean(FOODS[name])],
+      ['water_bucket', 43, (name) => name === 'water_bucket']
+    ];
+    const protectedItem = (name) => /_sword$|_axe$|bow|crossbow|potion|golden_apple|totem_of_undying|shield|_pickaxe$|_helmet$|_chestplate$|_leggings$|_boots$|elytra|trident|mace/.test(name) || Boolean(FOODS[name]);
+    const moved = [];
+    const skipped = [];
+    for (const [key, dest, match] of desired) {
+      const item = Object.values(inventory.slots).find((slot) => slot && match(slot.name));
+      if (!item) continue;
+      if (item.slot === dest) continue;
+      const occupant = inventory.slots[dest];
+      if (occupant && protectedItem(occupant.name)) { skipped.push({ key, reason: `slot ${dest} holds ${occupant.name}` }); continue; }
+      try {
+        await this.bot.moveSlotItem(item.slot, dest);
+        moved.push({ key, item: item.name, from: item.slot, to: dest });
+      } catch (err) { skipped.push({ key, reason: err.message }); }
+    }
+    this._syncInventory();
+    return { ok: true, moved, skipped, protected: ['combat gear', 'totems', 'food', 'valuables'] };
+  }
+
   async collectDrops(radius = 12) {
     const check = this._assertReady();
     if (check) return check;
@@ -642,8 +864,13 @@ class RealBot extends BotAdapter {
   async useShield(on) {
     const shield = this._findItem('shield');
     if (!shield) return { ok: false, error: 'no shield' };
-    if (on) await this.bot.equip(shield, 'off-hand');
-    return { ok: true, shield: Boolean(on) };
+    if (on) {
+      if (this.getOffhand() !== 'shield') await this.bot.equip(shield, 'off-hand');
+      if (typeof this.bot.activateItem === 'function') await this.bot.activateItem(true);
+    } else if (typeof this.bot.deactivateItem === 'function') {
+      await this.bot.deactivateItem();
+    }
+    return { ok: true, shield: Boolean(on), offhand: this.getOffhand() };
   }
 
   async say(message) {

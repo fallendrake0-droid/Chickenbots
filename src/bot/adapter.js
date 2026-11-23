@@ -13,6 +13,16 @@ const {
  *
  * Required primitives: getBlock, digBlock, goTo, placeBlock, attack, consume,
  * equipBestTool, sleep, fish, openContainer, and the synchronous state fields.
+ *
+ * Combat adapters may also implement these optional V6 hooks; the controller
+ * degrades safely when one is absent:
+ *   itemMeta(item)                  -> { enchantments, durability, maxDurability }
+ *   getOffhand()                    -> item name or null
+ *   equipArmor(piece)               -> equip a specific armour piece
+ *   combatEvents()/drainCombatEvents()-> real totem/attack events, never inferred
+ *   strafe(direction, options)      -> dodge movement
+ *   useShield()                     -> raise the offhand shield
+ *   attack(entity, { authorizedPlayer }) -> melee or charged ranged attack
  */
 class BotAdapter {
   constructor({ name, world = null, logger = null, speed = 1 }) {
@@ -97,10 +107,13 @@ class BotAdapter {
       .map((e) => ({
         id: e.id,
         type: e.type,
-        name: e.name || e.type,
+        kind: e.kind,
+        name: e.name || e.username || e.type,
+        username: e.username,
         position: { ...e.position },
         health: e.health,
-        hostile: Boolean(e.hostile)
+        hostile: Boolean(e.hostile),
+        alive: e.alive !== false
       }));
   }
 

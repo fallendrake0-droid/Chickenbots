@@ -22,7 +22,8 @@ const { HomeBaseManager } = require('./homeBase');
 class BotActions {
   constructor({
     bot, index = 0, memory = null, taskBoard = null, ledger = null, team = null, home = null,
-    library = null, logger = null, builders = null, excavationManager = null, world = null
+    library = null, logger = null, builders = null, excavationManager = null, world = null,
+    combatTeam = null, comms = null
   } = {}) {
     if (!bot) throw new Error('BotActions requires a bot');
     this.bot = bot;
@@ -37,7 +38,7 @@ class BotActions {
     this.logger = logger || new Logger({ level: config.logging.level });
     this.home = home || { x: 0, y: 64, z: 0 };
     this.survival = new SurvivalController({ bot, memory, logger: this.logger });
-    this.combat = new CombatController({ bot, team, memory, logger: this.logger, pvp: config.autonomy.pvp });
+    this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp });
     this.mining = new MiningController({ bot, memory, ledger, logger: this.logger });
     this.woodcutting = new WoodcuttingController({ bot, memory, ledger, logger: this.logger });
     this.farming = new FarmingController({ bot, memory, logger: this.logger });
@@ -76,14 +77,19 @@ class BotActions {
 
   /** Survival first, then immediate threats. Safe to call every tick. */
   async safetyTick() {
-    if (this.bot.health <= 0) return { ok: false, dead: true };
+    if (this.bot.health <= 0) {
+      this.combat.onDeath('health reached zero');
+      return { ok: false, dead: true };
+    }
+    if (this.combat.state === 'DEAD') this.combat.onRespawn();
     const survival = await this.survival.tick();
+    const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
     const threats = this.combat.assess(14);
     let defence = null;
-    if (threats.threats.length) {
+    if (threats.threats.length && this.combat.armed) {
       defence = await this.combat.defend({ maxAttacks: 6 });
     }
-    const result = { ok: true, survival, defence, threatCount: threats.threats.length };
+    const result = { ok: true, survival, follow, defence, threatCount: threats.threats.length };
     if (survival.actions.length || defence) {
       this.lastAction = survival.actions.length ? survival.actions[survival.actions.length - 1].action : 'combat';
       this.lastActionAt = Date.now();

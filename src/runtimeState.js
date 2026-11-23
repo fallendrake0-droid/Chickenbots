@@ -37,6 +37,14 @@ function statusSnapshot(services) {
         counts: excavationStatus.counts || null
       } : null,
       builds: builds.map((b) => ({ id: b.buildId, name: b.name, state: b.state, percent: b.percentComplete, tasks: b.tasks })),
+      combat: services.combatTeam ? {
+        enabled: services.combatTeam.enabled,
+        mode: services.combatTeam.mode,
+        focus: services.combatTeam.focus ? { id: services.combatTeam.focus.id, name: services.combatTeam.focus.name || services.combatTeam.focus.type } : null,
+        roles: services.combatTeam.roles,
+        totems: services.combatTeam.list().reduce((sum, controller) => sum + controller.totems.count(), 0),
+        engaged: services.combatTeam.list().filter((controller) => ['ENGAGING', 'APPROACHING', 'RETREATING', 'TOTEM_EMERGENCY'].includes(controller.state)).length
+      } : null,
       construction: services.construction ? {
         activeId: services.construction.activeId,
         projects: services.construction.projects.size,
@@ -57,6 +65,7 @@ function statusSnapshot(services) {
     },
     survival: actionStatus.map((a) => a.survival),
     combat: actionStatus.map((a) => a.combat),
+    combatTeam: services.combatTeam ? services.combatTeam.status() : null,
     inventory: {
       ledger: services.ledger ? services.ledger.snapshot() : null,
       bots: actionStatus.map((a) => a.inventory)

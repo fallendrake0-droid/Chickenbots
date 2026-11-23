@@ -1,7 +1,7 @@
 {
   "name": "chickenbots",
-  "version": "5.0.0",
-  "description": "Chickenbots V5 - autonomous five-bot Minecraft construction crew: site survey, preparation, lighting, logistics, materials and verified cooperative building",
+  "version": "6.0.0",
+  "description": "Chickenbots V6 - ultimate five-bot Minecraft combat engine: PvE profiles, explicit PvP authorisation, weapons and armour, offhand totems, supplies, team roles, focus fire, rescue and retreat",
   "type": "commonjs",
   "main": "src/index.js",
   "engines": {
@@ -22,7 +22,8 @@
     "test:survival": "node --test --test-concurrency=1 tests/survival.test.js tests/controllers.test.js",
     "test:features": "node --test --test-concurrency=1 tests/v4-features.test.js",
     "test:construction": "node --test --test-concurrency=1 tests/construction.test.js",
-    "test:schematics": "node --test --test-concurrency=1 tests/schematics.test.js tests/builder.test.js"
+    "test:schematics": "node --test --test-concurrency=1 tests/schematics.test.js tests/builder.test.js",
+    "test:combat": "node --test --test-concurrency=1 tests/combat.test.js"
   },
   "dependencies": {
     "express": "^4.21.2",
