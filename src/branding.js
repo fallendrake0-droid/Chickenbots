@@ -3,30 +3,33 @@
 /**
  * Terminal branding.
  *
- * Keep the banner in one place and print it before the logger writes anything,
- * so startup output always reads: logo first, runtime information second.
+ * The banner is printed before the logger is constructed. On a real terminal it
+ * clears the previous screen and renders the wordmark in bold cyan; redirected
+ * output and CI logs stay plain so they remain readable and parseable.
  */
 const LOGO = [
-  "   ______ _     _      _                  _       _",
-  "  / _____| |__ (_) ___| | _____ _ __   __| | ___ | |_",
-  " | /     | '_ \\| |/ __| |/ / _ \\ '_ \\ / _` |/ _ \\| __|",
-  " | |_____| | | | | (__|   <  __/ | | | (_| | (_) | |_",
-  "  \\______|_| |_|_|\\___|_|\\_\\___|_| |_|\\__,_|\\___/ \\__|"
-].join('\n');
+  "   _____ _    _ _____ _____ _  ________ _   _ ____   ____ _______ _____ ",
+  "  / ____| |  | |_   _/ ____| |/ /  ____| \\ | |  _ \\ / __ \\__   __/ ____|",
+  " | |    | |__| | | || |    | ' /| |__  |  \\| | |_) | |  | | | | | (___  ",
+  " | |    |  __  | | || |    |  < |  __| | . ` |  _ <| |  | | | |  \\___ \\ ",
+  " | |____| |  | |_| || |____| . \\| |____| |\\  | |_) | |__| | | |  ____) |",
+  "  \\_____|_|  |_|_____\\_____|_|\\_\\______|_| \\_|____/ \\____/  |_| |_____/ "
+].join("\n");
 
 const TAGLINE = 'five bots · one coordinated team · v6';
 
-function color(code, text, enabled) {
+function style(code, text, enabled) {
   return enabled ? `\u001b[${code}m${text}\u001b[0m` : text;
 }
 
-/** Write the Chickenbots logo to a stream before any log lines. */
+/** Write a clear, bold Chickenbots wordmark before any log lines. */
 function printStartupBanner(stream = process.stdout) {
   const tty = Boolean(stream.isTTY);
-  const colorEnabled = tty && !process.env.NO_COLOR;
-  const accent = color('36', LOGO.trimEnd(), colorEnabled);
-  const dim = color('2', `  ${TAGLINE}`, colorEnabled);
-  stream.write(`\n${accent}\n${dim}\n\n`);
+  const ansi = tty && !process.env.NO_COLOR;
+  if (tty && !process.env.CHICKENBOTS_NO_CLEAR) stream.write('\u001b[2J\u001b[H');
+  const logo = style('1;36', LOGO, ansi);
+  const tagline = style('2', `  ${TAGLINE}`, ansi);
+  stream.write(`\n${logo}\n${tagline}\n\n`);
 }
 
 module.exports = { LOGO, TAGLINE, printStartupBanner };
