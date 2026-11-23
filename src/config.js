@@ -96,6 +96,10 @@ const config = {
     loginPassword: env('MC_LOGIN_PASSWORD', ''),
     loginCommand: env('MC_LOGIN_COMMAND', '/login {password}'),
     registerCommand: env('MC_REGISTER_COMMAND', '/register {password} {password}'),
+    // AuthMe-style plugins confirm in chat; stay unready and frozen until that
+    // confirmation arrives so no bot can move before authenticating.
+    authDelayMs: envInt('MC_AUTH_DELAY_MS', 1000),
+    authTimeoutMs: envInt('MC_AUTH_TIMEOUT_MS', 12000),
     reconnect: {
       maxAttempts: envInt('MC_RECONNECT_MAX', 0), // 0 = unlimited
       baseDelayMs: envInt('MC_RECONNECT_BASE_MS', 5000),

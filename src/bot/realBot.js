@@ -5,6 +5,7 @@ const { config, BOT_NAMES } = require('../config');
 const { Logger } = require('../logger');
 const { distance, key } = require('../util/vec');
 const { bestTool, FOODS, BED_NAMES, toolTier } = require('../world/items');
+const { sleep } = require('./connection');
 
 const HOSTILE = new Set([
   'zombie', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider', 'cave_spider',
@@ -28,7 +29,8 @@ class RealBot extends BotAdapter {
     name, host = config.server.host, port = config.server.port, version = config.server.version,
     auth = config.server.auth, logger = null, mineflayer = null, createBot = null,
     loginPassword = config.server.loginPassword, registerPassword = config.server.registerPassword,
-    connectTimeoutMs = config.server.connectTimeoutMs
+    connectTimeoutMs = config.server.connectTimeoutMs,
+    authDelayMs = config.server.authDelayMs, authTimeoutMs = config.server.authTimeoutMs
   } = {}) {
     super({ name, logger: logger || new Logger({ level: config.logging.level }), speed: 1 });
     if (!BOT_NAMES.includes(name)) throw new Error(`refusing to create a bot outside the fixed team roster: ${name}`);
@@ -39,12 +41,16 @@ class RealBot extends BotAdapter {
     this.loginPassword = loginPassword;
     this.registerPassword = registerPassword;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.authDelayMs = authDelayMs;
+    this.authTimeoutMs = authTimeoutMs;
     this._mineflayer = mineflayer;
     this._createBot = createBot;
     this.bot = null;
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
+    this.passwordRequired = Boolean(this.loginPassword || this.registerPassword);
+    this.authConfirmed = false;
     this.lastError = null;
     this.lastDeath = null;
     this.spawnPosition = null;
@@ -81,6 +87,8 @@ class RealBot extends BotAdapter {
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
+    this.passwordRequired = Boolean(this.loginPassword || this.registerPassword);
+    this.authConfirmed = false;
     this.lastError = null;
     try {
       this.bot = createBot({
@@ -104,7 +112,14 @@ class RealBot extends BotAdapter {
     if (result.ok) {
       this.startedAt = Date.now();
       this.uptimeMs = 0;
-      await this._handleLoginCommands();
+      const auth = await this._handleLoginCommands();
+      if (auth.ok === false) {
+        this.lastError = auth.error;
+        this.authenticated = false;
+        await this.disconnect('password authentication failed');
+        return { ok: false, error: auth.error, code: 'AUTH_FAILED', spawned: false, authenticated: false };
+      }
+      result.authenticated = this.authenticated;
     }
     return result;
   }
@@ -113,14 +128,14 @@ class RealBot extends BotAdapter {
     const bot = this.bot;
     if (!bot) return;
     bot.on('login', () => {
-      this.authenticated = true;
-      this.logger.info(`[${this.name}] authenticated with ${this.host}`);
+      this.authenticated = !this.passwordRequired;
+      this.logger.info(`[${this.name}] protocol login accepted with ${this.host}${this.passwordRequired ? '; waiting for password authentication' : ''}`);
     });
     bot.on('spawn', () => {
       const firstSpawn = !this.spawned;
       this.connected = true;
       this.spawned = true;
-      this.authenticated = true; // servers send spawn after successful login
+      this.authenticated = !this.passwordRequired; // AuthMe-style login is confirmed separately
       this.position = this._vec(bot.entity?.position);
       this.spawnPosition = { ...this.position };
       this.dimension = bot.game?.dimension || 'overworld';
@@ -128,7 +143,7 @@ class RealBot extends BotAdapter {
       // Some proxies emit a second spawn packet after the initial teleport.
       // Keep the event useful without logging two identical "spawned" lines.
       this.logger.info(`[${this.name}] ${firstSpawn ? 'spawned' : 'respawned'} at ${this.position.x},${this.position.y},${this.position.z}`);
-      for (const waiter of this._spawnWaiters) waiter.resolve({ ok: true, spawned: true, authenticated: true });
+      for (const waiter of this._spawnWaiters) waiter.resolve({ ok: true, spawned: true, authenticated: this.authenticated });
       this._spawnWaiters.clear();
     });
     bot.on('move', () => {
@@ -220,18 +235,67 @@ class RealBot extends BotAdapter {
     });
   }
 
+  /** Send one auth command and wait for the server's chat confirmation. */
+  _sendAuthCommand(command, kind) {
+    const success = kind === 'register'
+      ? /successfully registered|registration (?:successful|complete)|you are now registered|already registered|now logged in|successfully logged in|already logged in/i
+      : /successfully logged in|you are now logged in|now logged in|already logged in|welcome back|logged in successfully/i;
+    const failure = /wrong password|incorrect password|invalid password|password (?:is )?(?:wrong|incorrect)|not registered|please register|register first|too many (?:attempts|tries)|kicked/i;
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        off();
+        resolve(value);
+      };
+      const off = this.onChat((text) => {
+        const clean = String(text || '').replace(/\u00a7./g, '').trim();
+        if (success.test(clean)) finish({ ok: true, kind, message: clean, alreadyRegistered: /already registered/i.test(clean) });
+        else if (failure.test(clean)) finish({ ok: false, error: clean, kind });
+      });
+      const timer = setTimeout(() => finish({ ok: false, error: `no ${kind} confirmation from the server`, kind }), this.authTimeoutMs);
+      try {
+        this.bot.chat(command);
+      } catch (err) {
+        finish({ ok: false, error: err.message, kind });
+      }
+    });
+  }
+
   async _handleLoginCommands() {
-    if (!this.bot || !this.ready) return;
+    if (!this.passwordRequired) {
+      this.authenticated = true;
+      return { ok: true, required: false };
+    }
+    if (!this.bot || !this.connected || !this.spawned) return { ok: false, error: 'cannot authenticate before spawn' };
+    // Freeze movement until the password is accepted. Every adapter action also
+    // sees ready=false, but disabling physics stops mineflayer's position stream.
+    if (this.bot.clearControlStates) this.bot.clearControlStates();
+    this.bot.physicsEnabled = false;
+    await sleep(this.authDelayMs);
+
+    let registered = false;
     if (this.registerPassword) {
       const command = config.server.registerCommand.replace(/\{password\}/g, this.registerPassword);
-      this.bot.chat(command);
-      await new Promise((r) => setTimeout(r, 1500));
+      const result = await this._sendAuthCommand(command, 'register');
+      if (!result.ok) return result;
+      registered = !result.alreadyRegistered;
+      if (result.alreadyRegistered && !this.loginPassword) {
+        return { ok: false, error: 'account is already registered; set MC_LOGIN_PASSWORD', kind: 'register' };
+      }
     }
     if (this.loginPassword) {
       const command = config.server.loginCommand.replace(/\{password\}/g, this.loginPassword);
-      this.bot.chat(command);
-      await new Promise((r) => setTimeout(r, 1500));
+      const result = await this._sendAuthCommand(command, 'login');
+      if (!result.ok) return result;
     }
+    this.authenticated = true;
+    this.authConfirmed = true;
+    if (this.bot) this.bot.physicsEnabled = true;
+    this.logger.info(`[${this.name}] password authentication confirmed${registered ? ' (registered)' : ''}`);
+    return { ok: true, required: true, registered };
   }
 
   // ------------------------------------------------------------------
@@ -934,6 +998,7 @@ class RealBot extends BotAdapter {
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
+    this.authConfirmed = false;
     return { ok: true };
   }
 

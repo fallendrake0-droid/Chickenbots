@@ -40,3 +40,53 @@ test('kick reasons are flattened into readable chat text', () => {
   assert.equal(bot._formatKickReason('plain reason'), 'plain reason');
   assert.equal(bot._formatKickReason(null), 'null');
 });
+
+function authHarness({ loginPassword = 'secret', registerPassword = null, reply = null } = {}) {
+  const real = new RealBot({ name: '______', loginPassword, registerPassword, authDelayMs: 0, authTimeoutMs: 500 });
+  const commands = [];
+  const fake = {
+    entity: {},
+    physicsEnabled: true,
+    chat(line) {
+      commands.push(line);
+      const text = reply ? reply(line) : (line.startsWith('/register') ? 'Successfully registered!' : 'Successfully logged in!');
+      setImmediate(() => real._testChat(text));
+    },
+    clearControlStates() {},
+    quit() {}
+  };
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  real.onChat = (listener) => { real._testChat = listener; return () => {}; };
+  return { real, commands, fake };
+}
+
+test('a bot with a password stays unauthenticated until the server confirms login', async () => {
+  const { real, commands } = authHarness({ loginPassword: 'secret' });
+  assert.equal(real.ready, false);
+  assert.equal(real.authenticated, false);
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(real.authenticated, true);
+  assert.equal(real.authConfirmed, true);
+  assert.equal(real.ready, true);
+  assert.deepEqual(commands, ['/login secret']);
+});
+
+test('registration is confirmed before the login step and a failure blocks the bot', async () => {
+  const { real, commands } = authHarness({ registerPassword: 'secret', loginPassword: 'secret' });
+  const ok = await real._handleLoginCommands();
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.deepEqual(commands, ['/register secret secret', '/login secret']);
+  assert.equal(real.authenticated, true);
+
+  const failed = authHarness({
+    registerPassword: 'secret', loginPassword: 'secret',
+    reply: (line) => line.startsWith('/register') ? 'Successfully registered!' : 'Wrong password. Try again.'
+  });
+  const denied = await failed.real._handleLoginCommands();
+  assert.equal(denied.ok, false);
+  assert.match(denied.error, /wrong password/i);
+  assert.equal(failed.real.authenticated, false);
+});
