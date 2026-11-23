@@ -6,6 +6,10 @@ import {
   woodcuttingPage, farmingPage, fishingPage, explorationPage, sleepPage
 } from './pages/gameplay.js';
 import { builderPage, homeBasePage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
+import {
+  operationsOverview, builderProjectsPage, siteSurveyPage, sitePreparationPage,
+  lightingPage, materialPlanningPage, warehousePage, crewAssignmentsPage, qualityPage
+} from './pages/operations.js';
 import { activityPage, notificationsPage, tasksPage, logsPage, settingsPage } from './pages/system.js';
 import { icon } from './icons.js';
 import { emptyState, pageHeader } from './ui.js';
@@ -45,8 +49,17 @@ export const NAV_GROUPS = [
     ]
   },
   {
-    label: 'Construction',
+    label: 'Builder Operations',
     items: [
+      { path: 'operations', label: 'Builder Overview', icon: 'layout-dashboard' },
+      { path: 'builder-projects', label: 'Builder Projects', icon: 'folder' },
+      { path: 'site-survey', label: 'Site Survey', icon: 'map' },
+      { path: 'site-prep', label: 'Site Preparation', icon: 'shovel' },
+      { path: 'lighting', label: 'Lighting', icon: 'sun' },
+      { path: 'material-plan', label: 'Material Planning', icon: 'package' },
+      { path: 'warehouse', label: 'Storage', icon: 'archive' },
+      { path: 'crew', label: 'Team Assignments', icon: 'users' },
+      { path: 'qa', label: 'QA & Security', icon: 'shield' },
       { path: 'home', label: 'Home Base', icon: 'home' },
       { path: 'builder', label: 'Builder', icon: 'hammer' },
       { path: 'schematics', label: 'Schematic Library', icon: 'book-open' },
@@ -105,6 +118,15 @@ export function resolveRoute(hash = location.hash) {
     case 'fishing': return { ...base, page: fishingPage, label: 'Fishing' };
     case 'exploration': return { ...base, page: explorationPage, label: 'Exploration' };
     case 'sleep': return { ...base, page: sleepPage, label: 'Sleep' };
+    case 'operations': return { ...base, page: operationsOverview, label: 'Builder Overview' };
+    case 'builder-projects': return { ...base, page: builderProjectsPage, label: 'Builder Projects' };
+    case 'site-survey': return { ...base, page: siteSurveyPage, label: 'Site Survey' };
+    case 'site-prep': return { ...base, page: sitePreparationPage, label: 'Site Preparation' };
+    case 'lighting': return { ...base, page: lightingPage, label: 'Lighting' };
+    case 'material-plan': return { ...base, page: materialPlanningPage, label: 'Material Planning' };
+    case 'warehouse': return { ...base, page: warehousePage, label: 'Storage' };
+    case 'crew': return { ...base, page: crewAssignmentsPage, label: 'Team Assignments' };
+    case 'qa': return { ...base, page: qualityPage, label: 'QA & Security' };
     case 'home': return { ...base, page: homeBasePage, label: 'Home Base' };
     case 'builder': return { ...base, page: builderPage, label: 'Builder' };
     case 'schematics': return { ...base, page: schematicsPage, label: 'Schematic Library' };

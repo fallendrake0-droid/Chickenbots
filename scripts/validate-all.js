@@ -55,14 +55,18 @@ function consistency() {
       'src/index.js', 'src/runtime.js', 'src/cli.js', 'src/dashboard/server.js',
       'src/bot/realBot.js', 'src/bot/mockBot.js', 'src/commands/index.js', 'src/builder/builder.js',
       'src/schematics/generator.js', 'src/schematics/format.js', 'src/actions/survival.js',
-      'tests/survival.test.js', 'tests/controllers.test.js', 'tests/schematics.test.js', 'tests/builder.test.js'
+      'src/construction/manager.js', 'src/construction/pipeline.js', 'src/construction/siteSurvey.js',
+      'src/construction/sitePreparer.js', 'src/construction/lighting.js', 'src/construction/materials.js',
+      'src/construction/storage.js', 'src/dashboard/public/js/pages/operations.js',
+      'tests/survival.test.js', 'tests/controllers.test.js', 'tests/schematics.test.js', 'tests/builder.test.js',
+      'tests/construction.test.js'
     ];
     const missing = required.filter((file) => !fs.existsSync(path.join(ROOT, file)));
     return { ok: missing.length === 0, detail: missing.length ? `missing ${missing.join(', ')}` : `${required.length} files` };
   });
   check('dashboard exposes every navigation page', () => {
     const js = fs.readFileSync(path.join(ROOT, 'src/dashboard/public/js/router.js'), 'utf8');
-    const pages = ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Fishing', 'Exploration', 'Sleep', 'Home Base', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings'];
+    const pages = ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Fishing', 'Exploration', 'Sleep', 'Builder Overview', 'Builder Projects', 'Site Survey', 'Site Preparation', 'Lighting', 'Material Planning', 'Storage', 'Team Assignments', 'QA & Security', 'Home Base', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings'];
     const missing = pages.filter((page) => !js.includes(page));
     return { ok: missing.length === 0, detail: missing.length ? missing.join(', ') : `${pages.length}/${pages.length}` };
   });
@@ -85,7 +89,7 @@ function consistency() {
 }
 
 function main() {
-  process.stdout.write('Chickenbots V4 validation\n');
+  process.stdout.write('Chickenbots V5 validation\n');
   process.stdout.write(quick ? 'Mode: quick (sampled schematics)\n' : 'Mode: full\n');
   const results = [];
   results.push(step('lint', process.execPath, ['scripts/lint.js']));

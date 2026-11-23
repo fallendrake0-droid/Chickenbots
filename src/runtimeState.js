@@ -37,6 +37,13 @@ function statusSnapshot(services) {
         counts: excavationStatus.counts || null
       } : null,
       builds: builds.map((b) => ({ id: b.buildId, name: b.name, state: b.state, percent: b.percentComplete, tasks: b.tasks })),
+      construction: services.construction ? {
+        activeId: services.construction.activeId,
+        projects: services.construction.projects.size,
+        activeStatus: services.construction.activeProject()?.status || null,
+        activeProgress: services.construction.activeProject()?.progress || 0,
+        phase: services.construction.activeProject()?.buildPhases.find((phase) => phase.status !== 'COMPLETE')?.id || null
+      } : null,
       library: library ? { count: library.count, unique: library.uniqueGeometry, minimum: library.minimumRequired } : null,
       alerts: buildAlerts(summaries, board, services)
     },
@@ -65,6 +72,7 @@ function statusSnapshot(services) {
     sleep: actionStatus.map((a) => a.sleep),
     fishing: actionStatus.map((a) => a.fishing),
     exploration: actionStatus.map((a) => a.exploration),
+    construction: services.construction ? services.construction.state() : null,
     builder: {
       builds,
       atHome: byBot[leader] ? byBot[leader].homeBase : null,
@@ -138,6 +146,12 @@ function buildAlerts(summaries, board, services) {
   if (services.excavation) {
     const status = services.excavation.status();
     if (status && status.counts && status.counts.INCOMPLETE) alerts.push({ level: 'warn', message: `${status.counts.INCOMPLETE} incomplete excavation(s)` });
+  }
+  if (services.construction) {
+    const project = services.construction.activeProject();
+    if (project && ['BLOCKED', 'AWAITING_MATERIALS', 'AWAITING_STORAGE'].includes(project.status)) {
+      alerts.push({ level: 'warn', message: `construction ${project.status.toLowerCase()}: ${project.blockedReason || project.id}` });
+    }
   }
   return alerts;
 }

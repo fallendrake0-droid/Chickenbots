@@ -21,7 +21,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  process.stdout.write(`Chickenbots V4
+  process.stdout.write(`Chickenbots V5
 
 Usage: node src/index.js [options]
 
@@ -43,7 +43,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { usage(); return 0; }
   const logger = new Logger({ level: config.logging.level });
-  logger.info('Chickenbots V4 starting');
+  logger.info('Chickenbots V5 starting');
   logger.info(`roster: ${BOT_NAMES.join(', ')}`);
   logger.info(args.simulate ? 'mode: deterministic simulation' : `mode: live (${config.server.host}:${config.server.port}, version ${config.server.version})`);
   const runtime = await createRuntime({

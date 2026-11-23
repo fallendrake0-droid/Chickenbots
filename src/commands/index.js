@@ -9,6 +9,7 @@ const { SchematicBuilder } = require('../builder/builder');
 const { validateLibrary, formatValidationReport } = require('../schematics/validate');
 const { toSpongeSchematic, toLegacySchematic, toJSON, fromSpongeSchematic, fromJSON } = require('../schematics/format');
 const { statusSnapshot } = require('../runtimeState');
+const { botWorldView } = require('../construction/constants');
 
 const TASK_TYPES = new Set([
   'CHOP_WOOD', 'MINE_ORE', 'MINE_BLOCK', 'FARM_CROP', 'FARM_ANIMAL', 'BUILD_BLOCK', 'BUILD_PHASE', 'EXCAVATE_REGION',
@@ -140,9 +141,10 @@ function formatCheck(checks) {
 }
 
 async function buildDesign(services, design, { origin = null, confirm = false, run = false, runSteps = 30, kind = 'build' } = {}) {
-  if (!services.world) throw new CommandError('no world available');
   const bots = [...services.bots.values()];
   if (!bots.length) throw new CommandError('no bots connected');
+  const world = services.world || botWorldView(bots[0]);
+  if (!world) throw new CommandError('no world available');
   const schematic = services.library.build(design.id);
   let buildOrigin = origin;
   if (!buildOrigin) {
@@ -150,7 +152,7 @@ async function buildDesign(services, design, { origin = null, confirm = false, r
     buildOrigin = { x: Math.floor(base.x) + 4, y: Math.floor(base.y) + 1, z: Math.floor(base.z) + 4 };
   }
   const builder = new SchematicBuilder({
-    schematic, origin: buildOrigin, world: services.world, bots,
+    schematic, origin: buildOrigin, world, bots,
     taskBoard: services.taskBoard, ledger: services.ledger, memory: services.memory,
     logger: services.logger, buildId: `${kind === 'home' ? 'home' : 'build'}-${design.id}-${Date.now().toString(36)}`
   });
@@ -236,7 +238,7 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'team', category: 'team', summary: 'Inspect team state and control formations, resources and coordination', usage: 'team [state|on|off|follow|regroup|retreat|defend|memory|locks|tasks|roles|leader|resources|objectives|reassign|formation <name>]',
+    name: 'team', category: 'team', summary: 'Inspect team state and control formations, resources and coordination', usage: 'team [state|on|off|follow|regroup|retreat|defend|memory|locks|tasks|roles|leader|resources|objectives|assignments|assist <bot>|sleep [bot|all]|reassign|formation <name>]',
     execute: async (args) => {
       const sub = (args[0] || 'state').toLowerCase();
       const coordinator = services.coordinator;
@@ -259,6 +261,26 @@ function registerAll(services, registry) {
       if (sub === 'roles') return { ok: true, roles: Object.fromEntries(coordinator.roles), assignments: Object.fromEntries(coordinator.assignments) };
       if (sub === 'resources') return { ok: true, resources: services.ledger ? services.ledger.snapshot() : null, reserves: config.reserves };
       if (sub === 'objectives') return { ok: true, objectives: coordinator.objectiveBoard(), active: services.taskBoard.listObjectives('ACTIVE').length };
+      if (sub === 'assignments' || sub === 'crew') {
+        const project = services.construction ? services.construction.activeProject() : null;
+        return {
+          ok: true,
+          project: project ? services.construction.summary(project) : null,
+          crew: project ? project.teamAssignments : null,
+          coordinator: { roles: Object.fromEntries(coordinator.roles), assignments: Object.fromEntries(coordinator.assignments) }
+        };
+      }
+      if (sub === 'assist') {
+        if (!services.construction) return { ok: false, error: 'construction manager unavailable' };
+        const bot = pickBot(services, args[1]);
+        return services.construction.assist(bot.name);
+      }
+      if (sub === 'sleep') {
+        const target = args[1] && args[1] !== 'all' ? [actionsFor(services, pickBot(services, args[1]).name)] : allActions(services);
+        const results = [];
+        for (const actions of target) results.push({ bot: actions.bot.name, ...(await actions.sleep.sleep()) });
+        return { ok: results.every((result) => result.ok !== false), results };
+      }
       if (sub === 'formation') {
         if (!args[1]) return { ok: true, formation: coordinator.formation };
         const formation = coordinator.setFormation(args[1]);
@@ -671,6 +693,7 @@ function registerAll(services, registry) {
 
   registerExcavation(registry, services);
   registerBuild(registry, services);
+  registerConstruction(registry, services);
   registerSchematics(registry, services);
 
   registry.register({
@@ -790,14 +813,15 @@ function registerExcavation(registry, services) {
 
 function registerBuild(registry, services) {
   const previewFor = (design, origin = null) => {
-    if (!services.world) throw new CommandError('no world available');
     const bots = [...services.bots.values()];
     if (!bots.length) throw new CommandError('no bots connected');
+    const world = services.world || botWorldView(bots[0]);
+    if (!world) throw new CommandError('no world available');
     const schematic = services.library.build(design.id);
     const base = origin || (services.runtime && services.runtime.home ? services.runtime.home : bots[0].position);
     const buildOrigin = origin || { x: Math.floor(base.x) + 4, y: Math.floor(base.y) + 1, z: Math.floor(base.z) + 4 };
     const builder = new SchematicBuilder({
-      schematic, origin: buildOrigin, world: services.world, bots,
+      schematic, origin: buildOrigin, world, bots,
       taskBoard: services.taskBoard, ledger: services.ledger, memory: services.memory, logger: services.logger
     });
     return { design, builder, origin: buildOrigin, analysis: builder.analyze() };
@@ -808,6 +832,42 @@ function registerBuild(registry, services) {
     dangerous: true,
     execute: async (args, ctx) => {
       const sub = (args[0] || '').toLowerCase();
+      if (['plan', 'phase', 'phases', 'progress', 'assign', 'verify', 'repair', 'finish', 'projects'].includes(sub)) {
+        if (!services.construction) return { ok: false, error: 'construction manager unavailable' };
+        const manager = services.construction;
+        const project = manager.activeProject();
+        if (sub === 'projects') return { ok: true, projects: manager.list(), activeId: manager.activeId };
+        if (sub === 'phase' || sub === 'phases') {
+          return project ? { ok: true, phase: manager.summary(project).phase, pipeline: project.buildPhases.map((phase) => ({ id: phase.id, status: phase.status, attempts: phase.attempts })), milestones: project.buildMilestones } : { ok: false, error: 'no active project' };
+        }
+        if (sub === 'progress') {
+          return project ? { ok: true, project: manager.summary(project), builder: project.builderId && services.builders.get(project.builderId) ? services.builders.get(project.builderId).status() : null } : { ok: false, error: 'no active project' };
+        }
+        if (!project) return { ok: false, error: 'no active project; create one with builder create <schematic>' };
+        if (sub === 'assign') {
+          const bot = pickBot(services, args[1]);
+          return manager.assign({ bot: bot.name, role: args.slice(2).join(' ') || 'FLEXIBLE' });
+        }
+        if (sub === 'plan') {
+          if (!ctx.confirmed) return { ok: false, error: 'build planning can create cooperative tasks; append confirm', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+          return manager.runPhase('BUILD_PLAN');
+        }
+        if (sub === 'verify') return manager.quality();
+        if (sub === 'repair') {
+          if (!ctx.confirmed) return { ok: false, error: 'repair work requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+          const builder = project.builderId ? services.builders.get(project.builderId) : null;
+          if (!builder) return { ok: false, error: 'no active builder for this project' };
+          builder.resume();
+          const repair = await builder.run({ maxIterations: args[2] ? intArg(args[2], 'steps', { min: 1, max: 500 }) : 120 });
+          return { ok: repair.status.state !== 'FAILED', repair, verification: builder.verify() };
+        }
+        if (sub === 'finish') {
+          if (!ctx.confirmed) return { ok: false, error: 'project handover requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+          const quality = manager.runPhase('QUALITY_VERIFICATION');
+          if (!quality.ok) return quality;
+          return manager.runPhase('CLEANUP');
+        }
+      }
       if (sub === 'status') {
         if (!services.builders) return { ok: false, error: 'no builder registry' };
         const builder = findBuild(services, args[1]);
@@ -921,6 +981,16 @@ function registerSchematics(registry, services) {
         return { ok: true, design, materials: Object.entries(design.materials).sort((a, b) => b[1] - a[1]).slice(0, 30) };
       }
       if (sub === 'stats') return { ok: true, stats: library().stats() };
+      if (sub === 'count') return { ok: true, count: library().count, minimum: library().minCount, meetsMinimum: library().count >= library().minCount };
+      if (sub === 'tier') {
+        const tier = args[1] || null;
+        return { ok: true, tier, designs: library().list({ tier, limit: args[2] ? intArg(args[2], 'limit', { min: 1, max: 200 }) : 60 }) };
+      }
+      if (sub === 'preview') {
+        const design = resolveDesign(services, args[1]);
+        const schematic = library().build(design.id);
+        return { ok: true, design: { id: design.id, name: design.name, tier: design.tier, dimensions: design.dimensions }, blocks: schematic.blocks.length, palette: schematic.palette, materials: design.materials };
+      }
       if (sub === 'validate') {
         const sample = args[1] ? intArg(args[1], 'sample', { min: 1, max: 2000 }) : 40;
         const report = validateLibrary(library().manifest, { sampleSize: sample });
@@ -968,6 +1038,203 @@ function registerSchematics(registry, services) {
         return { ok: true, id, name: schematic.name, dimensions: schematic.dimensions, blocks: schematic.blocks.length, materials: Object.keys(schematic.materials).length, geometryHash: schematic.geometryHash };
       }
       return { ok: false, error: `unknown schematics subcommand '${sub}'` };
+    }
+  });
+}
+
+
+function registerConstruction(registry, services) {
+  const manager = () => {
+    if (!services.construction) throw new CommandError('construction manager unavailable');
+    return services.construction;
+  };
+  const projectOrThrow = () => {
+    const project = manager().activeProject();
+    if (!project) throw new CommandError('no active project; create one with builder create <schematic> [x y z]');
+    return project;
+  };
+  const compactCandidates = (candidates = []) => candidates.map((candidate) => ({
+    id: candidate.id, origin: candidate.origin, score: candidate.score, factors: candidate.factors,
+    reasons: candidate.reasons, stats: candidate.stats, overlaps: candidate.overlaps || []
+  }));
+
+  registry.register({
+    name: 'builder', aliases: ['project'], category: 'builder',
+    summary: 'Manage construction projects and the full site-to-handover pipeline',
+    usage: 'builder [projects|create <schematic> [x y z]|select <id>|status|preview|advance [phases] confirm|run confirm|auto on/off|pause|resume|stop|phases|report|assign <bot> <role>|priority <id> <0-100>]',
+    dangerous: true,
+    execute: async (args, ctx) => {
+      const sub = (args[0] || 'status').toLowerCase();
+      const m = manager();
+      if (sub === 'projects' || sub === 'list' || sub === 'history') return { ok: true, projects: m.list(), activeId: m.activeId };
+      if (sub === 'create') {
+        if (!args[1]) throw new CommandError('usage: builder create <schematicId|number|query> [x y z] [rotation]');
+        const design = resolveDesign(services, args[1]);
+        let origin = null;
+        let rotation = 0;
+        const numeric = args[2] !== undefined && Number.isFinite(Number(args[2]));
+        if (numeric && args[4] !== undefined) origin = parseOrigin(args, 2);
+        else if (numeric) origin = { x: intArg(args[2], 'x'), z: intArg(args[3], 'z') };
+        if (args[5] !== undefined) rotation = intArg(args[5], 'rotation', { min: 0, max: 359 });
+        if (![0, 90, 180, 270].includes(rotation)) throw new CommandError('rotation must be 0, 90, 180 or 270');
+        const result = m.createProject({ schematicId: design.id, origin, rotation });
+        return result;
+      }
+      if (sub === 'select' || sub === 'activate') {
+        if (!args[1]) throw new CommandError('usage: builder select <projectId>');
+        const result = m.setActive(args[1]);
+        if (!result.ok) return result;
+        return { ok: true, project: result.project };
+      }
+      if (sub === 'status' || sub === 'report') {
+        if (sub === 'report') return m.report();
+        const project = m.activeProject();
+        return { ok: true, state: m.state(), report: project ? m.report() : null };
+      }
+      if (sub === 'phases') {
+        const project = projectOrThrow();
+        return { ok: true, pipeline: project.buildPhases.map((phase) => ({ id: phase.id, name: phase.name, status: phase.status, attempts: phase.attempts, detail: phase.detail })), milestones: project.buildMilestones };
+      }
+      if (sub === 'preview') return m.preview();
+      if (sub === 'advance' || sub === 'run' || sub === 'start') {
+        if (!ctx.confirmed) return { ok: false, error: `${sub} performs site preparation and world changes; append confirm`, code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+        const project = projectOrThrow();
+        m.setAutonomy(true);
+        if (sub === 'advance') return m.advance({ maxPhases: args[1] ? intArg(args[1], 'phases', { min: 1, max: 19 }) : 1 });
+        return m.run({ maxPhases: args[1] ? intArg(args[1], 'phases', { min: 1, max: 76 }) : 76 });
+      }
+      if (sub === 'auto') return m.setAutonomy(String(args[1] || 'on').toLowerCase() === 'on');
+      if (sub === 'pause') return m.pause();
+      if (sub === 'resume') return m.resume();
+      if (sub === 'stop' || sub === 'cancel') return m.cancel();
+      if (sub === 'assign') {
+        if (!args[1]) throw new CommandError('usage: builder assign <bot> <role>');
+        const bot = pickBot(services, args[1]);
+        return m.assign({ bot: bot.name, role: args.slice(2).join(' ') || 'FLEXIBLE' });
+      }
+      if (sub === 'priority') {
+        if (!args[1]) throw new CommandError('usage: builder priority <projectId> <0-100>');
+        const priority = intArg(args[2], 'priority', { min: 0, max: 100 });
+        return m.setPriority(args[1], priority);
+      }
+      return { ok: false, error: `unknown builder subcommand '${sub}'` };
+    }
+  });
+
+  registry.register({
+    name: 'site', category: 'builder', summary: 'Survey, select and prepare a construction site',
+    usage: 'site [survey|candidates|select [x y z|site-id] confirm|boundaries|preview [clear|light]|clear confirm|excavate confirm|flatten confirm|drain confirm|light confirm|audit|secure confirm|status]',
+    dangerous: true,
+    execute: async (args, ctx) => {
+      const sub = (args[0] || 'status').toLowerCase();
+      const m = manager();
+      if (sub === 'status') {
+        const project = projectOrThrow();
+        return {
+          ok: true, project: m.summary(project), preparation: project.sitePreparation,
+          boundaries: project.sitePreparation.boundaries, pipeline: project.buildPhases.filter((phase) => ['SURVEY', 'SITE_SELECTION', 'CLEARANCE', 'EXCAVATION', 'LEVELLING', 'DRAINAGE', 'LIGHTING', 'PERIMETER', 'TEMPORARY_STORAGE'].includes(phase.id))
+        };
+      }
+      if (sub === 'survey' || sub === 'candidates') {
+        projectOrThrow();
+        const result = m.surveyActive({ candidates: true });
+        if (!result.ok) return result;
+        return { ok: true, survey: { origin: result.survey.origin, footprint: result.survey.footprint, samples: result.survey.samples, stats: result.survey.stats, hazards: result.survey.hazards }, score: result.score, candidates: compactCandidates(result.candidates), recommended: result.recommended ? { id: result.recommended.id, origin: result.recommended.origin, score: result.recommended.score } : null };
+      }
+      if (sub === 'select') {
+        if (!ctx.confirmed) return { ok: false, error: 'site selection is a commitment; append confirm', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+        projectOrThrow();
+        let candidateId = null;
+        let origin = null;
+        if (args[1] && /^site-/.test(args[1])) candidateId = args[1];
+        else if (args[1] && args[2] && args[3]) origin = parseOrigin(args, 1);
+        else if (args[1]) candidateId = args[1];
+        const result = m.selectSite({ candidateId, origin });
+        return result;
+      }
+      if (sub === 'boundaries') return m.boundaries();
+      if (sub === 'preview') {
+        const kind = (args[1] || 'clear').toLowerCase();
+        if (kind === 'light' || kind === 'lighting') {
+          const light = m.lightingPreview();
+          return { ...light, plan: light.plan ? { placements: light.plan.placements.length, uncovered: light.plan.uncovered.length, coverage: light.plan.coverage, source: light.plan.source, note: light.plan.note } : null };
+        }
+        return m.preview();
+      }
+      if (sub === 'clear') return m.clear({ confirm: ctx.confirmed, maxActions: args[1] ? intArg(args[1], 'actions', { min: 1, max: 2000 }) : 400 });
+      if (sub === 'excavate') return m.excavate({ confirm: ctx.confirmed, maxActions: args[1] ? intArg(args[1], 'actions', { min: 1, max: 2000 }) : 800 });
+      if (sub === 'flatten' || sub === 'level') return m.flatten({ confirm: ctx.confirmed, maxActions: args[1] ? intArg(args[1], 'actions', { min: 1, max: 2000 }) : 700 });
+      if (sub === 'drain') return m.drain({ confirm: ctx.confirmed, maxActions: args[1] ? intArg(args[1], 'actions', { min: 1, max: 500 }) : 200 });
+      if (sub === 'light' || sub === 'spawnproof') return m.light({ confirm: ctx.confirmed });
+      if (sub === 'secure' || sub === 'perimeter') return m.secure({ confirm: ctx.confirmed });
+      if (sub === 'audit') {
+        const project = projectOrThrow();
+        return { ok: true, lighting: project.sitePreparation.lighting || null, security: project.security || null };
+      }
+      return { ok: false, error: `unknown site subcommand '${sub}'` };
+    }
+  });
+
+  registry.register({
+    name: 'materials', aliases: ['bom'], category: 'builder',
+    summary: 'Bill of materials, deficits, safe acquisition and reserve management',
+    usage: 'materials [status|calculate|missing|readiness|gather confirm|reserve|locate <item>|deposit <item> <count> [bot]|retrieve <item> <count> [bot]]',
+    execute: async (args, ctx) => {
+      const sub = (args[0] || 'status').toLowerCase();
+      const m = manager();
+      if (sub === 'status' || sub === 'calculate' || sub === 'bom') {
+        const result = m.materials();
+        if (!result.ok) return result;
+        return {
+          ok: true, project: result.project, ready: result.ready, deficit: result.deficit,
+          totalNeeded: result.totalNeeded, totalAvailable: result.totalAvailable,
+          requirements: Object.fromEntries(Object.entries(result.requirements).slice(0, 80)),
+          acquisitionPlan: result.acquisitionPlan.slice(0, 40), phaseReadiness: result.phaseReadiness,
+          storage: result.storage
+        };
+      }
+      if (sub === 'missing' || sub === 'deficit') return { ok: true, ...(await (async () => { const r = m.materials(); return { deficit: r.deficit, ready: r.ready }; })()) };
+      if (sub === 'readiness' || sub === 'phases') return m.phaseReadiness();
+      if (sub === 'gather') return m.gather({ confirm: ctx.confirmed });
+      if (sub === 'reserve') return m.reserveMaterials();
+      if (sub === 'locate') {
+        if (!args[1]) throw new CommandError('usage: materials locate <item>');
+        return { ok: true, item: args[1], locations: m.warehouse.locate(args[1]) };
+      }
+      if (sub === 'deposit' || sub === 'retrieve' || sub === 'transport') {
+        if (!ctx.confirmed) return { ok: false, error: 'physical item transport is a world action; append confirm', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+        if (!args[1]) throw new CommandError(`usage: materials ${sub} <item> <count> [bot]`);
+        const count = intArg(args[2], 'count', { min: 1, max: 4096 });
+        return m.storageMove({ action: sub === 'retrieve' ? 'retrieve' : 'deposit', item: args[1], count, bot: args[3] || null });
+      }
+      return { ok: false, error: `unknown materials subcommand '${sub}'` };
+    }
+  });
+
+  registry.register({
+    name: 'storage', aliases: ['warehouse'], category: 'builder',
+    summary: 'Central warehouse scan, categorised storage, capacity and verified transfers',
+    usage: 'storage [status|scan [bot]|containers|capacity|locate <item>|deposit <item> <count> [bot] confirm|retrieve <item> <count> [bot] confirm|organise confirm]',
+    dangerous: true,
+    execute: async (args, ctx) => {
+      const sub = (args[0] || 'status').toLowerCase();
+      const m = manager();
+      if (sub === 'status') return { ok: true, warehouse: m.state().warehouse };
+      if (sub === 'scan') return m.storageScan({ bot: args[1] || null });
+      if (sub === 'containers') return { ok: true, containers: m.warehouse.state().containers, categories: m.warehouse.categories() };
+      if (sub === 'capacity') return { ok: true, capacity: m.warehouse.capacity() };
+      if (sub === 'locate') {
+        if (!args[1]) throw new CommandError('usage: storage locate <item>');
+        return { ok: true, item: args[1], locations: m.warehouse.locate(args[1]) };
+      }
+      if (sub === 'organise' || sub === 'organize') return m.storageOrganise();
+      if (sub === 'deposit' || sub === 'retrieve') {
+        if (!ctx.confirmed) return { ok: false, error: 'physical storage transfer requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+        if (!args[1]) throw new CommandError(`usage: storage ${sub} <item> <count> [bot]`);
+        const count = intArg(args[2], 'count', { min: 1, max: 4096 });
+        return m.storageMove({ action: sub, item: args[1], count, bot: args[3] || null });
+      }
+      return { ok: false, error: `unknown storage subcommand '${sub}'` };
     }
   });
 }

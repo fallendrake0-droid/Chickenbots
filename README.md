@@ -1,7 +1,8 @@
-# Chickenbots V4
+# Chickenbots V5
 
-Five autonomous Minecraft bots that survive, cooperate, mine, farm, excavate and build a validated
-schematic library on a vanilla **Overworld** server. Everything is local, deterministic and
+Five autonomous Minecraft bots that survive, prepare a real site, run materials and warehouse
+logistics, light and secure the ground, then build a validated schematic on a vanilla **Overworld**
+server. V5 adds a full construction crew around the existing survival, excavation and builder stack. Everything is local, deterministic and
 configuration-driven. There is **no AI service, no API key and no cloud inference** anywhere in the
 runtime; the optional AI hook exists as a disabled flag.
 
@@ -11,7 +12,7 @@ server:          cr3xlol.aternos.me:55742   (MC_VERSION=auto, ViaVersion/ViaBack
 dashboard:       http://127.0.0.1:3000      (binds 0.0.0.0 for sandbox previews)
 ```
 
-> Honest scope note: the entire team, survival, excavation, builder, command and dashboard stack is
+> Honest scope note: the entire team, survival, excavation, construction, builder, command and dashboard stack is
 > exercised by the test suite against a deterministic `MockWorld`/`MockBot` implementation of the
 > same adapter contract used by the live `RealBot` (Mineflayer). The live connection path
 > (connect → authenticate → spawn gate, pathfinding, digging, placing, containers, combat) is
@@ -42,7 +43,7 @@ Useful scripts:
 | `npm start` | creates the runtime, connects the five bots, starts autonomy + dashboard |
 | `npm start -- --simulate` | boots the deterministic mock world and the full dashboard |
 | `npm run cli -- --simulate "status"` | runs one command through the shared validated handler |
-| `npm test` | all layer tests (team, excavation, schematics, builder, survival, controllers) |
+| `npm test` | all layer tests (team, excavation, construction, schematics, builder, survival, controllers) |
 | `npm run lint` | syntax check + project-specific safety rules + ESLint |
 | `npm run validate` | lint, tests, full library regeneration/validation and consistency checks |
 | `npm run schematics:generate` | regenerates `data/schematics/manifest.json` from the seeded generator |
@@ -71,12 +72,21 @@ src/
     safety.js footprint.js mask.js regions.js planner.js verifier.js executor.js manager.js
   schematics/
     blockGrid.js palettes.js primitives.js designHash.js generator.js library.js format.js validate.js
+  construction/
+    constants.js            19 pipeline phases, 16 build milestones, statuses, schematic rotation
+    siteSurvey.js           observed-block survey, hazard detection, candidate scoring, overlap refusal
+    sitePreparer.js         clearance, excavation, cut/fill levelling, drainage, perimeter
+    lighting.js             block-light emission tables, spawnable surfaces, plan/execute/audit
+    materials.js            real BOM, availability, deficits, acquisition, safe substitution, reservations
+    storage.js              Warehouse: labelled chests, capacity, verified deposit/retrieve, locks
+    pipeline.js             phase engine from ANALYSIS to CLEANUP, operator confirmation wrappers
+    manager.js              project lifecycle, persistence, selection, autonomy, reporting
   builder/builder.js        cooperative phased construction with real material transfers
   actions/                  survival, combat, mining, woodcutting, farming, fishing, sleep, exploration, inventory, home base
   commands/                 registry.js (validation/confirmation) + index.js (all commands)
-  dashboard/                Express API + modular operations console (25 pages)
+  dashboard/                Express API + modular operations console (34 pages)
 scripts/                    lint, validation, schematic generation/statistics
-tests/                      team, excavation, schematics, builder, survival, controllers, autonomy
+tests/                      team, excavation, construction, schematics, builder, survival, controllers, autonomy
 ```
 
 ### Teamwork (not a chat wrapper)
@@ -116,6 +126,38 @@ Safety is enforced on real block data: bedrock/barriers/command blocks never dug
 farms, redstone and functional blocks require explicit authorisation and are preserved by default;
 ores preserved unless a deliberate mining operation removes them; liquids are never opened blindly.
 The access staircase/corridor is carved under a team lock before digging.
+
+### Construction operations (V5)
+
+`ConstructionManager` owns persisted projects and runs one active project at a time through 19
+observable phases: analysis, survey, site selection, clearance, excavation, levelling, drainage,
+lighting, perimeter, temporary storage, material calculation, gathering, warehouse storage, build
+plan, construction, interior, security audit, quality verification and cleanup. Every phase has a
+status, attempt count and detail payload; a phase that cannot be completed becomes `BLOCKED` with a
+reason instead of retrying forever. `runPhase` refuses to re-run a `COMPLETE` phase unless an operator
+explicitly forces it.
+
+* **Survey** reads observed blocks only. Unloaded chunks are reported as `unloaded` and counted as
+  `stats.unknown`; they are never treated as air. The survey refuses to select a site while any
+  observable column is unknown, scores candidates by flatness, hazards, space, access, excavation
+  and observed resources, and rejects footprints that overlap another project.
+* **Site preparation** previews clearance before any block is broken, protects structures and ores,
+  excavates and levels with cut/fill, drains standing liquids, places real light blocks on observed
+  spawnable surfaces, fences the perimeter with a gate, and stages materials in a labelled chest.
+  Reserved bill-of-materials stock is never consumed by fences, chests or lighting.
+* **Materials** computes a BOM from the validated schematic palette, compares it with live bot
+  inventories plus verified warehouse stock, lists deficits and acquisition options, applies only
+  safe same-role substitutions, and can reserve stock against accidental spending.
+* **Warehouse** labels and categorises chests, scans real contents, verifies deposits and withdrawals,
+  tracks capacity/categories and honours locks. Deposits and withdrawals re-read the container instead
+  of trusting the adapter's return value.
+* **Quality and security** re-read the placed world block by block, compare palette and dimensions,
+  audit block light and hostile observations, and only then complete the project. Lighting does not
+  stop spawners, raids, patrols or special mob rules, and the UI says so.
+
+The dashboard surfaces this as a **Builder Operations** group: Builder Overview, Builder Projects,
+Site Survey, Site Preparation, Lighting, Material Planning, Storage, Team Assignments and QA &
+Security. All world-changing controls are confirmation-gated.
 
 ### Builder
 
@@ -201,8 +243,13 @@ task <list|add|assign|priority|info|cancel|retry|objective> ...
 excavate preview <box|at|radius|quarry|trench|flatten|foundation> ...
 excavate start [previewId] confirm [authorized] [team]
 excavate status|pause|resume|stop|undo-preview|assign|team ...
+builder [projects|create <schematic> [x y z] [rotation]|select <id>|status|report|phases|preview|advance [n] confirm|run [n] confirm|auto on|off|pause|resume|stop]
+site [status|survey|candidates|select <id> confirm|boundaries|preview [clear|light]|clear confirm|excavate confirm|flatten confirm|drain confirm|light confirm|secure confirm|audit]
+materials [status|calculate|missing|readiness|gather confirm|reserve|locate <item>|deposit|retrieve|transport]
+storage [status|scan [bot]|containers|capacity|locate|deposit/retrieve ... confirm|organise]
 build select <designId|number|query> | build preview [designId]
 build start [run] confirm | build pause|resume|stop|run|status|list ...
+build plan|phase|phases|progress|assign|verify|repair confirm|finish confirm|projects
 build <designId|number|query> [x y z] [run] confirm
 home set x y z | home status | home build [tier] [run] confirm
 schematics <list|search|info|stats|validate|export|import> ...
@@ -216,6 +263,10 @@ node src/cli.js --simulate "schematics info 0001_beginner_shelter"
 node src/cli.js --simulate "excavate preview quarry 100 64 100 10 10 6"
 node src/cli.js --simulate "excavate status"
 node src/cli.js --simulate "build 0001_beginner_shelter 60 72 60 confirm run"
+node src/cli.js --simulate "builder create 0001 24 64 24"
+node src/cli.js --simulate "site survey"
+node src/cli.js --simulate "site preview clear"
+node src/cli.js --simulate "materials readiness"
 node src/cli.js --simulate "build select 0001_beginner_shelter"
 node src/cli.js --simulate "build preview"
 node src/cli.js --simulate "home set 10 64 -10"
@@ -226,7 +277,7 @@ node src/cli.js --simulate "fish all 1"
 
 ## Dashboard
 
-A modular operations console served from `src/dashboard/public/` with 25 routed pages, grouped so
+A modular operations console served from `src/dashboard/public/` with 34 routed pages, grouped so
 that related tasks sit together rather than in one long tab strip:
 
 * **Overview** – fleet summary, live vitals chart, activity feed and objectives.
@@ -234,8 +285,10 @@ that related tasks sit together rather than in one long tab strip:
 * **Fleet** – all bots, team board, profiles and connection management.
 * **Gameplay** – survival, combat, inventory, mining, excavation, woodcutting, farming,
   fishing, exploration and sleep.
-* **Construction** – home base, builder, schematic library (filters, pagination, isometric preview),
-  build projects and project history.
+* **Builder Operations** – builder overview and pipeline, builder projects, site survey, site
+  preparation, lighting, material planning, warehouse/storage, team assignments, QA & security.
+* **Legacy construction** – home base, builder, schematic library (filters, pagination, isometric
+  preview), build projects and project history.
 * **System** – task manager, logs/diagnostics and settings.
 
 The shell is loaded per route (`js/app.js` + `js/router.js`) and hydrated from `/api/state`, `/api/logs`,
@@ -271,6 +324,7 @@ npm run test:excavation        # planning + execution against mock bots
 npm run test:schematics        # generator, hashes, .schem/.schematic round-trips, builder
 npm run test:survival          # survival, combat, mining, woodcutting, farming, sleep, inventory, runtime/autonomy
 npm run test:features          # fishing, structure clues, sleep automation, build pause/resume, command surface
+npm run test:construction      # survey hazards, BOM, warehouse, pipeline, rotation, command families
 npm run validate               # lint + tests + full library validation + consistency
 ```
 
@@ -287,6 +341,11 @@ roughly two minutes; the full validation pass is therefore not part of the defau
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
   real placement; a Grandmaster design is a multi-session project, not instant.
+* The construction pipeline is validated against `MockWorld`. Live operation still depends on the
+  server's view distance, chunk loading, latency and container/pathfinding behaviour; a survey that
+  cannot observe a column blocks selection by design.
+* Lighting covers observed spawnable surfaces only. It does not claim to stop spawners, raids,
+  patrols or special mob rules.
 * The optional AI hook is not implemented. Deterministic local intelligence is the only mode.
 
 ## License

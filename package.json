@@ -1,7 +1,7 @@
 {
   "name": "chickenbots",
-  "version": "4.0.0",
-  "description": "Chickenbots V4 - autonomous five-bot Minecraft Overworld team: survival, PvE, mining, excavation, farming, exploration, cooperative megabuilding",
+  "version": "5.0.0",
+  "description": "Chickenbots V5 - autonomous five-bot Minecraft construction crew: site survey, preparation, lighting, logistics, materials and verified cooperative building",
   "type": "commonjs",
   "main": "src/index.js",
   "engines": {
@@ -20,6 +20,7 @@
     "test:excavation": "node --test --test-concurrency=1 tests/excavation.test.js tests/excavation-exec.test.js",
     "test:survival": "node --test --test-concurrency=1 tests/survival.test.js tests/controllers.test.js",
     "test:features": "node --test --test-concurrency=1 tests/v4-features.test.js",
+    "test:construction": "node --test --test-concurrency=1 tests/construction.test.js",
     "test:schematics": "node --test --test-concurrency=1 tests/schematics.test.js tests/builder.test.js"
   },
   "dependencies": {

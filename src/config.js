@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Chickenbots V4 configuration.
+ * Chickenbots V5 configuration.
  *
  * Everything is deterministic and local. No AI service, API key or cloud
  * inference is used anywhere in this project.
@@ -164,6 +164,12 @@ const config = {
     maxPlacementDistance: 5,
     phaseRetries: 3,
     verifySamples: 200
+  },
+  construction: {
+    autoAdvance: envBool('CONSTRUCTION_AUTO', true),
+    tickEvery: envInt('CONSTRUCTION_TICK_EVERY', 20),
+    maxActionsPerPhase: envInt('CONSTRUCTION_MAX_ACTIONS', 500),
+    maxProjects: envInt('CONSTRUCTION_MAX_PROJECTS', 12)
   },
   schematics: {
     minimumCount: 1100,

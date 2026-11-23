@@ -7,7 +7,7 @@ const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
 
 function usage() {
-  process.stdout.write(`Chickenbots V4 CLI
+  process.stdout.write(`Chickenbots V5 CLI
 
 Usage: node src/cli.js [--live] [--no-dashboard] ["command"]
 

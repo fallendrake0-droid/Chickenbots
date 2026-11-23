@@ -8,6 +8,7 @@ const { ResourceLedger } = require('./team/resourceLedger');
 const { TeamComms } = require('./team/comms');
 const { TeamCoordinator } = require('./team/teamCoordinator');
 const { ExcavationManager } = require('./excavate/manager');
+const { ConstructionManager } = require('./construction/manager');
 const { SchematicLibrary } = require('./schematics/library');
 const { ActionRegistry } = require('./actions');
 const { createCommandHandler } = require('./commands');
@@ -49,6 +50,8 @@ class TeamRuntime {
       botNames: BOT_NAMES, memory: this.memory, board: this.board, ledger: this.ledger, comms: this.comms, logger: this.logger, now: this.now
     });
     this.excavation = new ExcavationManager({ coordinator: this.coordinator, logger: this.logger, now: this.now });
+    this.construction = null;
+    this.constructionBusy = false;
     this.library = new SchematicLibrary();
     this.world = null;
     this.bots = new Map();
@@ -120,12 +123,18 @@ class TeamRuntime {
     }
     this.memory.setHome({ position: this.home, setAt: Date.now() });
     this.coordinator.enable();
+    this.construction = new ConstructionManager({
+      library: this.library, bots: [...this.bots.values()], actions: this.actions,
+      world: this.world, taskBoard: this.board, ledger: this.ledger, memory: this.memory,
+      coordinator: this.coordinator, builders: this.builders, logger: this.logger,
+      home: this.home, maxProjects: config.construction.maxProjects
+    });
     const services = {
       mode: this.mode, logger: this.logger, config,
       coordinator: this.coordinator, leadership: this.coordinator.leadership, memory: this.memory,
       taskBoard: this.board, ledger: this.ledger, comms: this.comms, excavation: this.excavation,
       library: this.library, bots: this.bots, actions: this.actions, builders: this.builders,
-      imported: this.imported, world: this.world, runtime: this
+      construction: this.construction, imported: this.imported, world: this.world, runtime: this
     };
     this.services = services;
     this.commands = createCommandHandler(services);
@@ -141,6 +150,7 @@ class TeamRuntime {
       if (ground && typeof ground.surfaceAt === 'function') this.home.y = ground.surfaceAt(this.home.x, this.home.z) + 1;
     }
     this.memory.setHome({ position: this.home, setAt: Date.now() });
+    if (this.construction) this.construction.home = this.home;
     for (const actions of this.actions ? this.actions.list() : []) actions.updateHome(this.home);
     return { ok: true, home: this.home };
   }
@@ -230,6 +240,12 @@ class TeamRuntime {
       }
       const home = this.memory.getHome();
       if (home && home.position) this.home = home.position;
+      if (this.construction && config.construction.autoAdvance && !this.constructionBusy && this.ticks % Math.max(2, config.construction.tickEvery) === 0) {
+        this.constructionBusy = true;
+        this.construction.autoAdvance()
+          .catch((err) => this.logger.warn(`construction auto-advance: ${err.message}`))
+          .finally(() => { this.constructionBusy = false; });
+      }
     } finally {
       this.ticking = false;
     }
@@ -354,6 +370,7 @@ class TeamRuntime {
       bots: [...this.bots.values()].map((bot) => ({ name: bot.name, connected: bot.connected, spawned: bot.spawned, authenticated: bot.authenticated, ready: bot.ready })),
       connectionErrors: { ...this.connectionErrors },
       dashboard: this.dashboard ? this.dashboard.url : null,
+      construction: this.construction ? { activeId: this.construction.activeId, projects: this.construction.projects.size } : null,
       pausedAt: this.paused ? Date.now() : null
     };
   }
