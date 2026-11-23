@@ -171,8 +171,12 @@ test('position packets are suppressed until password auth is released', () => {
   assert.equal(real._movementLock, true);
   real._unlockMovement();
   fake._client.write('position_look', {});
-  assert.deepEqual(writes, ['chat', 'position_look']);
+  assert.deepEqual(writes, ['chat', 'position_look', 'tick_end']);
   assert.equal(real._movementLock, false);
+
+  // A movement packet must be followed by client_tick_end for 26.x servers.
+  fake._client.write('position', { x: 1, y: 64, z: 1 });
+  assert.deepEqual(writes.slice(-2), ['position', 'tick_end']);
 });
 
 test('AuthMe replies "Login successful." and "You are already registered." are accepted', async () => {

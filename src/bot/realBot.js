@@ -108,7 +108,14 @@ class RealBot extends BotAdapter {
           return true;
         }
       }
-      return original(name, packet);
+      const result = original(name, packet);
+      // Minecraft 26.x servers allow only one position-bearing packet per
+      // client tick and reset that counter on client_tick_end. Mineflayer
+      // never sends it, so every bot is kicked on its second movement packet.
+      if (movement.has(name)) {
+        try { original('tick_end', {}); } catch (_) { /* pre-1.21.2 protocol */ }
+      }
+      return result;
     };
   }
 
