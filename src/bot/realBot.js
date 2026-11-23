@@ -67,6 +67,7 @@ class RealBot extends BotAdapter {
     this._traceLog = [];
     this.lastServerPosition = null;
     this._authWaiters = new Set();
+    this._tickEndSent = false;
     this._blockCache = new Map();
     this._inventoryDirty = false;
     this._lastHealth = undefined;
@@ -113,7 +114,13 @@ class RealBot extends BotAdapter {
       // client tick and reset that counter on client_tick_end. Mineflayer
       // never sends it, so every bot is kicked on its second movement packet.
       if (movement.has(name)) {
-        try { original('tick_end', {}); } catch (_) { /* pre-1.21.2 protocol */ }
+        try {
+          original('tick_end', {});
+          if (!this._tickEndSent) {
+            this._tickEndSent = true;
+            this.logger.info(`[${this.name}] client_tick_end enabled after movement packets (26.x requirement)`);
+          }
+        } catch (_) { /* pre-1.21.2 protocol */ }
       }
       return result;
     };
@@ -222,6 +229,7 @@ class RealBot extends BotAdapter {
     this._traceLog = [];
     this.lastServerPosition = null;
     this._authWaiters = new Set();
+    this._tickEndSent = false;
     try {
       this.bot = createBot({
         username: this.name,
