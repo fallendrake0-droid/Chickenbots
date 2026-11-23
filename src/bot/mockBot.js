@@ -197,7 +197,16 @@ class MockBot extends BotAdapter {
   async goTo(pos, { range = 1, token = null, timeoutMs = 15000 } = {}) {
     if (token && token.cancelled) throw new CancelledError(token.reason);
     if (!pos) return { ok: false, error: 'no target' };
-    const target = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) };
+    // The mock world only materialises blocks inside +/-size. Walking past the
+    // edge made getBlock() return null everywhere, which silently wedged every
+    // mining/farming task at the border.
+    const limit = Math.max(4, (this.world.size || 256) - 2);
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.floor(v)));
+    const target = {
+      x: clamp(pos.x, -limit, limit),
+      y: clamp(pos.y, -63, 318),
+      z: clamp(pos.z, -limit, limit)
+    };
     const start = { ...this.position };
     // Descending into an open shaft is a direct move, not a path around it.
     if (target.x === Math.floor(start.x) && target.z === Math.floor(start.z) && target.y === Math.floor(start.y) - 1) {

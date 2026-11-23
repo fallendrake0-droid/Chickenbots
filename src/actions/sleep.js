@@ -12,11 +12,12 @@ const { isNight, timeOfDay, findBlocks } = require('./common');
  * never reserve the same bed. Reservations are released after waking.
  */
 class SleepController {
-  constructor({ bot, memory = null, taskBoard = null, logger = null } = {}) {
+  constructor({ bot, memory = null, taskBoard = null, home = null, logger = null } = {}) {
     if (!bot) throw new Error('SleepController requires a bot');
     this.bot = bot;
     this.memory = memory;
     this.taskBoard = taskBoard;
+    this.home = home ? { ...home } : null;
     this.logger = logger || new Logger({ level: 'warn' });
     this.reservation = null;
     this.auto = true;
@@ -91,28 +92,49 @@ class SleepController {
     return true;
   }
 
-  async ensureBed() {
+  async ensureBed({ placeNew = false } = {}) {
     const beds = this.findBeds({ radius: 12, limit: 1 });
-    if (beds.length) return { ok: true, bed: beds[0] };
+    if (!placeNew && beds.length) return { ok: true, bed: beds[0] };
     const item = this.bot.hasBed ? this.bot.hasBed() : null;
     if (!item) return { ok: false, error: 'no bed available' };
-    // Place a bed on a clear, solid surface near the bot.
-    for (const [dx, dz] of [[2, 0], [-2, 0], [0, 2], [0, -2], [1, 1], [-1, -1]]) {
-      const pos = { x: Math.floor(this.bot.position.x) + dx, y: Math.floor(this.bot.position.y), z: Math.floor(this.bot.position.z) + dz };
-      const below = this.bot.getBlock({ x: pos.x, y: pos.y - 1, z: pos.z });
-      const at = this.bot.getBlock(pos);
-      const above = this.bot.getBlock({ x: pos.x, y: pos.y + 1, z: pos.z });
-      if (!below || below.name === 'air' || below.name === 'water' || below.name === 'lava') continue;
-      if (!at || at.name !== 'air' || !above || above.name !== 'air') continue;
-      const move = await this.bot.goTo(pos, { range: 3 });
-      if (move && move.ok === false) continue;
-      const placed = await this.bot.placeBlock(pos, item);
-      if (!placed.ok) continue;
-      this.stats.bedsPlaced++;
-      if (this.memory) {
-        this.memory.observe({ type: 'BED', position: { ...pos }, reportedBy: this.bot.name, confidence: 0.95, status: 'AVAILABLE', data: { placedBy: this.bot.name } });
+    // Place a bed on a clear, solid surface near the bot. Search outward in
+    // rings: a single fixed six-cell list misses beds when teammates stand in
+    // the way or the surface is uneven.
+    const offsets = [];
+    for (let radius = 1; radius <= 5; radius++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) === radius) offsets.push([dx, dz]);
+        }
       }
-      return { ok: true, bed: pos, placed: true, item };
+    }
+    // A miner can be hundreds of blocks underground in a one-block shaft.
+    // Try the local area first, then fall back to the team's home surface,
+    // which is where a shared bed belongs anyway.
+    const anchors = [this.bot.position];
+    if (this.home && distance(this.home, this.bot.position) > 4) anchors.push(this.home);
+    for (const anchor of anchors) {
+      if (anchor !== this.bot.position) {
+        const travel = await this.bot.goTo(anchor, { range: 3 });
+        if (travel && travel.ok === false) continue;
+      }
+      for (const [dx, dz] of offsets) {
+        const pos = { x: Math.floor(anchor.x) + dx, y: Math.floor(anchor.y), z: Math.floor(anchor.z) + dz };
+        const below = this.bot.getBlock({ x: pos.x, y: pos.y - 1, z: pos.z });
+        const at = this.bot.getBlock(pos);
+        const above = this.bot.getBlock({ x: pos.x, y: pos.y + 1, z: pos.z });
+        if (!below || below.name === 'air' || below.name === 'water' || below.name === 'lava') continue;
+        if (!at || at.name !== 'air' || !above || above.name !== 'air') continue;
+        const move = await this.bot.goTo(pos, { range: 3 });
+        if (move && move.ok === false) continue;
+        const placed = await this.bot.placeBlock(pos, item);
+        if (!placed.ok) continue;
+        this.stats.bedsPlaced++;
+        if (this.memory) {
+          this.memory.observe({ type: 'BED', position: { ...pos }, reportedBy: this.bot.name, confidence: 0.95, status: 'AVAILABLE', data: { placedBy: this.bot.name } });
+        }
+        return { ok: true, bed: pos, placed: true, item };
+      }
     }
     return { ok: false, error: 'no safe place for a bed' };
   }

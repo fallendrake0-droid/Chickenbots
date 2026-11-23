@@ -36,10 +36,11 @@ function normalizeCrop(value) {
  * team has surplus food, never slaughtered here (combat handles hunting).
  */
 class FarmingController {
-  constructor({ bot, memory = null, logger = null, farmRadius = 24 } = {}) {
+  constructor({ bot, memory = null, home = null, logger = null, farmRadius = 24 } = {}) {
     if (!bot) throw new Error('FarmingController requires a bot');
     this.bot = bot;
     this.memory = memory;
+    this.home = home ? { ...home } : null;
     this.logger = logger || new Logger({ level: 'warn' });
     this.farmRadius = farmRadius;
     this.stats = { harvested: 0, replanted: 0, animalsFed: 0, farmsScanned: 0 };
@@ -102,6 +103,10 @@ class FarmingController {
     if (!dig.ok) return { ok: false, error: dig.error };
     this._statusCache = null;
     this.stats.harvested++;
+    // Real wheat drops seeds as well as produce; the mock world's flat drop
+    // table omitted them, so a farm could never be replanted after the starter
+    // seeds ran out. Mirror vanilla here.
+    if (block.name === 'wheat' && typeof this.bot.addItem === 'function') this.bot.addItem('wheat_seeds', 1);
     const known = this.farmPlots.find((plot) => plot.position.x === pos.x && plot.position.y === pos.y && plot.position.z === pos.z);
     const plot = { crop: block.name, position: { ...pos }, at: Date.now() };
     if (known) Object.assign(known, plot);
@@ -142,6 +147,73 @@ class FarmingController {
       results.push(await this.harvest(target));
     }
     return { ok: results.some((r) => r.ok), stopped: this.stopRequested, harvested: results.filter((r) => r.ok).length, results, crop: wanted };
+  }
+
+  /**
+   * Start a farm from bare soil. The old code ignored the `establish` flag, so
+   * a "plant 64 wheat" order with no crops nearby stayed active forever.
+   */
+  async plantCrops({ crop = 'wheat', count = 16, radius = this.farmRadius } = {}) {
+    this._begin();
+    const name = normalizeCrop(crop) || 'wheat';
+    const def = CROPS[name];
+    if (!def) return { ok: false, planted: 0, error: `unknown crop ${crop}` };
+    if (!this.bot.countItem(def.seed)) return { ok: false, planted: 0, error: `no ${def.seed}` };
+    // Local scan, not the flat findBlocks limit: the latter fills with the
+    // deepest buried soil layer before reaching the surface near the bot.
+    const scan = (origin) => {
+      const found = [];
+      const r = Math.max(1, Math.min(radius, 20));
+      for (let dy = -8; dy <= 8; dy++) {
+        for (let dz = -r; dz <= r; dz++) {
+          for (let dx = -r; dx <= r; dx++) {
+            const x = Math.floor(origin.x) + dx;
+            const y = Math.floor(origin.y) + dy;
+            const z = Math.floor(origin.z) + dz;
+            const block = this.bot.getBlock({ x, y, z });
+            if (!block || !SOIL.has(block.name)) continue;
+            const above = this.bot.getBlock({ x, y: y + 1, z });
+            if (!above || above.name !== 'air') continue;
+            found.push({ x, y, z, name: block.name, distance: distance(origin, { x, y: y + 1, z }) });
+          }
+        }
+      }
+      found.sort((a, b) => a.distance - b.distance);
+      return found;
+    };
+    let soil = scan(this.bot.position);
+    if (!soil.length && this.home && distance(this.home, this.bot.position) > 6) {
+      // A miner far underground cannot farm; walk back to the surface base and
+      // look again rather than reporting "no soil" forever.
+      const back = await this.bot.goTo(this.home, { range: 3 });
+      if (!back || back.ok !== false) soil = scan(this.bot.position);
+    }
+    const results = [];
+    let planted = 0;
+    for (const spot of soil) {
+      if (planted >= count || this.stopRequested) break;
+      if (this.bot.countItem(def.seed) < 1) break;
+      const pos = { x: spot.x, y: spot.y + 1, z: spot.z };
+      const at = this.bot.getBlock(pos);
+      if (!at || at.name !== 'air') continue;
+      const move = await this.bot.goTo(pos, { range: 4 });
+      if (move && move.ok === false) { results.push({ ok: false, error: move.error, position: pos }); continue; }
+      const placed = await this.bot.placeBlock(pos, def.seed);
+      // The live server turns planted seeds into the crop block; the mock world
+      // stores the item name, so mirror that transformation only there.
+      if (placed.ok && this.bot.world && this.bot.world.overrides && typeof this.bot.world.setBlock === 'function') {
+        this.bot.world.setBlock(pos, name);
+      }
+      results.push({ ...placed, position: pos });
+      if (placed.ok) {
+        planted++;
+        this.stats.replanted++;
+        this.farmPlots.push({ crop: name, position: { ...pos }, at: Date.now() });
+      }
+    }
+    if (this.farmPlots.length > 20) this.farmPlots.splice(0, this.farmPlots.length - 20);
+    this._statusCache = null;
+    return { ok: planted > 0, planted, crop: name, seed: def.seed, results };
   }
 
   async feedAnimals({ radius = this.farmRadius, max = 4 } = {}) {

@@ -41,8 +41,8 @@ class BotActions {
     this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp });
     this.mining = new MiningController({ bot, memory, ledger, logger: this.logger });
     this.woodcutting = new WoodcuttingController({ bot, memory, ledger, logger: this.logger });
-    this.farming = new FarmingController({ bot, memory, logger: this.logger });
-    this.sleep = new SleepController({ bot, memory, taskBoard, logger: this.logger });
+    this.farming = new FarmingController({ bot, memory, home: this.home, logger: this.logger });
+    this.sleep = new SleepController({ bot, memory, taskBoard, home: this.home, logger: this.logger });
     this.fishing = new FishingController({ bot, memory, ledger, logger: this.logger });
     this.exploration = new ExplorationController({ bot, memory, home: this.home, logger: this.logger, teamIndex: index });
     this.inventory = new InventoryManager({ bot, ledger, memory, logger: this.logger });
@@ -53,6 +53,8 @@ class BotActions {
 
   updateHome(home) {
     this.home = home;
+    if (this.sleep) this.sleep.home = home ? { ...home } : null;
+    if (this.farming) this.farming.home = home ? { ...home } : null;
     this.exploration.home = home;
     this.homeBase.setHome(home);
   }
@@ -201,27 +203,54 @@ class BotActions {
         if (chopped === 0) { result.ok = true; result.pending = true; }
         break;
       }
-      case 'MINE_ORE':
-        result = await this.mining.mineOresDeep({ radius: 48, limit: 6 });
+      case 'MINE_ORE': {
+        const range = Array.isArray(task.params?.yRange) ? task.params.yRange : null;
+        const minY = range ? Math.max(-59, Number(range[0]) || 0) : -59;
+        if (this.bot.position.y < minY - 1) {
+          // Strayed below the assigned band (e.g. an older unbounded shaft):
+          // walk back to base instead of mining forever out of range.
+          await this.bot.goTo(this.home, { range: 3 });
+          result = { ok: true, pending: true, mined: 0, error: 'returning from below the mining band' };
+          break;
+        }
+        result = await this.mining.mineOresDeep({ radius: 48, limit: 6, minY });
         result.quantity = result.mined;
         result.verified = result.mined > 0;
         // No ore in reach is not a failure: keep the claim and search again
         // next tick instead of burning an attempt and failing the objective.
         if (result.mined === 0) { result.ok = true; result.pending = true; }
         break;
-      case 'MINE_BLOCK':
-        result = await this.mining.mineBlocks({ block: task.params?.block || 'stone', radius: 24, limit: 8 });
+      }
+      case 'MINE_BLOCK': {
+        const blockRange = Array.isArray(task.params?.yRange) ? task.params.yRange : null;
+        const blockMinY = blockRange ? Math.max(-59, Number(blockRange[0]) || 0) : -59;
+        if (this.bot.position.y < blockMinY - 1) {
+          await this.bot.goTo(this.home, { range: 3 });
+          result = { ok: true, pending: true, mined: 0, error: 'returning from below the mining band' };
+          break;
+        }
+        result = await this.mining.mineBlocks({ block: task.params?.block || 'stone', radius: 24, limit: 8, minY: blockMinY });
         result.quantity = result.mined;
         result.verified = result.mined > 0;
         // Same rule as ore: an empty local search must not burn the task's
         // remaining attempts and collapse the whole objective.
         if (result.mined === 0) { result.ok = true; result.pending = true; }
         break;
-      case 'FARM_CROP':
+      }
+      case 'FARM_CROP': {
         result = await this.farming.harvestAll({ limit: 16, crop: task.params?.crop || null });
-        result.quantity = result.harvested;
-        result.verified = result.harvested > 0;
+        let planted = 0;
+        const harvested = result.harvested || 0;
+        if (harvested === 0 && task.params?.establish) {
+          const start = await this.farming.plantCrops({ crop: task.params?.crop || 'wheat', count: 16 });
+          planted = start.planted || 0;
+          result.establish = start;
+        }
+        result.quantity = harvested + planted;
+        result.verified = result.quantity > 0;
+        if (result.quantity === 0) { result.ok = true; result.pending = true; }
         break;
+      }
       case 'FARM_ANIMAL':
         result = await this.farming.feedAnimals();
         result.quantity = result.fed.length;
@@ -238,7 +267,63 @@ class BotActions {
         break;
       }
       case 'STORE_ITEMS': {
-        const item = task.params?.item || 'dirt';
+        const item = task.params?.item || null;
+        if (!item && task.params?.containers) {
+          // Install real containers: craft the missing chests, place them on
+          // solid ground, and register each verified position in the ledger.
+          const target = Math.max(1, Number(task.params.containers) || 1);
+          let have = this.bot.countItem('chest') + this.bot.countItem('trapped_chest');
+          let waiting = null;
+          while (have < target) {
+            if (typeof this.bot.craft !== 'function') { waiting = 'adapter cannot craft'; break; }
+            // Convert logs when planks are short; otherwise the chest craft
+            // fails and takes the whole objective down with it.
+            if (this.bot.countItem('oak_planks') < 8 && this.bot.countItem('oak_log') > 0) {
+              const planks = await this.bot.craft('oak_planks', 2);
+              if (!planks.ok) { waiting = planks.error || 'cannot mill planks'; break; }
+            }
+            const crafted = await this.bot.craft('chest', 1);
+            if (!crafted.ok) { waiting = crafted.error || 'cannot craft a chest'; break; }
+            have++;
+          }
+          if (waiting) {
+            // Missing materials are a supply problem: stay pending and let the
+            // logging/plank work unblock us instead of failing the objective.
+            result = { ok: true, pending: true, error: `waiting for storage materials: ${waiting}`, placed: have };
+            break;
+          }
+          const placed = [];
+          const base = this.bot.position;
+          for (let radius = 1; radius <= 4 && placed.length < target; radius++) {
+            for (let dx = -radius; dx <= radius && placed.length < target; dx++) {
+              for (let dz = -radius; dz <= radius && placed.length < target; dz++) {
+                if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+                if (this.bot.countItem('chest') < 1) break;
+                const pos = { x: Math.floor(base.x) + dx, y: Math.floor(base.y), z: Math.floor(base.z) + dz };
+                const below = this.bot.getBlock({ x: pos.x, y: pos.y - 1, z: pos.z });
+                const at = this.bot.getBlock(pos);
+                if (!below || below.name === 'air' || below.name === 'water' || below.name === 'lava') continue;
+                if (!at || at.name !== 'air') continue;
+                const moved = await this.bot.goTo(pos, { range: 3 });
+                if (moved && moved.ok === false) continue;
+                const put = await this.bot.placeBlock(pos, 'chest');
+                if (!put.ok) continue;
+                placed.push(pos);
+                if (this.ledger) this.ledger.updateStorage(`placed:${pos.x},${pos.y},${pos.z}`, { position: { ...pos }, counts: {}, label: 'shared storage' });
+              }
+            }
+          }
+          result = {
+            ok: placed.length >= target,
+            containers: placed,
+            placed: placed.length,
+            quantity: placed.length,
+            verified: placed.length >= target,
+            error: placed.length >= target ? null : `placed ${placed.length}/${target} chests`
+          };
+          break;
+        }
+        if (!item) { result = { ok: false, error: 'store task has no item or container target' }; break; }
         const deposit = await this.inventory.deposit(item, task.params?.count || 64);
         result = { ok: Boolean(deposit.ok), ...deposit, verified: Boolean(deposit.ok) };
         break;
@@ -255,8 +340,16 @@ class BotActions {
         break;
       }
       case 'PLACE_BED': {
-        const bed = await this.sleep.ensureBed();
-        result = { ok: Boolean(bed.ok), ...bed, verified: Boolean(bed.ok) };
+        // One verified placement per call; the task's unit target accumulates
+        // across calls. Never report a pre-existing bed as new work: that used
+        // to leave the task permanently short of its quota.
+        const bed = await this.sleep.ensureBed({ placeNew: true });
+        result = {
+          ok: Boolean(bed.ok),
+          ...bed,
+          quantity: bed.ok && bed.placed ? 1 : 0,
+          verified: Boolean(bed.ok && bed.placed)
+        };
         break;
       }
       case 'CRAFT': {

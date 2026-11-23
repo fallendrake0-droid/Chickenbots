@@ -3,7 +3,6 @@
 const { config } = require('../config');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { findBlocks } = require('./common');
 
 const ORE_TIERS = {
   coal_ore: 1, deepslate_coal_ore: 1, copper_ore: 1, deepslate_copper_ore: 1,
@@ -22,6 +21,46 @@ const ORE_DROPS = {
   ancient_debris: 'netherite_scrap'
 };
 const HAZARDS = new Set(['lava', 'flowing_lava', 'water', 'flowing_water', 'bedrock', 'spawner']);
+
+const NEIGHBOUR_OFFSETS = [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
+];
+
+/**
+ * Find the nearest exposed blocks of the wanted types. The generic findBlocks
+ * helper caps results at a flat limit, and because it scans y ascending that
+ * limit fills with one buried layer. Mining needs reachable faces, so scan the
+ * local cube and test air neighbours as we go.
+ */
+function findExposed(bot, names, { radius = 16, minY = -59, limit = 8 } = {}) {
+  const wanted = new Set(Array.isArray(names) ? names : [names]);
+  const world = bot.world;
+  const origin = bot.position;
+  const r = Math.max(1, Math.min(radius, 20));
+  const found = [];
+  for (let dy = -r; dy <= r; dy++) {
+    const y = Math.floor(origin.y) + dy;
+    if (y < minY) continue;
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const x = Math.floor(origin.x) + dx;
+        const z = Math.floor(origin.z) + dz;
+        const name = world && typeof world.blockNameAt === 'function' ? world.blockNameAt(x, y, z) : null;
+        if (!name || !wanted.has(name)) continue;
+        let exposed = false;
+        for (const [ox, oy, oz] of NEIGHBOUR_OFFSETS) {
+          const other = world && typeof world.blockNameAt === 'function'
+            ? world.blockNameAt(x + ox, y + oy, z + oz)
+            : (bot.getBlock({ x: x + ox, y: y + oy, z: z + oz }) || {}).name;
+          if (other === 'air' || other === 'cave_air' || other === 'water') { exposed = true; break; }
+        }
+        if (exposed) found.push({ x, y, z, name, distance: distance(origin, { x, y, z }) });
+      }
+    }
+  }
+  found.sort((a, b) => a.distance - b.distance);
+  return found.slice(0, limit);
+}
 
 /**
  * Ore mining with cave safety. Never digs into lava, never opens a liquid
@@ -62,16 +101,14 @@ class MiningController {
     return true;
   }
 
-  findOres({ radius = config.mining.maxSearchRadius, limit = 32, near = this.bot.position } = {}) {
-    const found = findBlocks(this.bot, ORE_NAMES, { near, radius, limit: limit * 2 });
-    return found
-      .map((o) => ({ ...o, distance: distance(this.bot.position, o) }))
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, limit);
+  findOres({ radius = config.mining.maxSearchRadius, limit = 32 } = {}) {
+    // Exposed ore only: a flat findBlocks limit returns one deep buried layer,
+    // which mineOre() can neither walk to nor reach with its pickaxe.
+    return findExposed(this.bot, ORE_NAMES, { radius: Math.min(radius, 20), minY: -59, limit });
   }
 
   /** Hazards are checked before every dig: adjacent lava/water and a liquid ceiling. */
-  checkSafety(pos) {
+  checkSafety(pos, { ignoreFloor = false } = {}) {
     const hazards = [];
     const neighbours = [[0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
     for (const [dx, dy, dz] of neighbours) {
@@ -87,7 +124,9 @@ class MiningController {
       }
     }
     const supported = this.bot.getBlock({ x: pos.x, y: pos.y - 1, z: pos.z });
-    if (!supported || supported.name === 'air') hazards.push({ block: 'air', reason: 'unsupported floor (fall risk)' });
+    // A downward shaft deliberately removes the floor; that is not a fall
+    // hazard, only an unsupported stance when working sideways.
+    if (!ignoreFloor && (!supported || supported.name === 'air')) hazards.push({ block: 'air', reason: 'unsupported floor (fall risk)' });
     return { safe: hazards.length === 0, hazards };
   }
 
@@ -133,10 +172,13 @@ class MiningController {
   }
 
   /** Mine a specific block type (stone, cobblestone, deepslate) with the same safety rules. */
-  async mineBlocks({ block: blockName = 'stone', radius = 24, limit = 16 } = {}) {
+  async mineBlocks({ block: blockName = 'stone', radius = 24, limit = 16, minY = -59 } = {}) {
     this._begin();
     const names = [blockName, blockName === 'stone' ? 'deepslate' : null].filter(Boolean);
-    const targets = findBlocks(this.bot, names, { near: this.bot.position, radius, limit })
+    const targets = findExposed(this.bot, names, { radius: 16, minY, limit })
+      // Only exposed blocks are mineable without a tunnel: aiming at buried
+      // stone made goTo() fall back to the surface and every dig fail as
+      // "too far to dig", freezing the quota.
       .map((b) => ({ ...b, distance: distance(this.bot.position, b) }))
       .sort((a, b) => a.distance - b.distance);
     const results = [];
@@ -155,7 +197,13 @@ class MiningController {
         results.push({ ok: false, error: 'no pickaxe available' });
         break;
       }
-      const move = await this.bot.goTo(target, { range: 3 });
+      const stance = NEIGHBOUR_OFFSETS
+        .map(([ox, oy, oz]) => ({ x: target.x + ox, y: target.y + oy, z: target.z + oz }))
+        .find((n) => {
+          const block = this.bot.getBlock(n);
+          return block && (block.name === 'air' || block.name === 'cave_air' || block.name === 'water');
+        });
+      const move = await this.bot.goTo(stance || target, { range: 1 });
       if (move && move.ok === false) {
         results.push({ ok: false, error: move.error });
         continue;
@@ -177,13 +225,17 @@ class MiningController {
       // the requested block from below the bot (the same thing a player does).
       for (let depth = 0; depth < 8 && mined < limit && !this.stopRequested; depth++) {
         const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
+        if (below.y < minY) {
+          results.push({ ok: false, error: `minimum mining depth ${minY} reached`, depthReached: below.y });
+          break;
+        }
         const block = this.bot.getBlock(below);
         if (!block || block.name === 'air') {
           const move = await this.bot.goTo(below, { range: 0 });
           if (!move || move.ok === false) break;
           continue;
         }
-        const safety = this.checkSafety(below);
+        const safety = this.checkSafety(below, { ignoreFloor: true });
         if (!safety.safe) {
           this.stats.hazardsAvoided++;
           results.push({ ok: false, error: 'unsafe shaft block', hazards: safety.hazards });
@@ -202,6 +254,16 @@ class MiningController {
         if (!move || move.ok === false) break;
         if (typeof this.bot.collectDrops === 'function') await this.bot.collectDrops(4);
       }
+    }
+    if (!mined) {
+      // The local pocket and the vertical shaft are exhausted (or the depth
+      // floor blocked it). Drive a short horizontal branch instead of idling
+      // at the bottom of the band forever.
+      this._branchAxis = this._branchAxis === 'z' ? 'x' : 'z';
+      this._branchDir = -(this._branchDir || 1);
+      const branch = await this.branchMine({ length: 12, axis: this._branchAxis, direction: this._branchDir, torchEvery: 6 });
+      mined += branch.mined;
+      results.push({ ok: branch.mined > 0, branch: true, mined: branch.mined, stopped: branch.stopped, axis: this._branchAxis });
     }
     return { ok: mined > 0, mined, skipped: results.filter((r) => !r.ok).length, results, block: blockName };
   }
@@ -226,7 +288,7 @@ class MiningController {
   }
 
   /** Ore search that can sink a safe shaft when no ore is reachable from the surface. */
-  async mineOresDeep({ radius = 48, limit = 6, maxDepth = 48 } = {}) {
+  async mineOresDeep({ radius = 48, limit = 6, maxDepth = 8, minY = -59 } = {}) {
     this._begin();
     const shallow = await this.mineNearby({ radius, limit });
     if (shallow.mined > 0 || this.stopRequested) return shallow;
@@ -234,13 +296,19 @@ class MiningController {
     let mined = 0;
     for (let depth = 0; depth < maxDepth && mined < limit && !this.stopRequested; depth++) {
       const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
+      // Never dig past the task's depth band or the world floor: an unbounded
+      // shaft used to walk bots thousands of blocks down and stall the quota.
+      if (below.y < minY) {
+        results.push({ ok: false, error: `minimum mining depth ${minY} reached`, depthReached: below.y });
+        break;
+      }
       const block = this.bot.getBlock(below);
       if (!block || block.name === 'air') {
         const move = await this.bot.goTo(below, { range: 0 });
         if (!move || move.ok === false) break;
         continue;
       }
-      const safety = this.checkSafety(below);
+      const safety = this.checkSafety(below, { ignoreFloor: true });
       if (!safety.safe) {
         this.stats.hazardsAvoided++;
         results.push({ ok: false, error: 'unsafe shaft block', hazards: safety.hazards });
@@ -295,7 +363,8 @@ class MiningController {
       if (stopped) break;
       if (step % torchEvery === 0 && this.bot.countItem('torch')) {
         const torchPos = { x: feet.x, y: feet.y + 1, z: feet.z };
-        if (this.bot.getBlock(torchPos).name === 'air') {
+        const torchBlock = this.bot.getBlock(torchPos);
+        if (torchBlock && torchBlock.name === 'air') {
           const placedTorch = await this.bot.placeBlock(torchPos, 'torch');
           if (placedTorch.ok) { placed++; this.stats.torchesPlaced++; }
         }

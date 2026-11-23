@@ -223,3 +223,61 @@ test('automatic planning backs off instead of recreating a failed objective ever
   assert.equal(second.created, true);
   assert.notEqual(second.objective.id, first.objective.id);
 });
+
+test('storage installation crafts, places and reports a verified quantity', async () => {
+  const { MockBot } = require('../src/bot/mockBot');
+  const { MockWorld } = require('../src/bot/mockWorld');
+  const { BotActions } = require('../src/actions');
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '________', world, inventory: { oak_planks: 16, oak_log: 8 }, position: { x: 10, y: 64, z: 10 } });
+  const board = new TaskBoard({ now: () => 1000 });
+  const actions = new BotActions({ bot, taskBoard: board, ledger: new ResourceLedger({ now: () => 1000 }), home: { x: 10, y: 64, z: 10 } });
+  const task = board.addTask({ type: 'STORE_ITEMS', params: { containers: 2 }, units: { target: 2 } });
+  const result = await actions.performTask(task.task, {});
+  assert.equal(result.verified, true, JSON.stringify(result));
+  assert.equal(result.quantity, 2);
+  assert.equal(result.placed, 2);
+  assert.equal(bot.countItem('chest'), 0);
+});
+
+test('a bed task places a new bed every call instead of re-reporting an existing one', async () => {
+  const { MockBot } = require('../src/bot/mockBot');
+  const { MockWorld } = require('../src/bot/mockWorld');
+  const { BotActions } = require('../src/actions');
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '10101000', world, inventory: { white_bed: 4 }, position: { x: 4, y: 64, z: 4 } });
+  const actions = new BotActions({ bot, taskBoard: new TaskBoard({ now: () => 1000 }), home: { x: 4, y: 64, z: 4 } });
+  const first = await actions.sleep.ensureBed({ placeNew: true });
+  const second = await actions.sleep.ensureBed({ placeNew: true });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(first.placed, true);
+  assert.equal(second.placed, true);
+  assert.notDeepEqual(first.bed, second.bed);
+  assert.equal(bot.countItem('white_bed'), 2);
+});
+
+test('farming can establish a crop from bare soil and harvests return seeds', async () => {
+  const { MockBot } = require('../src/bot/mockBot');
+  const { MockWorld } = require('../src/bot/mockWorld');
+  const { BotActions } = require('../src/actions');
+  const world = new MockWorld();
+  const bot = new MockBot({ name: '00110000', world, inventory: { wheat_seeds: 6 }, position: { x: -6, y: 65, z: -6 } });
+  const actions = new BotActions({ bot, taskBoard: new TaskBoard({ now: () => 1000 }), home: { x: -6, y: 65, z: -6 } });
+  const planted = await actions.farming.plantCrops({ crop: 'wheat', count: 4 });
+  assert.ok(planted.planted > 0, JSON.stringify(planted));
+  const harvest = await actions.farming.harvestAll({ crop: 'wheat', limit: 4 });
+  assert.ok(harvest.harvested > 0);
+  assert.ok(bot.countItem('wheat_seeds') >= 1, 'wheat harvest should drop at least one seed');
+});
+
+test('mock movement is clamped to the materialised world and mining honours its depth floor', async () => {
+  const { MockBot } = require('../src/bot/mockBot');
+  const bot = new MockBot({ name: '11001100' });
+  await bot.goTo({ x: 99999, y: 64, z: -99999 }, { range: 1 });
+  assert.ok(Math.abs(bot.position.x) <= bot.world.size - 2);
+  assert.ok(Math.abs(bot.position.z) <= bot.world.size - 2);
+  const actions = new (require('../src/actions').BotActions)({ bot, taskBoard: new TaskBoard({ now: () => 1000 }), home: bot.position });
+  const result = await actions.mining.mineOresDeep({ maxDepth: 4, minY: bot.position.y });
+  assert.ok(result.results.some((r) => /minimum mining depth/.test(r.error || '')), JSON.stringify(result));
+});
