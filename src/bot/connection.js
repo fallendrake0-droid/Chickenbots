@@ -32,6 +32,18 @@ function staggerDelay({ staggerMs = 7000, jitterMs = 2000, random = Math.random 
   return Math.round(Math.max(0, Number(staggerMs) || 0) + jitter);
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+/** Sleep that resolves early when the runtime aborts during shutdown. */
+function sleep(ms, signal = null) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve();
+    const timer = setTimeout(done, Math.max(0, ms));
+    function done() {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', done);
+      resolve();
+    }
+    if (signal) signal.addEventListener('abort', done, { once: true });
+  });
+}
 
 module.exports = { isThrottleError, reconnectDelay, staggerDelay, sleep };

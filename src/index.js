@@ -74,11 +74,20 @@ async function main() {
     process.stdout.write(`  Connection errors are shown on the dashboard diagnostics tab.\n\n`);
   }
   let shuttingDown = false;
+  const forceExit = (code = 130) => {
+    process.stdout.write('\nForced exit.\n');
+    process.exit(code);
+  };
   const shutdown = async (signal) => {
-    if (shuttingDown) return;
+    if (shuttingDown) { forceExit(); return; }
     shuttingDown = true;
     process.stdout.write(`\nReceived ${signal}; shutting down…\n`);
+    // Never let a stuck dashboard socket or reconnect timer keep the terminal
+    // captive: Ctrl+C once is graceful, twice (or 5s) is immediate.
+    const watchdog = setTimeout(() => forceExit(), 5000);
+    if (watchdog.unref) watchdog.unref();
     try { await runtime.shutdown(signal); } catch (err) { logger.error(err.message); }
+    clearTimeout(watchdog);
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));

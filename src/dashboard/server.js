@@ -229,7 +229,27 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       });
     },
     stop() {
-      return new Promise((resolve) => server.close(() => resolve({ ok: true })));
+      if (eventTimer) clearInterval(eventTimer);
+      eventTimer = null;
+      for (const client of eventClients) {
+        try { client.end(); } catch (_) { /* already closed */ }
+      }
+      eventClients.clear();
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          resolve({ ok: true });
+        };
+        try { server.close(finish); } catch (_) { finish(); }
+        // SSE and keep-alive browser connections otherwise make server.close()
+        // wait forever, which in turn makes Ctrl+C look like it did nothing.
+        if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+        else if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+        const force = setTimeout(finish, 1500);
+        if (force.unref) force.unref();
+      });
     },
     get url() { return `http://${host}:${port}`; }
   };

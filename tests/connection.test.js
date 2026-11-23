@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isThrottleError, reconnectDelay, staggerDelay } = require('../src/bot/connection');
+const { isThrottleError, reconnectDelay, staggerDelay, sleep } = require('../src/bot/connection');
 const { RealBot } = require('../src/bot/realBot');
 
 test('join throttling is detected and retried behind a longer jittered backoff', () => {
@@ -61,6 +61,15 @@ function authHarness({ loginPassword = 'secret', registerPassword = null, reply 
   real.onChat = (listener) => { real._testChat = listener; return () => {}; };
   return { real, commands, fake };
 }
+
+test('shutdown abort wakes a reconnect sleep immediately', async () => {
+  const controller = new AbortController();
+  const started = Date.now();
+  const pending = sleep(60000, controller.signal);
+  controller.abort();
+  await pending;
+  assert.ok(Date.now() - started < 1000);
+});
 
 test('a bot with a password stays unauthenticated until the server confirms login', async () => {
   const { real, commands } = authHarness({ loginPassword: 'secret' });

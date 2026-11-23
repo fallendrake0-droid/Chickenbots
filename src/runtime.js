@@ -79,6 +79,7 @@ class TeamRuntime {
     this.intentionalDisconnects = new Set();
     this.supervisorTicks = 0;
     this.supervisorBusy = false;
+    this.shutdownController = new AbortController();
   }
 
   get allBotsReady() {
@@ -192,7 +193,7 @@ class TeamRuntime {
         await sleep(staggerDelay({
           staggerMs: config.server.connectStaggerMs,
           jitterMs: config.server.connectJitterMs
-        }));
+        }), this.shutdownController.signal);
       }
     }
   }
@@ -245,7 +246,7 @@ class TeamRuntime {
       });
       const reason = isThrottleError(result.error) ? 'server join throttle' : 'connection failed';
       this.logger.warn(`[${bot.name}] ${reason}: ${result.error}; retrying in ${(delay / 1000).toFixed(1)}s`);
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await sleep(delay, this.shutdownController.signal);
     }
     return { ok: bot.ready };
   }
@@ -332,7 +333,7 @@ class TeamRuntime {
         await sleep(staggerDelay({
           staggerMs: config.server.connectStaggerMs,
           jitterMs: config.server.connectJitterMs
-        }));
+        }), this.shutdownController.signal);
       }
       if (this.shutdownRequested) return;
       const task = this._startConnection(bot);
@@ -451,6 +452,7 @@ class TeamRuntime {
     if (this.shutdownRequested) return { ok: true, already: true };
     this.shutdownRequested = true;
     this.running = false;
+    if (this.shutdownController) this.shutdownController.abort();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     try { if (this.coordinator) this.coordinator.disable(); } catch (_) { /* ignore */ }
