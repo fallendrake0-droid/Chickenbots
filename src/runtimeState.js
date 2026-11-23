@@ -112,7 +112,13 @@ function statusSnapshot(services) {
       runtime,
       config: {
         roster: config.team.names,
-        server: { host: config.server.host, port: config.server.port, version: config.server.version },
+        server: {
+          host: config.server.host,
+          port: config.server.port,
+          version: config.server.version,
+          resolvedVersion: runtime ? runtime.serverVersion : null,
+          versionError: runtime ? runtime.serverVersionError : null
+        },
         dashboard: { host: config.dashboard.host, port: config.dashboard.port },
         pvp: config.autonomy.pvp,
         ai: config.autonomy.ai.enabled
@@ -147,6 +153,9 @@ function buildAlerts(summaries, board, services) {
     if (bot.food !== undefined && bot.food <= 6) alerts.push({ level: 'warn', bot: bot.name, message: `food ${bot.food}` });
     if (bot.inLava) alerts.push({ level: 'critical', bot: bot.name, message: 'in lava' });
     if (bot.lastError) alerts.push({ level: 'warn', bot: bot.name, message: bot.lastError });
+  }
+  if (services.runtime && services.runtime.serverVersionError) {
+    alerts.push({ level: 'error', message: `server version: ${services.runtime.serverVersionError}` });
   }
   if (board) {
     const failed = board.listTasks({ status: 'FAILED' });

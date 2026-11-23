@@ -82,6 +82,12 @@ const config = {
     host: env('MC_HOST', 'cr3xlol.aternos.me'),
     port: envInt('MC_PORT', 55742),
     version: env('MC_VERSION', 'auto'),
+    // Resolve 'auto' with a validated status ping before any login socket is
+    // opened. A sleeping Aternos server can report protocol -1; retrying that
+    // through minecraft-protocol's autoVersion path only produces noise.
+    versionProbeTimeoutMs: envInt('MC_VERSION_PROBE_TIMEOUT_MS', 8000),
+    serverStartDelayMs: envInt('MC_SERVER_START_DELAY_MS', 30000),
+    versionRetryDelayMs: envInt('MC_VERSION_RETRY_MS', 60000),
     // Aternos servers with ViaVersion/ViaBackwards accept the version the
     // installed mineflayer/minecraft-protocol pair supports. 'auto' pings the
     // server and negotiates, which is the safe default.

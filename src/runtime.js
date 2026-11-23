@@ -18,6 +18,7 @@ const { MockWorld } = require('./bot/mockWorld');
 const { MockBot } = require('./bot/mockBot');
 const { RealBot } = require('./bot/realBot');
 const { isThrottleError, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
+const { resolveServerVersion } = require('./bot/serverVersion');
 
 const STARTER_KIT = {
   bread: 32, cooked_beef: 16, stone_pickaxe: 2, iron_pickaxe: 1, iron_axe: 1, iron_sword: 1,
@@ -33,7 +34,7 @@ const STARTER_KIT = {
  * start until every configured bot has connected, authenticated and spawned.
  */
 class TeamRuntime {
-  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null } = {}) {
+  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion } = {}) {
     this.simulate = Boolean(simulate);
     this.shouldConnect = connect;
     this.wantDashboard = dashboard;
@@ -79,6 +80,11 @@ class TeamRuntime {
     this.intentionalDisconnects = new Set();
     this.supervisorTicks = 0;
     this.supervisorBusy = false;
+    this.serverVersion = null;
+    this.serverVersionSource = null;
+    this.serverVersionError = null;
+    this.versionProbe = null;
+    this.resolveVersion = resolveVersion;
     this.shutdownController = new AbortController();
   }
 
@@ -183,7 +189,51 @@ class TeamRuntime {
     return { ok: true, mode: this.mode, dashboard: dashboardInfo, autonomyAllowed: this.autonomyAllowed };
   }
 
+  /**
+   * Resolve (and cache) the server version before opening any login sockets.
+   * Aternos answers status pings with protocol -1 while the instance is asleep,
+   * so wait for a real version instead of letting all five bots fail in turn.
+   */
+  async _ensureServerVersion() {
+    if (this.serverVersion) return true;
+    if (this.versionProbe) return this.versionProbe;
+    this.versionProbe = (async () => {
+      let attempt = 0;
+      while (!this.shutdownRequested) {
+        attempt++;
+        const result = await this.resolveVersion({
+          host: config.server.host,
+          port: config.server.port,
+          version: config.server.version,
+          timeoutMs: config.server.versionProbeTimeoutMs
+        });
+        if (result.ok) {
+          this.serverVersion = result.version;
+          this.serverVersionSource = result.source;
+          this.serverVersionError = null;
+          delete this.connectionErrors.server;
+          this.logger.info(`server version: ${result.version} (protocol ${result.protocol}, ${result.source})`);
+          for (const bot of this.bots.values()) {
+            if (typeof bot.setVersion === 'function') bot.setVersion(result.version);
+          }
+          return true;
+        }
+        const code = result.code || 'VERSION_PROBE_FAILED';
+        this.serverVersionError = `${code}: ${result.error}`;
+        this.connectionErrors.server = this.serverVersionError;
+        const delay = code === 'SERVER_NOT_READY' || code === 'SERVER_UNREACHABLE'
+          ? config.server.serverStartDelayMs
+          : config.server.versionRetryDelayMs;
+        this.logger.warn(`server not ready for bots (attempt ${attempt}, ${code}): ${result.error}; probing again in ${(delay / 1000).toFixed(0)}s`);
+        await sleep(delay, this.shutdownController.signal);
+      }
+      return false;
+    })().finally(() => { this.versionProbe = null; });
+    return this.versionProbe;
+  }
+
   async _connectAll() {
+    if (!this.simulate && !(await this._ensureServerVersion())) return;
     const names = BOT_NAMES.filter((name) => this.bots.has(name));
     for (let index = 0; index < names.length; index++) {
       if (this.shutdownRequested) return;
@@ -363,6 +413,9 @@ class TeamRuntime {
   async reconnectBot(name) {
     const bot = this.bots.get(name);
     if (!bot) return { ok: false, error: 'unknown bot' };
+    if (!this.simulate && !(await this._ensureServerVersion())) {
+      return { ok: false, error: this.serverVersionError || 'server version unavailable', bot: this.botState(name) };
+    }
     // Hold a supervisor slot for the whole manual reconnect so the background
     // recovery loop cannot open a second socket at the same time.
     this.reconnectTasks.set(name, Promise.resolve());
@@ -413,7 +466,7 @@ class TeamRuntime {
       spawned: Boolean(bot.spawned),
       authenticated: bot.authenticated !== false,
       ready: Boolean(bot.ready),
-      error: this.connectionErrors[name] || bot.lastError || null
+      error: this.connectionErrors[name] || this.connectionErrors.server || bot.lastError || null
     };
   }
 
@@ -435,6 +488,8 @@ class TeamRuntime {
       paused: this.paused,
       autonomyAllowed: this.autonomyAllowed,
       allBotsReady: this.allBotsReady,
+      serverVersion: this.serverVersion,
+      serverVersionError: this.serverVersionError,
       autonomyArmed: this.autonomyArmed,
       ticks: this.ticks,
       uptimeMs: this.startedAt ? Date.now() - this.startedAt : 0,

@@ -286,6 +286,9 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_HOST` | `cr3xlol.aternos.me` | server address |
 | `MC_PORT` | `55742` | server port |
 | `MC_VERSION` | `auto` | protocol negotiation; Aternos ViaVersion handles the rest |
+| `MC_VERSION_PROBE_TIMEOUT_MS` | `8000` | validated status-ping timeout before opening login sockets |
+| `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
+| `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `7000` / `2000` | gap between joining bots; avoids Aternos join throttling |
 | `MC_THROTTLE_DELAY_MS` | `30000` | minimum retry delay after a throttled join |
@@ -467,6 +470,9 @@ commissioning.
   instead of letting it move.
   A server-side `Invalid move player packet` kick usually means the protocol version does not match;
   set `MC_VERSION` to the server's exact version instead of `auto`.
+  With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
+  socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
+  real version instead of sending five bots into mineflayer's autoVersion crash path.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
   real placement; a Grandmaster design is a multi-session project, not instant.
 * The construction pipeline is validated against `MockWorld`. Live operation still depends on the

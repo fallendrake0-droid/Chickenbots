@@ -76,6 +76,19 @@ class RealBot extends BotAdapter {
 
   get ready() { return Boolean(this.connected && this.authenticated && this.spawned && this.bot && this.bot.entity); }
 
+  /** Runtime resolves 'auto' once and pushes the explicit version to each bot. */
+  setVersion(version) {
+    if (version) this.version = version;
+  }
+
+  _failSpawnWaiters(error) {
+    if (!this._spawnWaiters.size) return;
+    for (const waiter of this._spawnWaiters) {
+      waiter.resolve({ ok: false, error: error || this.lastError || 'connection closed before spawn', spawned: this.spawned, authenticated: this.authenticated });
+    }
+    this._spawnWaiters.clear();
+  }
+
   _loadMineflayer() {
     if (this._createBot) return this._createBot;
     // Lazily require so the deterministic simulator/tests never need a socket.
@@ -86,6 +99,9 @@ class RealBot extends BotAdapter {
 
   async connect({ timeoutMs = this.connectTimeoutMs } = {}) {
     if (this.connected) return { ok: true, already: true };
+    if (!this._createBot && this.version === 'auto') {
+      return { ok: false, code: 'VERSION_UNRESOLVED', error: 'server version has not been resolved; the runtime must probe it before connecting' };
+    }
     const createBot = this._loadMineflayer();
     this.connected = false;
     this.spawned = false;
@@ -112,6 +128,11 @@ class RealBot extends BotAdapter {
     this.stats.connections++;
     this._attachEvents();
     const result = await this.waitForSpawn({ timeoutMs });
+    if (!result.ok) {
+      // Do not leave a half-open socket behind for the next retry.
+      await this.disconnect('connect attempt failed');
+      return result;
+    }
     if (result.ok) {
       this.startedAt = Date.now();
       this.uptimeMs = 0;
@@ -135,10 +156,12 @@ class RealBot extends BotAdapter {
     const bot = this.bot;
     if (!bot) return;
     bot.on('login', () => {
+      if (this.bot !== bot) return;
       this.authenticated = !this.passwordRequired;
       this.logger.info(`[${this.name}] protocol login accepted with ${this.host}${this.passwordRequired ? '; waiting for password authentication' : ''}`);
     });
     bot.on('spawn', () => {
+      if (this.bot !== bot) return;
       const firstSpawn = !this.spawned;
       this.connected = true;
       this.spawned = true;
@@ -154,12 +177,14 @@ class RealBot extends BotAdapter {
       this._spawnWaiters.clear();
     });
     bot.on('move', () => {
+      if (this.bot !== bot) return;
       this.position = this._vec(bot.entity?.position);
       this.yaw = bot.entity?.yaw || 0;
       this.pitch = bot.entity?.pitch || 0;
       this.onGround = bot.entity?.onGround;
     });
     bot.on('health', () => {
+      if (this.bot !== bot) return;
       const count = Number(this.inventory.totem_of_undying || 0);
       if (bot.health > 0 && count < this._lastTotemCount) {
         this.recordCombatEvent({ at: new Date().toISOString(), type: 'totem_activated', bot: this.name, health: bot.health, detectedBy: 'health-transition' });
@@ -171,8 +196,9 @@ class RealBot extends BotAdapter {
       this.saturation = bot.foodSaturation || 0;
       this.oxygen = bot.oxygenLevel ?? 20;
     });
-    bot.on('breath', () => { this.oxygen = bot.oxygenLevel ?? 20; });
+    bot.on('breath', () => { if (this.bot === bot) this.oxygen = bot.oxygenLevel ?? 20; });
     bot.on('death', () => {
+      if (this.bot !== bot) return;
       this._deathCount++;
       this.stats.deaths++;
       this.deaths = this._deathCount;
@@ -180,25 +206,33 @@ class RealBot extends BotAdapter {
       this.logger.warn(`[${this.name}] died at ${this.position.x},${this.position.y},${this.position.z}`);
     });
     bot.on('kicked', (reason) => {
+      if (this.bot !== bot) return;
       this.lastError = this._formatKickReason(reason);
       this.connected = false;
       this.spawned = false;
       this.logger.warn(`[${this.name}] kicked: ${this.lastError}`);
+      this._failSpawnWaiters(this.lastError);
       if (/invalid move player packet/i.test(this.lastError)) {
         this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
       }
     });
     bot.on('error', (err) => {
+      if (this.bot !== bot) return;
       this.lastError = err.message;
-      this.logger.error(`[${this.name}] ${err.message}`);
+      this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${err.message}`);
+      this._failSpawnWaiters(this.lastError);
     });
     bot.on('end', (reason) => {
+      if (this.bot !== bot) return;
       this.connected = false;
       this.spawned = false;
       this.authenticated = false;
-      this.logger.warn(`[${this.name}] disconnected: ${reason || 'end'}`);
+      const detail = this.lastError && this.lastError !== reason ? `${reason || 'end'}: ${this.lastError}` : (reason || 'end');
+      this.logger.warn(`[${this.name}] disconnected: ${detail}`);
+      this._failSpawnWaiters(this.lastError || `connection closed (${reason || 'end'})`);
     });
     bot.on('message', (message) => {
+      if (this.bot !== bot) return;
       const text = message.toString();
       this._chatLog.push({ at: Date.now(), text });
       if (this._chatLog.length > 200) this._chatLog.shift();
@@ -1011,11 +1045,14 @@ class RealBot extends BotAdapter {
   get chatLog() { return this._chatLog.slice(-50); }
 
   async disconnect(reason = 'shutdown') {
-    try { if (this.bot) this.bot.quit(reason); } catch (_) { /* already gone */ }
+    const bot = this.bot;
+    this.bot = null;
+    try { if (bot) bot.quit(reason); } catch (_) { /* already gone */ }
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
     this.authConfirmed = false;
+    this._failSpawnWaiters(reason || 'disconnected');
     return { ok: true };
   }
 

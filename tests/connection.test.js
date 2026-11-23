@@ -132,3 +132,23 @@ test('registration is sent on the first join and only login is used afterwards',
   assert.equal(second.ok, true, JSON.stringify(second));
   assert.deepEqual(commands, ['/login secret']);
 });
+
+test('a handshake error fails the connection immediately instead of waiting for the spawn timeout', async () => {
+  const handlers = new Map();
+  const fake = {
+    on(event, cb) { if (!handlers.has(event)) handlers.set(event, []); handlers.get(event).push(cb); return this; },
+    quit() {}
+  };
+  const real = new RealBot({
+    name: '_______', createBot: () => fake, version: '1.21.4',
+    loginPassword: '', registerPassword: '', connectTimeoutMs: 5000
+  });
+  const started = Date.now();
+  const pending = real.connect({ timeoutMs: 5000 });
+  const error = Object.assign(new Error('socket closed'), { code: 'ECONNRESET' });
+  for (const listener of handlers.get('error') || []) listener(error);
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /socket closed/);
+  assert.ok(Date.now() - started < 1000, 'connect should not wait for the full timeout');
+});
