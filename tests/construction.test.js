@@ -275,3 +275,47 @@ test('builder, site, materials and storage command families operate on the real 
   assert.equal(manager.activeProject().autonomyEnabled, true);
   fs.rmSync(statePath, { force: true });
 });
+
+test('a project survives a restart mid-preparation and a complete phase is never re-run by accident', async () => {
+  const statePath = tmpState('restart');
+  const world = new MockWorld({ flat: true, seed: 47 });
+  const library = new SchematicLibrary();
+  const design = library.get('0001_beginner_shelter');
+  const schematic = library.build(design.id);
+  const materials = billOfMaterials(schematic).materials;
+  const inventory = { ...materials, torch: 256, oak_planks: 512, stick: 256, cobblestone: 1024, oak_log: 64, coal: 64 };
+  const bots = makeBots(world, inventory, NAMES.map((_, i) => ({ x: 24 + i, y: 64, z: 24 })));
+  const taskBoard = new TaskBoard();
+  const ledger = new ResourceLedger();
+  for (const bot of bots) ledger.updateBotInventory(bot.name, bot.inventory);
+  const manager = new ConstructionManager({ library, bots, world, taskBoard, ledger, home: { x: 0, y: 64, z: 0 }, persistPath: statePath });
+  assert.equal(manager.createProject({ schematicId: design.id, origin: { x: 24, y: 64, z: 24 } }).ok, true);
+  for (let i = 0; i < 30; i++) {
+    const phase = manager.activeProject().buildPhases.find((entry) => entry.id === 'CONSTRUCTION');
+    if (phase.status !== 'PENDING' && phase.status !== 'ACTIVE') break;
+    const step = await manager.advance({ maxPhases: 1, maxActions: 24 });
+    assert.equal(step.ok, true, step.error || '');
+    if (manager.activeProject().status === STATUS.COMPLETE) break;
+  }
+  const before = manager.activeProject();
+  const inFlight = before.buildPhases.find((entry) => entry.status === 'ACTIVE');
+  assert.ok(inFlight, 'the run should still be mid-phase when the restart happens');
+  assert.ok(before.buildPhases.find((entry) => entry.id === 'SURVEY').status === 'COMPLETE');
+
+  const restored = new ConstructionManager({ library, bots, world, taskBoard, ledger, home: { x: 0, y: 64, z: 0 }, persistPath: statePath });
+  assert.equal(restored.projects.size, 1);
+  assert.equal(restored.activeProject().buildPhases.find((entry) => entry.id === inFlight.id).status, inFlight.status);
+  assert.equal(restored.activeProject().sitePreparation.survey.samples > 0, true, 'survey evidence survives the restart');
+  const analysis = await restored.runPhase('ANALYSIS');
+  assert.equal(analysis.already, true, 'completed work must not be silently repeated');
+  const forced = await restored.runPhase('ANALYSIS', { force: true });
+  assert.equal(forced.ok, true);
+  for (let i = 0; i < 45; i++) {
+    if (restored.activeProject().status === STATUS.COMPLETE) break;
+    const step = await restored.advance({ maxPhases: 1, maxActions: 500 });
+    assert.equal(step.ok, true, `${restored.activeProject().status}: ${step.error || ''}`);
+  }
+  assert.equal(restored.activeProject().status, STATUS.COMPLETE, restored.activeProject().blockedReason || '');
+  assert.equal(restored.activeProject().quality.verification.placed, schematic.blocks.length);
+  fs.rmSync(statePath, { force: true });
+});
