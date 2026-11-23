@@ -90,3 +90,18 @@ test('registration is confirmed before the login step and a failure blocks the b
   assert.match(denied.error, /wrong password/i);
   assert.equal(failed.real.authenticated, false);
 });
+
+test('status scans are skipped until a live bot is ready', () => {
+  const { findBlocks } = require('../src/actions/common');
+  const fake = {
+    ready: false,
+    position: { x: 0, y: 64, z: 0 },
+    getBlock() { throw new Error('world not loaded'); }
+  };
+  assert.deepEqual(findBlocks(fake, ['stone']), []);
+  const real = new RealBot({ name: '______' });
+  real.bot = {};
+  real.connected = true;
+  real.spawned = true;
+  assert.equal(real._blockAt({ x: 0, y: 64, z: 0 }), null);
+});

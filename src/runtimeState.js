@@ -11,7 +11,9 @@ function statusSnapshot(services) {
   const bots = [...(services.bots ? services.bots.values() : [])];
   const summaries = bots.map((bot) => (typeof bot.summary === 'function' ? bot.summary() : { name: bot.name, position: bot.position }));
   const actionList = services.actions ? services.actions.list() : [];
-  const actionStatus = actionList.map((a) => a.status());
+  const actionStatus = actionList.map((a) => {
+    try { return a.status(); } catch (err) { return { bot: a.bot ? a.bot.name : 'unknown', error: err.message }; }
+  });
   const leader = services.coordinator ? services.coordinator.leader : null;
   const library = services.library && services.library.loaded ? services.library.stats() : null;
   const builds = [...(services.builders ? services.builders.values() : [])].map((b) => b.status());

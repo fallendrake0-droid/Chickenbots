@@ -20,6 +20,9 @@ const SURFACE_BLOCKS = /(_log|_leaves|_sapling|_propagule|wheat|carrots|potatoes
 
 /** Find blocks by name through the world when supported, else bounded scan. */
 function findBlocks(bot, names, { near = bot.position, radius = 24, limit = 50, yFrom = null, yTo = null } = {}) {
+  // Before the first spawn the live adapter has no world object yet; scanning
+  // would call bot.blockAt() and crash the status snapshot.
+  if (!bot || bot.ready === false || !bot.position) return [];
   const wanted = new Set(Array.isArray(names) ? names : [names]);
   const out = [];
   const world = bot.world;

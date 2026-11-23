@@ -48,6 +48,10 @@ async function main() {
   logger.info('runtime starting');
   logger.info(`roster: ${BOT_NAMES.join(', ')}`);
   logger.info(args.simulate ? 'mode: deterministic simulation' : `mode: live (${config.server.host}:${config.server.port}, version ${config.server.version})`);
+  if (!args.simulate) {
+    const passwordConfigured = Boolean(config.server.loginPassword || config.server.registerPassword);
+    logger.info(passwordConfigured ? 'password authentication: configured' : 'password authentication: not configured (MC_LOGIN_PASSWORD / MC_REGISTER_PASSWORD empty)');
+  }
   const runtime = await createRuntime({
     simulate: args.simulate,
     connect: args.connect,

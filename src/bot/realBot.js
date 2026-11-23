@@ -120,6 +120,10 @@ class RealBot extends BotAdapter {
         return { ok: false, error: auth.error, code: 'AUTH_FAILED', spawned: false, authenticated: false };
       }
       result.authenticated = this.authenticated;
+      if (!this.connected || !this.spawned || !this.authenticated) {
+        await this.disconnect('connection lost before ready');
+        return { ok: false, error: this.lastError || 'connection closed before the bot became ready', code: 'NOT_READY', spawned: false, authenticated: false };
+      }
     }
     return result;
   }
@@ -275,6 +279,7 @@ class RealBot extends BotAdapter {
     if (this.bot.clearControlStates) this.bot.clearControlStates();
     this.bot.physicsEnabled = false;
     await sleep(this.authDelayMs);
+    if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
 
     let registered = false;
     if (this.registerPassword) {
@@ -286,11 +291,13 @@ class RealBot extends BotAdapter {
         return { ok: false, error: 'account is already registered; set MC_LOGIN_PASSWORD', kind: 'register' };
       }
     }
+    if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
     if (this.loginPassword) {
       const command = config.server.loginCommand.replace(/\{password\}/g, this.loginPassword);
       const result = await this._sendAuthCommand(command, 'login');
       if (!result.ok) return result;
     }
+    if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password confirmation' };
     this.authenticated = true;
     this.authConfirmed = true;
     if (this.bot) this.bot.physicsEnabled = true;
@@ -334,7 +341,8 @@ class RealBot extends BotAdapter {
   }
 
   _blockAt(pos) {
-    if (!this.bot) return null;
+    if (!this.bot || !this.bot.world || !this.bot.entity) return null;
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return null;
     const k = `${pos.x},${pos.y},${pos.z}`;
     if (this._blockCache.has(k)) return this._blockCache.get(k);
     const block = this.bot.blockAt(this._vec3(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z)));

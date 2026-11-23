@@ -223,10 +223,14 @@ class TeamRuntime {
     while (!this.shutdownRequested && !bot.ready) {
       attempt++;
       const result = await bot.connect();
-      if (result.ok) {
+      if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
         this.logger.info(`[${bot.name}] ready (attempt ${attempt})`);
         return result;
+      }
+      if (result.ok && !bot.ready) {
+        result.ok = false;
+        result.error = bot.lastError || 'connection closed before the bot became ready';
       }
       this.connectionErrors[bot.name] = result.error || 'connection failed';
       const max = config.server.reconnect.maxAttempts;
