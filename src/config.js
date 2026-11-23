@@ -94,6 +94,15 @@ const config = {
     auth: env('MC_AUTH', 'offline'),
     connectTimeoutMs: envInt('MC_CONNECT_TIMEOUT_MS', 45000),
     keepAliveMs: envInt('MC_KEEPALIVE_MS', 120000),
+    // A socket can die silently (NAT timeout, proxy restart) without emitting
+    // 'end'. Mark a connected bot as stale when no packet arrives for this
+    // long, so the dashboard never reports a dead socket as online. The vanilla
+    // server sends keep-alives every ~15-20s, so 90s is safely above normal.
+    staleAfterMs: envInt('MC_STALE_AFTER_MS', 90000),
+    // Aternos throttles a reconnect that follows a real session end. Hold the
+    // first rejoin long enough to stay out of the limiter; initial joins are
+    // not delayed by this.
+    rejoinDelayMs: envInt('MC_REJOIN_DELAY_MS', 30000),
     // Aternos and vanilla proxies throttle rapid joins. Open one socket at a
     // time, with jitter, instead of starting all five bots simultaneously.
     connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 5000),

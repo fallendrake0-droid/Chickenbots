@@ -19,6 +19,7 @@ const { MockBot } = require('./bot/mockBot');
 const { RealBot } = require('./bot/realBot');
 const { isThrottleError, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
 const { resolveServerVersion } = require('./bot/serverVersion');
+const { connectionStatus } = require('./bot/status');
 
 const STARTER_KIT = {
   bread: 32, cooked_beef: 16, stone_pickaxe: 2, iron_pickaxe: 1, iron_axe: 1, iron_sword: 1,
@@ -294,6 +295,15 @@ class TeamRuntime {
     let attempt = 0;
     while (!this.shutdownRequested && !bot.ready) {
       attempt++;
+      // Aternos throttles an immediate rejoin after a real session ends. Wait
+      // behind the hold-down *before* taking the join slot, so the server never
+      // sees the rejected attempt and a waiting bot does not block the queue.
+      const rejoinWait = Math.max(0, Number(bot.lastSessionEndedAt || 0) + config.server.rejoinDelayMs - Date.now());
+      if (rejoinWait > 0) {
+        this.logger.info(`[${bot.name}] rejoin hold-down: waiting ${(rejoinWait / 1000).toFixed(1)}s after the previous session ended`);
+        await sleep(rejoinWait, this.shutdownController.signal);
+      }
+      if (this.shutdownRequested) return { ok: false, error: 'shutting down' };
       const release = await this._acquireJoinSlot();
       if (this.shutdownRequested) { release(); return { ok: false, error: 'shutting down' }; }
       const startedAt = Date.now();
@@ -338,9 +348,54 @@ class TeamRuntime {
     return { ok: bot.ready };
   }
 
+  /**
+   * Keep the coordinator's view of the fleet aligned with the live adapters on
+   * every tick, including while the autonomy gate is closed or the runtime is
+   * paused. Without this, the Team page can keep showing a kicked bot as online
+   * because coordinator state is only refreshed inside the autonomous path.
+   */
+  _syncBots() {
+    for (const bot of this.bots.values()) {
+      try {
+        if (typeof bot._syncInventory === 'function') bot._syncInventory();
+        const fallback = {
+          name: bot.name,
+          connected: bot.connected !== false,
+          spawned: bot.spawned !== false,
+          authenticated: bot.authenticated !== false,
+          ready: Boolean(bot.ready),
+          health: bot.health,
+          food: bot.food,
+          position: bot.position,
+          inventory: bot.inventory || {}
+        };
+        const summary = { ...fallback, ...(typeof bot.summary === 'function' ? bot.summary() : {}) };
+        const status = connectionStatus(bot);
+        this.coordinator.updateBot(bot.name, { ...summary, online: status.online, status: status.status, statusLabel: status.statusLabel });
+        this.ledger.updateBotInventory(bot.name, summary.inventory);
+        if (!status.online) {
+          if (!this.disconnectedNotified.has(bot.name)) {
+            this.coordinator.setDisconnected(bot.name, status.statusDetail || 'connection lost');
+            this.disconnectedNotified.add(bot.name);
+          }
+        } else {
+          this.disconnectedNotified.delete(bot.name);
+        }
+      } catch (err) {
+        this.logger.warn(`[${bot.name}] state sync failed: ${err.message}`);
+        if (!this.disconnectedNotified.has(bot.name)) {
+          this.coordinator.setDisconnected(bot.name, `state sync failed: ${err.message}`);
+          this.disconnectedNotified.add(bot.name);
+        }
+      }
+    }
+  }
+
   async _tick() {
-    if (!this.running || this.paused || this.ticking) return;
+    if (!this.running || this.ticking) return;
     if (this.allBotsReady) this.autonomyArmed = true;
+    this._syncBots();
+    if (this.paused) return;
     // Connection supervision must run even while the autonomy gate is closed;
     // otherwise a bot that fails after the initial retry budget is never restored.
     if (!this.simulate && this.shouldConnect) {
@@ -363,21 +418,9 @@ class TeamRuntime {
     this.ticks++;
     try {
       for (const bot of this.bots.values()) {
-        if (typeof bot._syncInventory === 'function') bot._syncInventory();
-        const summary = typeof bot.summary === 'function' ? bot.summary() : { name: bot.name };
-        this.coordinator.updateBot(bot.name, summary);
-        this.ledger.updateBotInventory(bot.name, bot.inventory);
         if (bot.ready && bot.connected !== false && bot.health <= 0) {
           const actions = this.actions && typeof this.actions.get === 'function' ? this.actions.get(bot.name) : null;
           if (actions && actions.combat) actions.combat.onDeath('runtime observed death');
-        }
-        if (!bot.ready || bot.connected === false) {
-          if (!this.disconnectedNotified.has(bot.name)) {
-            this.coordinator.setDisconnected(bot.name, 'connection lost');
-            this.disconnectedNotified.add(bot.name);
-          }
-        } else {
-          this.disconnectedNotified.delete(bot.name);
         }
       }
       this.coordinator.tick();
@@ -434,7 +477,16 @@ class TeamRuntime {
     let started = 0;
     for (const name of BOT_NAMES) {
       const bot = this.bots.get(name);
-      if (!bot || bot.connected !== false || this.intentionalDisconnects.has(name) || this.reconnectTasks.has(name)) continue;
+      if (!bot || this.intentionalDisconnects.has(name) || this.reconnectTasks.has(name)) continue;
+      const status = connectionStatus(bot);
+      // A silently dead socket still has connected=true. Drop it explicitly so
+      // the supervisor opens a fresh one instead of trusting a zombie flag.
+      if (status.status === 'stale') {
+        this.logger.warn(`[${name}] connection is stale (${status.statusDetail}); forcing a reconnect`);
+        try { await bot.disconnect('no packets from server'); } catch (_) { /* already gone */ }
+      } else if (bot.connected !== false) {
+        continue;
+      }
       if (started > 0) {
         await sleep(staggerDelay({
           staggerMs: config.server.connectStaggerMs,
@@ -472,30 +524,39 @@ class TeamRuntime {
     if (!this.simulate && !(await this._ensureServerVersion())) {
       return { ok: false, error: this.serverVersionError || 'server version unavailable', bot: this.botState(name) };
     }
-    // Hold a supervisor slot for the whole manual reconnect so the background
-    // recovery loop cannot open a second socket at the same time.
-    this.reconnectTasks.set(name, Promise.resolve());
+    if (this.reconnectTasks.has(name)) {
+      return { ok: true, queued: true, already: true, bot: this.botState(name) };
+    }
+    this.intentionalDisconnects.delete(name);
+
+    // Simulated adapters have no socket. Flip their flags so the dashboard
+    // control still works in the deterministic demo.
+    if (typeof bot.connect !== 'function') {
+      if (typeof bot.disconnect === 'function') await bot.disconnect('dashboard reconnect');
+      bot.connected = true;
+      bot.spawned = true;
+      bot.authenticated = true;
+      delete this.connectionErrors[name];
+      return { ok: true, bot: this.botState(name) };
+    }
+
     try {
       if (typeof bot.disconnect === 'function') await bot.disconnect('dashboard reconnect');
       else { bot.connected = false; bot.spawned = false; bot.authenticated = false; }
-      delete this.connectionErrors[name];
-      if (typeof bot.connect === 'function') {
-        const result = await bot.connect();
-        if (!result.ok) this.connectionErrors[name] = result.error || 'connection failed';
-      } else {
-        bot.connected = true;
-        bot.spawned = true;
-        bot.authenticated = true;
-      }
-      this.logger.info(`[${name}] reconnect requested from dashboard`);
-      return { ok: Boolean(bot.connected && bot.spawned && bot.authenticated !== false), bot: this.botState(name) };
     } catch (err) {
+      bot.connected = false;
+      bot.spawned = false;
+      bot.authenticated = false;
       this.connectionErrors[name] = err.message;
-      return { ok: false, error: err.message, bot: this.botState(name) };
-    } finally {
-      this.intentionalDisconnects.delete(name);
-      this.reconnectTasks.delete(name);
     }
+    delete this.connectionErrors[name];
+    // Queue the reconnect instead of blocking the HTTP request for the
+    // Aternos hold-down. _startConnection owns the hold-down, join queue and
+    // retries, so the dashboard response returns immediately with the truth.
+    this._startConnection(bot);
+    const retryAt = Math.max(Date.now(), Number(bot.lastSessionEndedAt || 0) + config.server.rejoinDelayMs);
+    this.logger.info(`[${name}] reconnect queued from dashboard (first attempt after ${new Date(retryAt).toISOString()})`);
+    return { ok: true, queued: true, retryAt, bot: this.botState(name) };
   }
 
   /** Disconnect one bot; the rest of the team keeps running. */
@@ -516,12 +577,19 @@ class TeamRuntime {
   botState(name) {
     const bot = this.bots.get(name);
     if (!bot) return null;
+    const status = connectionStatus(bot);
     return {
       name: bot.name,
       connected: Boolean(bot.connected),
       spawned: Boolean(bot.spawned),
       authenticated: bot.authenticated !== false,
       ready: Boolean(bot.ready),
+      online: status.online,
+      status: status.status,
+      statusLabel: status.statusLabel,
+      statusDetail: status.statusDetail,
+      lastEventAt: status.lastEventAt,
+      lastEventAgeMs: status.lastEventAgeMs,
       error: this.connectionErrors[name] || this.connectionErrors.server || bot.lastError || null
     };
   }

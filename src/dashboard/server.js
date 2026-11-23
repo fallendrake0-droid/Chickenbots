@@ -27,11 +27,15 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     }
   }));
 
-  // Snapshot assembly is comparatively expensive (live action scans), so all
-  // HTTP and SSE consumers share one freshly-built value per interval.
+  // Snapshot assembly takes a few tens of milliseconds. Keep only a very
+  // short coalescing cache for concurrent callers, and always force a fresh
+  // build for the state endpoint and the SSE stream: a stale "online" card is
+  // worse than spending the milliseconds.
+  const SNAPSHOT_CACHE_MS = 500;
   let snapshotCache = { at: 0, value: null };
+  const invalidate = () => { snapshotCache = { at: 0, value: null }; };
   const snapshot = (force = false) => {
-    if (!force && snapshotCache.value && Date.now() - snapshotCache.at < 1500) return snapshotCache.value;
+    if (!force && snapshotCache.value && Date.now() - snapshotCache.at < SNAPSHOT_CACHE_MS) return snapshotCache.value;
     snapshotCache = { at: Date.now(), value: statusSnapshot(services) };
     return snapshotCache.value;
   };
@@ -39,13 +43,15 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   let eventTimer = null;
   const startEventTimer = () => {
     if (eventTimer) return;
+    // One second keeps the browser close enough to the real connection state
+    // that a kicked bot no longer reads as online for several seconds.
     eventTimer = setInterval(() => {
       if (!eventClients.size) return;
       const payload = `event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`;
       for (const client of eventClients) {
         try { client.write(payload); } catch (_) { eventClients.delete(client); }
       }
-    }, 2500);
+    }, 1000);
     if (eventTimer.unref) eventTimer.unref();
   };
 
@@ -84,7 +90,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
 
   app.get('/api/state', (req, res) => {
     try {
-      res.json({ ok: true, state: snapshot() });
+      res.json({ ok: true, state: snapshot(true) });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -123,6 +129,9 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       if (action === 'reconnect') result = await services.runtime.reconnectBot(name);
       else if (action === 'disconnect') result = await services.runtime.disconnectBot(name, 'dashboard');
       else result = { ok: true, bot: services.runtime.botState(name) };
+      // Connection actions change the truth immediately; do not let the next
+      // state request reuse a snapshot taken before the action.
+      invalidate();
       res.json(result);
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
@@ -144,7 +153,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     const { line, confirm } = req.body || {};
     if (!line) return res.status(400).json({ ok: false, error: 'missing command line' });
     const result = await services.commands.execute(line, { source: 'dashboard', operator: (req.body && req.body.operator) || 'dashboard', confirmed: Boolean(confirm) });
-    snapshotCache = { at: 0, value: null };
+    invalidate();
     res.json(result);
   });
 
@@ -207,7 +216,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       'X-Accel-Buffering': 'no'
     });
     res.write('retry: 3000\n\n');
-    res.write(`event: state\ndata: ${JSON.stringify(snapshot())}\n\n`);
+    res.write(`event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`);
     eventClients.add(res);
     startEventTimer();
     req.on('close', () => {
@@ -226,6 +235,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     app,
     server,
     snapshot,
+    invalidate,
     start() {
       return new Promise((resolve, reject) => {
         server.once('error', reject);

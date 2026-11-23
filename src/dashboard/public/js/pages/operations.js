@@ -2,6 +2,7 @@ import { state, runCommand } from '../store.js';
 import { icon } from '../icons.js';
 import { esc, num, humanize } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, statCard, toast, setButtonLoading } from '../ui.js';
+import { botStatus } from '../botStatus.js';
 
 function construction() {
   return (state.snapshot && state.snapshot.construction) || { projects: [], active: null, warehouse: { containers: [], capacity: {} }, stats: {} };
@@ -428,7 +429,8 @@ export const crewAssignmentsPage = {
           const entry = occupants[bot.name];
           const role = entry ? (typeof entry === 'string' ? entry : entry.role) : '—';
           const assignment = team.assignments ? team.assignments[bot.name] : null;
-          return `<tr><td class="mono"><a class="link" href="#/bots/${encodeURIComponent(bot.name)}">${esc(bot.name)}</a></td><td>${badge(role || '—', role && role !== '—' ? 'accent' : 'neutral')}</td><td class="tiny">${esc(entry?.phase || 'all phases')}</td><td class="tiny">${esc(roles[bot.name] || '—')}</td><td class="mono tiny">${esc(assignment?.taskId || '—')}</td><td>${bot.connected === false ? badge('OFFLINE', 'danger') : bot.spawned === false ? badge('SPAWNING', 'warn') : badge('READY', 'ok', { dot: true })}</td></tr>`;
+          const status = botStatus(bot);
+          return `<tr><td class="mono"><a class="link" href="#/bots/${encodeURIComponent(bot.name)}">${esc(bot.name)}</a></td><td>${badge(role || '—', role && role !== '—' ? 'accent' : 'neutral')}</td><td class="tiny">${esc(entry?.phase || 'all phases')}</td><td class="tiny">${esc(roles[bot.name] || '—')}</td><td class="mono tiny">${esc(assignment?.taskId || '—')}</td><td>${badge(status.label.toUpperCase(), status.tone, { dot: true })}</td></tr>`;
         }).join('')}</tbody></table></div></div></section>
         <section class="card" style="margin-top:16px"><div class="card-header"><div class="card-title">${icon('badge')} Assign a bot</div></div><div class="card-body"><form data-crew-assign><div class="form-grid form-grid--3"><div class="field"><label class="field-label" for="crew-bot">Bot</label><select class="select" id="crew-bot">${bots.map((bot) => `<option value="${esc(bot.name)}">${esc(bot.name)}</option>`).join('')}</select></div><div class="field"><label class="field-label" for="crew-role">Role</label><input class="input" id="crew-role" placeholder="e.g. ROOF_SPECIALIST" required></div><div class="field"><label class="field-label" for="crew-phase">Phase focus</label><input class="input" id="crew-phase" placeholder="optional pipeline phase"></div></div><button class="button button--primary" type="submit" style="margin-top:10px">${icon('user-plus')} Assign</button></form></div></section>
       </div>`;

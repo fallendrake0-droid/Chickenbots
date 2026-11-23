@@ -460,3 +460,6 @@
   .schematic-grid { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
   .page-subbar .chips { flex-basis: 100%; }
 }
+
+.bot-card--offline { border-color: color-mix(in srgb, var(--danger) 24%, var(--border-subtle)); }
+.bot-card--offline .bot-card-head { opacity: 0.9; }

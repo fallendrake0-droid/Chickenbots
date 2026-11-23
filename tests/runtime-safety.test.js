@@ -21,4 +21,10 @@ test('ready bots run safety ticks while the team is still joining', async () => 
   runtime.running = true;
   await runtime._tick();
   assert.deepEqual(calls, ['ready']);
+  // The team view must not keep four disconnected bots green while the gate is
+  // closed; coordinator state is synchronised before the autonomy check.
+  const team = runtime.coordinator.getState();
+  assert.equal(team.team.online, 1);
+  assert.equal(team.bots.find((bot) => bot.name === '________').online, true);
+  assert.equal(team.bots.find((bot) => bot.name === '10101000').online, false);
 });

@@ -1,4 +1,5 @@
 import { api, ApiError } from './api.js';
+import { botOnline } from './botStatus.js';
 
 const PREFS_KEY = 'chickenbots.prefs.v1';
 const SAMPLE_LIMIT = 80;
@@ -334,7 +335,7 @@ export function serverInfo() {
 
 export function fleetHealth() {
   const bots = state.snapshot && state.snapshot.bots || [];
-  const online = bots.filter((b) => b.connected !== false && b.spawned !== false);
+  const online = bots.filter(botOnline);
   const health = online.length ? online.reduce((total, b) => total + (Number(b.health) || 0), 0) / online.length : 0;
   const food = online.length ? online.reduce((total, b) => total + (Number(b.food) || 0), 0) / online.length : 0;
   return { online: online.length, total: bots.length, health, food };

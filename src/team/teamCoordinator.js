@@ -172,7 +172,7 @@ class TeamCoordinator {
   }
 
   activeBots() {
-    return [...this.botStates.values()].filter((s) => s.connected !== false && s.spawned !== false && (s.health === undefined || s.health > 0));
+    return [...this.botStates.values()].filter((s) => s.connected !== false && s.spawned !== false && s.authenticated !== false && s.ready !== false && (s.health === undefined || s.health > 0));
   }
 
   assignTask(name, taskId) {
@@ -389,13 +389,16 @@ class TeamCoordinator {
   getState() {
     const states = [...this.botStates.values()];
     const bots = this.botNames.map((name) => {
-      const state = this.botStates.get(name) || { name, connected: false, spawned: false, health: 0, food: 0, inventory: {}, position: null };
+      const state = this.botStates.get(name) || { name, connected: false, spawned: false, authenticated: false, ready: false, health: 0, food: 0, inventory: {}, position: null };
       const emergency = this.emergencies.byBot(name)[0] || null;
+      const authenticated = state.authenticated !== undefined ? state.authenticated : state.connected !== false;
+      const online = state.connected !== false && state.spawned !== false && authenticated && state.ready !== false && !(Number(state.health) <= 0);
       return {
         name,
         connected: state.connected !== false,
         spawned: state.spawned !== false,
-        authenticated: state.authenticated !== undefined ? state.authenticated : state.connected !== false,
+        authenticated,
+        online,
         health: state.health === undefined ? 0 : state.health,
         food: state.food === undefined ? 0 : state.food,
         saturation: state.saturation || 0,
@@ -412,7 +415,7 @@ class TeamCoordinator {
         equipment: state.equipment || {},
         inventory: state.inventory || {},
         activity: state.activity || 'idle',
-        status: emergency ? `${emergency.severity}:${emergency.kind}` : state.connected === false ? 'OFFLINE' : state.health === 0 ? 'DEAD' : 'OK',
+        status: emergency ? `${emergency.severity}:${emergency.kind}` : state.connected === false ? 'OFFLINE' : state.spawned === false ? 'JOINING' : !authenticated ? 'AUTHENTICATING' : state.health === 0 ? 'DEAD' : online ? 'OK' : 'NOT_READY',
         emergency: emergency ? { kind: emergency.kind, severity: emergency.severity, id: emergency.id } : null,
         deaths: state.deaths || 0,
         uptimeMs: state.uptimeMs || 0,
@@ -424,7 +427,7 @@ class TeamCoordinator {
         leader: this.leader,
         enabled: this.enabled,
         formation: this.formation,
-        online: bots.filter((b) => b.connected && b.spawned).length,
+        online: bots.filter((b) => b.online).length,
         tick: this.ticks,
         uptimeMs: this.now() - this.startedAt,
         lastTickDurationMs: Number(this.lastTickDurationMs.toFixed(2)),

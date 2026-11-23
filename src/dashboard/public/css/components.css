@@ -630,3 +630,7 @@ html.compact-density .table th,
 html.compact-density .table td { padding-top: 6px; padding-bottom: 6px; }
 html.compact-density .card-body { padding: var(--space-3); }
 html.compact-density .stat-card { padding: var(--space-3); gap: var(--space-2); }
+
+/* Connection truth: offline bots must not read as ordinary online cards. */
+.chip--status { display: inline-flex; align-items: center; gap: 6px; }
+.chip--status .status-dot { flex: 0 0 auto; }

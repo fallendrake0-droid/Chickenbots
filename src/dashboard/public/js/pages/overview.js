@@ -3,7 +3,7 @@ import { icon } from '../icons.js';
 import { esc, num, duration, sum } from '../utils.js';
 import { statCard, badge, emptyState, sectionHead } from '../ui.js';
 import { lineChart } from '../charts.js';
-import { snapshot, overview, bots, botNames, teamState, alertsBlock, activityBlock, objectiveBlock, botCard, statusDot, ledger } from './shared.js';
+import { snapshot, overview, bots, botNames, teamState, alertsBlock, activityBlock, objectiveBlock, botCard, statusDot, ledger, botStatus, botOnline } from './shared.js';
 
 export default {
   title: 'Overview',
@@ -14,7 +14,7 @@ export default {
     }
     const ov = overview();
     const fleet = bots();
-    const online = fleet.filter((bot) => bot.connected !== false && bot.spawned !== false && bot.authenticated !== false);
+    const online = fleet.filter(botOnline);
     const tasks = ov.tasks || {};
     const byStatus = tasks.byStatus || {};
     const activeTasks = (byStatus.ACTIVE || 0) + (byStatus.CLAIMED || 0);
@@ -42,12 +42,16 @@ export default {
             <div class="hero-meta">
               <span class="status">${icon('server')} ${esc(server.host || 'server not configured')}:${esc(server.port || '—')}</span>
               <span class="status">${modeBadge}</span>
-              <span class="status">${statusDot(online.length === fleet.length && fleet.length ? 'ok' : online.length ? 'warn' : 'danger', true)} ${online.length}/${fleet.length} bots ready</span>
+              <span class="status">${statusDot(online.length === fleet.length && fleet.length ? 'ok' : online.length ? 'warn' : 'danger', true)} ${online.length}/${fleet.length || rosterNames.length} bots online</span>
               ${leader ? `<span class="status">${icon('users')} Leader <strong style="color:var(--text)">${esc(leader)}</strong></span>` : ''}
               ${runtime ? `<span class="status">${autonomyPaused ? badge('Autonomy paused', 'warn') : badge('Autonomy running', 'ok', { dot: true })}</span>` : ''}
             </div>
             <div class="chips" aria-label="Bot roster" style="margin-top:.85rem">
-              ${rosterNames.map((name) => `<span class="chip mono">${esc(name)}</span>`).join('')}
+              ${rosterNames.map((name) => {
+                const bot = fleet.find((entry) => entry.name === name);
+                const status = botStatus(bot);
+                return `<span class="chip mono chip--status" title="${esc(bot ? `${name}: ${status.label} — ${status.detail}` : `${name}: not reported by the runtime`)}">${statusDot(status.dot, status.online)}${esc(name)}</span>`;
+              }).join('')}
             </div>
           </div>
           <div class="hero-actions">
@@ -58,10 +62,10 @@ export default {
 
         <div class="grid grid--stats">
           ${statCard({
-            label: 'Connected bots', value: `${online.length}<small> / ${fleet.length || 5}</small>`,
-            iconName: 'users', tone: online.length === fleet.length ? 'success' : 'warning',
-            context: `${online.filter((bot) => bot.authenticated !== false).length} authenticated · ${fleet.filter((bot) => bot.connected === false).length} offline`,
-            progressValue: fleet.length ? online.length : 0, progressMax: fleet.length || 5
+            label: 'Bots online', value: `${online.length}<small> / ${fleet.length || rosterNames.length}</small>`,
+            iconName: 'users', tone: fleet.length && online.length === fleet.length ? 'success' : online.length ? 'warning' : 'danger',
+            context: `${online.filter((bot) => bot.authenticated !== false).length} authenticated · ${fleet.filter((bot) => !botOnline(bot)).length} not online`,
+            progressValue: online.length, progressMax: fleet.length || rosterNames.length
           })}
           ${statCard({
             label: 'Active tasks', value: num(activeTasks),

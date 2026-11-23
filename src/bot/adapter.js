@@ -145,6 +145,7 @@ class BotAdapter {
       connected: this.connected,
       spawned: this.spawned,
       authenticated: this.authenticated,
+      ready: this.ready,
       health: this.health,
       food: this.food,
       saturation: this.saturation,

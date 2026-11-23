@@ -2,7 +2,7 @@ import { state, runBotAction, bot as getBot, tasksFor, actionsFor, teamMember } 
 import { icon } from '../icons.js';
 import { esc, num, clamp, formatTime, timeAgo, duration, humanize, healthTone } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, sectionHead, statCard, toast, botAvatar } from '../ui.js';
-import { bots, botNames, overview, teamState, connectionLabel, botStatusBadge, botCard, botMenu, alertsBlock, taskColumns, taskCard, botAlerts } from './shared.js';
+import { bots, botNames, overview, teamState, connectionLabel, botStatusBadge, botCard, botMenu, alertsBlock, taskColumns, taskCard, botAlerts, botStatus, botOnline } from './shared.js';
 import { inventoryPanel } from './inventoryView.js';
 
 const TABS = [
@@ -14,7 +14,7 @@ export const botsPage = {
   title: 'All Bots',
   render() {
     const fleet = bots();
-    const online = fleet.filter((bot) => bot.connected !== false && bot.spawned !== false);
+    const online = fleet.filter(botOnline);
     const avgHealth = online.length ? online.reduce((total, bot) => total + (Number(bot.health) || 0), 0) / online.length : 0;
     return `
       <div class="page">
@@ -23,7 +23,7 @@ export const botsPage = {
           actions: `<button class="button" type="button" data-new-task>${icon('plus')} New task</button><button class="button button--primary" type="button" data-command-palette>${icon('terminal')} Command</button>`
         })}
         <div class="grid grid--stats">
-          ${statCard({ label: 'Online', value: `${online.length}<small> / ${fleet.length}</small>`, iconName: 'wifi', tone: 'success', context: `${fleet.filter((bot) => bot.connected === false).length} disconnected` })}
+          ${statCard({ label: 'Online', value: `${online.length}<small> / ${fleet.length || 5}</small>`, iconName: 'wifi', tone: fleet.length && online.length === fleet.length ? 'success' : online.length ? 'warning' : 'danger', context: `${fleet.filter((bot) => !botOnline(bot)).length} not online` })}
           ${statCard({ label: 'Average health', value: `${avgHealth.toFixed(1)}<small>/20</small>`, iconName: 'heart', tone: avgHealth >= 16 ? 'success' : avgHealth >= 10 ? 'warning' : 'danger', progressValue: avgHealth, progressMax: 20 })}
           ${statCard({ label: 'Active tasks', value: num(tasksForAll().filter((task) => task.status === 'ACTIVE').length), iconName: 'clipboard', tone: 'accent', context: `${num(tasksForAll().filter((task) => task.claimedBy).length)} claimed` })}
           ${statCard({ label: 'Alerts', value: num((overview().alerts || []).length), iconName: 'alert', tone: (overview().alerts || []).length ? 'warning' : 'success', context: 'Derived from live bot and task state' })}
@@ -32,7 +32,7 @@ export const botsPage = {
         <div class="toolbar card">
           <div class="search-input">${icon('search')}<input class="input" type="search" placeholder="Search bots or activity…" data-fleet-search aria-label="Search bots"></div>
           <select class="select" data-fleet-status aria-label="Filter by connection status">
-            <option value="">All statuses</option><option value="online">Online</option><option value="offline">Disconnected</option>
+            <option value="">All statuses</option><option value="online">Online</option><option value="joining">Joining</option><option value="offline">Offline</option>
           </select>
           <select class="select" data-fleet-sort aria-label="Sort bots">
             <option value="roster">Roster order</option><option value="health">Lowest health</option><option value="food">Lowest food</option><option value="name">Name</option>
@@ -42,7 +42,11 @@ export const botsPage = {
         </div>
 
         <div class="grid grid--bots" data-fleet-grid>
-          ${fleet.length ? fleet.map((bot) => `<div data-fleet-card data-name="${esc(bot.name)}" data-status="${bot.connected !== false && bot.spawned !== false ? 'online' : 'offline'}" data-health="${bot.health || 0}" data-food="${bot.food || 0}">${botCard(bot)}</div>`).join('') : `<div class="card">${emptyState('No bots reported', 'The runtime is not exposing bot summaries yet.', 'users')}</div>`}
+          ${fleet.length ? fleet.map((bot) => {
+            const status = botStatus(bot);
+            const filter = status.online ? 'online' : status.key === 'joining' || status.key === 'authenticating' ? 'joining' : 'offline';
+            return `<div data-fleet-card data-name="${esc(bot.name)}" data-status="${filter}" data-state="${esc(status.key)}" data-health="${bot.health || 0}" data-food="${bot.food || 0}">${botCard(bot)}</div>`;
+          }).join('') : `<div class="card">${emptyState('No bots reported', 'The runtime is not exposing bot summaries yet.', 'users')}</div>`}
         </div>
         <div class="card" data-fleet-empty hidden>${emptyState('No bots match', 'Adjust the search or status filter.', 'search')}</div>
       </div>`;
@@ -507,7 +511,7 @@ export const teamPage = {
         })}
         <div class="grid grid--stats">
           ${statCard({ label: 'Leader', value: leader ? esc(leader) : 'Not elected', iconName: 'crown', tone: leader ? 'accent' : 'warning', context: `Formation ${esc(stateTeam.formation || '—')}` })}
-          ${statCard({ label: 'Team online', value: `${stateTeam.online ?? members.filter((m) => m.status === 'ONLINE').length}<small> / ${members.length || 5}</small>`, iconName: 'users', tone: 'success', context: `${num(members.filter((m) => m.emergency).length)} emergencies` })}
+          ${statCard({ label: 'Team online', value: `${stateTeam.online ?? members.filter((m) => m.online).length}<small> / ${members.length || 5}</small>`, iconName: 'users', tone: members.length && (stateTeam.online ?? members.filter((m) => m.online).length) === members.length ? 'success' : 'warning', context: `${num(members.filter((m) => m.emergency).length)} emergencies` })}
           ${statCard({ label: 'Task board', value: num(tasks.length), iconName: 'clipboard', tone: 'accent', context: `${num(counts.ACTIVE || 0)} active · ${num(counts.PENDING || 0)} pending · ${num(counts.FAILED || 0)} failed` })}
           ${statCard({ label: 'Locks / regions', value: `${num(stateTeam.separation ? Object.keys(stateTeam.separation).length : 0)}<small> sep</small>`, iconName: 'lock', tone: 'neutral', context: `${num((state.snapshot && state.snapshot.team && state.snapshot.team.locks || []).length)} locks · ${num((state.snapshot && state.snapshot.team && state.snapshot.team.deadlocks || []).length)} deadlocks` })}
         </div>
@@ -533,7 +537,7 @@ export const teamPage = {
                     ${members.length ? members.map((member) => `
                       <tr>
                         <td><a class="link" href="#/bots/${encodeURIComponent(member.name)}">${esc(member.name)}</a>${member.name === leader ? ` ${badge('leader', 'accent')}` : ''}</td>
-                        <td>${badge(member.status || (member.connected ? 'ONLINE' : 'OFFLINE'), member.status === 'ONLINE' ? 'ok' : 'neutral', { dot: true })}</td>
+                        <td>${badge(member.status || (member.online ? 'ONLINE' : 'OFFLINE'), member.online ? 'ok' : ['JOINING', 'AUTHENTICATING', 'NOT_READY'].includes(member.status) ? 'warn' : 'danger', { dot: true })}</td>
                         <td>${esc(member.role)}</td>
                         <td class="truncate" style="max-width:160px">${esc(member.assignment || '—')}</td>
                         <td>${miniBar(member.health, 20)}</td>
@@ -619,8 +623,8 @@ export const connectionsPage = {
         <div class="callout callout--info">${icon('shield')}<div><strong>Connection gate.</strong> The runtime currently reports <span class="mono">${runtime.autonomyAllowed ? 'autonomy allowed' : 'autonomy gated'}</span>. Bots connect to <span class="mono">${esc(server.host || '—')}:${esc(server.port || '—')}</span> (${esc(server.resolvedVersion || server.version || 'version unknown')}). Reconnect and disconnect are real runtime actions.</div></div>
         <div class="grid grid--stats">
           ${statCard({ label: 'Configured roster', value: num((config.roster || []).length || 5), iconName: 'users', tone: 'neutral', context: 'Fixed usernames from config' })}
-          ${statCard({ label: 'Ready', value: `${num(rows.filter((bot) => bot.ready).length)}<small> / ${rows.length}</small>`, iconName: 'check-circle', tone: 'success', context: 'Connected + spawned' })}
-          ${statCard({ label: 'Auth failures', value: num(rows.filter((bot) => bot.connected && !bot.authenticated).length), iconName: 'key', tone: 'warning', context: 'Connected but not authenticated' })}
+          ${statCard({ label: 'Ready', value: `${num(rows.filter((bot) => bot.online).length)}<small> / ${rows.length}</small>`, iconName: 'check-circle', tone: rows.length && rows.every((bot) => bot.online) ? 'success' : 'warning', context: 'Connected + authenticated + spawned' })}
+          ${statCard({ label: 'Auth failures', value: num(rows.filter((bot) => bot.connected && !bot.authenticated).length), iconName: 'key', tone: rows.some((bot) => bot.connected && !bot.authenticated) ? 'warning' : 'success', context: 'Connected but not authenticated' })}
           ${statCard({ label: 'Errors reported', value: num(rows.filter((bot) => bot.lastError).length), iconName: 'alert', tone: rows.some((bot) => bot.lastError) ? 'danger' : 'success', context: 'Latest adapter error per bot' })}
         </div>
         <section class="card">

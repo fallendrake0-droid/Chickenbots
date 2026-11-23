@@ -292,7 +292,10 @@ export const logsPage = {
           </section>
           <section class="card">
             <div class="card-header"><div class="card-title">${icon('wifi')} Bot diagnostics</div></div>
-            <div class="table-wrap"><table class="table table--compact"><thead><tr><th>Bot</th><th>Ready</th><th>Auth</th><th>Health</th><th>Last error</th></tr></thead><tbody>${botDiag.map(({ bot, diag }) => `<tr><td>${esc(bot.name)}</td><td>${diag.ready ? badge('Yes', 'ok') : badge('No', 'warn')}</td><td>${diag.authenticated ? badge('Yes', 'ok') : badge('No', 'danger')}</td><td class="mono">${diag.health ?? '—'}</td><td class="tiny ${diag.lastError ? 'text-danger' : 'muted'}">${esc(diag.lastError || '—')}</td></tr>`).join('')}</tbody></table></div>
+            <div class="table-wrap"><table class="table table--compact"><thead><tr><th>Bot</th><th>Status</th><th>Auth</th><th>Health</th><th>Last error</th></tr></thead><tbody>${botDiag.map(({ bot, diag }) => {
+              const going = diag.status === 'joining' || diag.status === 'authenticating' || diag.status === 'initialising';
+              return `<tr><td>${esc(bot.name)}</td><td>${diag.online ? badge(diag.statusLabel || 'Online', 'ok') : badge(diag.statusLabel || 'Offline', going ? 'warn' : 'danger')}</td><td>${diag.authenticated ? badge('Yes', 'ok') : badge('No', 'danger')}</td><td class="mono">${diag.health ?? '—'}</td><td class="tiny ${diag.lastError ? 'text-danger' : 'muted'}">${esc(diag.lastError || '—')}</td></tr>`;
+            }).join('')}</tbody></table></div>
           </section>
         </div>
         <section class="card" style="margin-top:16px">

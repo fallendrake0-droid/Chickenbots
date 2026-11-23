@@ -298,6 +298,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
 | `MC_KEEPALIVE_MS` | `120000` | client-side keepalive watchdog; raise this if Aternos lag causes `client timed out` drops |
+| `MC_STALE_AFTER_MS` | `90000` | a connected bot with no inbound packet for this long is reported as `No packets`, never `Online` |
+| `MC_REJOIN_DELAY_MS` | `30000` | hold-down before the first rejoin after a real session ends; stops the Aternos "Connection throttled" loop without slowing initial joins |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `0.0.0.0` | bind address (sandbox preview needs this) |
@@ -410,6 +412,14 @@ form values and open chart state. All URLs are relative, icons are inline SVG (n
 works without external network access. Command buttons post to `/api/command` and use the same
 registry as the CLI, including explicit confirmation for destructive operations. Schematic downloads
 are served as `.schem` from `/api/schematics/:id/download.schem`.
+
+Connection state is computed once on the server (`src/bot/status.js`) and attached to every bot as
+`online`, `status` and `statusLabel`; the overview, fleet, team and diagnostics views render that
+verdict instead of re-deriving it. A bot is only `Online` when its socket is open, it has
+authenticated and spawned, it is alive, and it received a packet within `MC_STALE_AFTER_MS`. Other
+states (`Joining`, `Authenticating`, `Auth failed`, `Dead`, `No packets`, `Offline`) are shown
+explicitly. `/api/state` always builds a fresh snapshot and the SSE feed publishes once per second,
+so a kicked bot cannot remain green on screen.
 
 Design system: `css/tokens.css` (colour, type, spacing), `css/layout.css` (shell and grids),
 `css/components.css` (buttons, cards, tables, modals), `css/pages.css` (page-specific composition) and

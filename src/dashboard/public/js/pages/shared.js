@@ -2,6 +2,7 @@ import { icon } from '../icons.js';
 import { state, bot as getBot, actionsFor, teamMember, tasksFor, botAlerts } from '../store.js';
 import { esc, num, pct, clamp, formatTime, timeAgo, duration, healthTone, progressTone, humanize, initials, BOT_NAMES } from '../utils.js';
 import { badge, botAvatar, statusDot, progress, kvRows, emptyState, metaList } from '../ui.js';
+import { botStatus, botOnline } from '../botStatus.js';
 
 export function snapshot() { return state.snapshot; }
 export function teamState() { return (state.snapshot && state.snapshot.team && state.snapshot.team.state) || null; }
@@ -28,16 +29,13 @@ export function botNames() {
 }
 
 export function connectionLabel(bot) {
-  if (!bot) return { label: 'Unknown', tone: 'neutral', dot: 'muted' };
-  if (bot.connected === false) return { label: 'Disconnected', tone: 'danger', dot: 'danger' };
-  if (bot.spawned === false) return { label: 'Connecting', tone: 'warn', dot: 'warn' };
-  if (bot.authenticated === false) return { label: 'Auth failed', tone: 'danger', dot: 'danger' };
-  return { label: 'Online', tone: 'ok', dot: 'ok' };
+  const status = botStatus(bot);
+  return { label: status.label, tone: status.tone, dot: status.dot, detail: status.detail, online: status.online };
 }
 
 export function botStatusBadge(bot) {
-  const status = connectionLabel(bot);
-  return `<span class="status">${statusDot(status.dot, status.dot === 'ok')}${badge(status.label, status.tone)}</span>`;
+  const status = botStatus(bot);
+  return `<span class="status" title="${esc(status.detail || status.label)}">${statusDot(status.dot, status.online)}${badge(status.label, status.tone)}</span>`;
 }
 
 export function taskTone(status) {
@@ -147,8 +145,9 @@ export function botCard(bot) {
   const tone = healthTone(bot.health);
   const foodTone = healthTone(bot.food);
   const pos = bot.position ? `${Math.round(bot.position.x)}, ${Math.round(bot.position.y)}, ${Math.round(bot.position.z)}` : '—';
+  const status = botStatus(bot);
   return `
-    <article class="card bot-card card--interactive">
+    <article class="card bot-card card--interactive${status.online ? '' : ' bot-card--offline'}" title="${esc(status.detail || status.label)}">
       <div class="bot-card-head">
         ${botAvatar(bot.name)}
         <div class="bot-identity">
@@ -280,4 +279,4 @@ export function taskStatusLabel(status) {
   return String(status || '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 }
 
-export { esc, num, pct, formatTime, timeAgo, duration, healthTone, humanize, initials, progress, kvRows, metaList, badge, botAvatar, statusDot, icon, tasksFor, teamMember, actionsFor , getBot, botAlerts };
+export { esc, num, pct, formatTime, timeAgo, duration, healthTone, humanize, initials, progress, kvRows, metaList, badge, botAvatar, statusDot, icon, tasksFor, teamMember, actionsFor , getBot, botAlerts, botStatus, botOnline };

@@ -56,6 +56,11 @@ class RealBot extends BotAdapter {
     this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
     this.authConfirmed = false;
     this.lastError = null;
+    // Updated by every inbound packet. The dashboard uses it to distinguish a
+    // live socket from one that died without emitting 'end'.
+    this.lastEventAt = 0;
+    // Set only when a spawned session ends, never for a failed connect attempt.
+    this.lastSessionEndedAt = 0;
     this.lastDeath = null;
     this.spawnPosition = null;
     this.worldView = null;
@@ -224,6 +229,7 @@ class RealBot extends BotAdapter {
     this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
     this.authConfirmed = false;
     this.lastError = null;
+    this.lastEventAt = 0;
     this._movementLock = false;
     this._clientWriteOriginal = null;
     this._suppressedMovement = 0;
@@ -270,6 +276,7 @@ class RealBot extends BotAdapter {
         return { ok: false, error: auth.error, code: 'AUTH_FAILED', spawned: false, authenticated: false };
       }
       result.authenticated = this.authenticated;
+      this.lastSessionEndedAt = 0;
       if (!this.connected || !this.spawned || !this.authenticated) {
         await this.disconnect('connection lost before ready');
         return { ok: false, error: this.lastError || 'connection closed before the bot became ready', code: 'NOT_READY', spawned: false, authenticated: false };
@@ -278,11 +285,16 @@ class RealBot extends BotAdapter {
     return result;
   }
 
+  _markEvent() {
+    this.lastEventAt = Date.now();
+  }
+
   _attachEvents() {
     const bot = this.bot;
     if (!bot) return;
     bot.on('login', () => {
       if (this.bot !== bot) return;
+      this._markEvent();
       this.logger.info(`[${this.name}] TRACE login event (protocol=${bot.protocolVersion}, version=${bot.version}, physics=${bot.physicsEnabled}, passwordRequired=${this.passwordRequired})`);
       this._installClientTrace();
       if (this.passwordRequired) this._lockMovement();
@@ -291,6 +303,7 @@ class RealBot extends BotAdapter {
     });
     bot.on('spawn', () => {
       if (this.bot !== bot) return;
+      this._markEvent();
       this.logger.info(`[${this.name}] TRACE spawn event (position=${bot.entity?.position ? `${bot.entity.position.x.toFixed(3)},${bot.entity.position.y.toFixed(3)},${bot.entity.position.z.toFixed(3)}` : 'none'}, onGround=${bot.entity?.onGround}, locked=${this._movementLock})`);
       const firstSpawn = !this.spawned;
       this.connected = true;
@@ -308,6 +321,7 @@ class RealBot extends BotAdapter {
     });
     bot.on('move', () => {
       if (this.bot !== bot) return;
+      this._markEvent();
       this.position = this._vec(bot.entity?.position);
       this.yaw = bot.entity?.yaw || 0;
       this.pitch = bot.entity?.pitch || 0;
@@ -315,6 +329,7 @@ class RealBot extends BotAdapter {
     });
     bot.on('health', () => {
       if (this.bot !== bot) return;
+      this._markEvent();
       const count = Number(this.inventory.totem_of_undying || 0);
       if (bot.health > 0 && count < this._lastTotemCount) {
         this.recordCombatEvent({ at: new Date().toISOString(), type: 'totem_activated', bot: this.name, health: bot.health, detectedBy: 'health-transition' });
@@ -338,8 +353,10 @@ class RealBot extends BotAdapter {
     bot.on('kicked', (reason) => {
       if (this.bot !== bot) return;
       this.lastError = this._formatKickReason(reason);
+      if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
       this.connected = false;
       this.spawned = false;
+      this.authenticated = false;
       this.logger.warn(`[${this.name}] kicked: ${this._redact(this.lastError)}`);
       this._dumpTrace(`kicked: ${this.lastError}`);
       this._abortAuth(this.lastError);
@@ -358,6 +375,7 @@ class RealBot extends BotAdapter {
     if (bot._client && typeof bot._client.on === 'function') {
       bot._client.on('keep_alive', () => {
         if (this.bot !== bot) return;
+        this._markEvent();
         this.logger.debug(`[${this.name}] TRACE keep_alive received; replying`);
       });
       bot._client.on('position', (packet) => {
@@ -380,7 +398,9 @@ class RealBot extends BotAdapter {
         if (this.bot === bot) this.logger.info(`[${this.name}] TRACE in update_health health=${packet.health} food=${packet.food}`);
       });
       bot._client.on('packet', (data, meta) => {
-        if (this.bot !== bot || !meta) return;
+        if (this.bot !== bot) return;
+        this._markEvent();
+        if (!meta) return;
         if (['kick_disconnect', 'system_chat', 'player_loaded', 'start_configuration', 'login'].includes(meta.name)) {
           this.logger.debug(`[${this.name}] TRACE in packet ${meta.name} ${this._redact(JSON.stringify(data).slice(0, 600))}`);
         }
@@ -388,6 +408,7 @@ class RealBot extends BotAdapter {
     }
     bot.on('end', (reason) => {
       if (this.bot !== bot) return;
+      if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
       this.connected = false;
       this.spawned = false;
       this.authenticated = false;
@@ -398,6 +419,7 @@ class RealBot extends BotAdapter {
     });
     bot.on('message', (message) => {
       if (this.bot !== bot) return;
+      this._markEvent();
       const text = message.toString();
       const safe = this._redact(text);
       this.logger.debug(`[${this.name}] TRACE chat: ${safe}`);
@@ -1236,6 +1258,7 @@ class RealBot extends BotAdapter {
   async disconnect(reason = 'shutdown') {
     this._unlockMovement();
     this._restoreClientTrace();
+    if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
     const bot = this.bot;
     this.bot = null;
     try { if (bot) bot.quit(reason); } catch (_) { /* already gone */ }
@@ -1257,6 +1280,8 @@ class RealBot extends BotAdapter {
       port: this.port,
       version: this.version,
       lastError: this.lastError,
+      lastEventAt: this.lastEventAt,
+      lastSessionEndedAt: this.lastSessionEndedAt,
       lastDeath: this.lastDeath,
       uptimeMs: this.uptimeMs,
       stats: { ...this.stats },

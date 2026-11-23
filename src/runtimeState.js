@@ -2,6 +2,7 @@
 
 const { config } = require('./config');
 const { validateLibrary } = require('./schematics/validate');
+const { connectionStatus } = require('./bot/status');
 
 /**
  * One coherent snapshot for the dashboard, CLI and command results. All values
@@ -9,7 +10,35 @@ const { validateLibrary } = require('./schematics/validate');
  */
 function statusSnapshot(services) {
   const bots = [...(services.bots ? services.bots.values() : [])];
-  const summaries = bots.map((bot) => (typeof bot.summary === 'function' ? bot.summary() : { name: bot.name, position: bot.position }));
+  const summaries = bots.map((bot) => {
+    const status = connectionStatus(bot);
+    try {
+      const summary = typeof bot.summary === 'function' ? bot.summary() : { name: bot.name, position: bot.position };
+      // The connection verdict is computed once, server-width, and attached to
+      // every summary. Clients render this instead of re-deriving "online"
+      // from three flags in several places.
+      return { ...summary, ...status };
+    } catch (err) {
+      // A broken disconnected adapter must not blank the whole dashboard and
+      // leave the previous (possibly all-online) snapshot on screen.
+      return {
+        ...status,
+        name: bot.name,
+        connected: false,
+        spawned: false,
+        authenticated: false,
+        ready: false,
+        position: bot.position || null,
+        health: 0,
+        food: 0,
+        lastError: `summary failed: ${err.message}`,
+        online: false,
+        status: 'offline',
+        statusLabel: 'Offline',
+        statusDetail: `Summary failed: ${err.message}`
+      };
+    }
+  });
   const actionList = services.actions ? services.actions.list() : [];
   const actionStatus = actionList.map((a) => {
     try { return a.status(); } catch (err) { return { bot: a.bot ? a.bot.name : 'unknown', error: err.message }; }
@@ -22,7 +51,7 @@ function statusSnapshot(services) {
   const runtime = services.runtime ? services.runtime.state() : null;
   const byBot = {};
   for (const status of actionStatus) byBot[status.bot] = status;
-  const online = summaries.filter((s) => s.connected !== false && s.spawned !== false).length;
+  const online = summaries.filter((s) => s.online === true).length;
   return {
     generatedAt: new Date().toISOString(),
     mode: services.mode || (config.sim.enabled ? 'simulation' : 'live'),
@@ -123,7 +152,23 @@ function statusSnapshot(services) {
         pvp: config.autonomy.pvp,
         ai: config.autonomy.ai.enabled
       },
-      bots: summaries.map((s) => ({ name: s.name, connected: s.connected, spawned: s.spawned, authenticated: s.authenticated, ready: s.ready !== undefined ? s.ready : s.connected && s.spawned, health: s.health, food: s.food, position: s.position, lastError: s.lastError || null })),
+      bots: summaries.map((s) => ({
+        name: s.name,
+        online: s.online,
+        status: s.status,
+        statusLabel: s.statusLabel,
+        statusDetail: s.statusDetail,
+        connected: s.connected,
+        spawned: s.spawned,
+        authenticated: s.authenticated,
+        ready: s.ready === true,
+        health: s.health,
+        food: s.food,
+        position: s.position,
+        lastEventAt: s.lastEventAt || null,
+        lastEventAgeMs: s.lastEventAgeMs,
+        lastError: s.lastError || null
+      })),
       commands: services.commands ? services.commands.recent(20) : []
     }
   };
@@ -147,12 +192,14 @@ function publicTask(task) {
 function buildAlerts(summaries, board, services) {
   const alerts = [];
   for (const bot of summaries) {
-    if (bot.connected === false) alerts.push({ level: 'error', bot: bot.name, message: 'disconnected' });
-    else if (bot.spawned === false) alerts.push({ level: 'warn', bot: bot.name, message: 'not spawned' });
-    if (bot.health !== undefined && bot.health <= 8) alerts.push({ level: 'critical', bot: bot.name, message: `health ${bot.health}` });
+    if (bot.online !== true) {
+      const level = bot.status === 'joining' || bot.status === 'authenticating' || bot.status === 'initialising' ? 'warn' : 'error';
+      alerts.push({ level, bot: bot.name, message: bot.statusDetail || `not online (${bot.status || 'unknown'})` });
+    }
+    if (bot.health !== undefined && bot.health <= 8 && bot.online === true) alerts.push({ level: 'critical', bot: bot.name, message: `health ${bot.health}` });
     if (bot.food !== undefined && bot.food <= 6) alerts.push({ level: 'warn', bot: bot.name, message: `food ${bot.food}` });
     if (bot.inLava) alerts.push({ level: 'critical', bot: bot.name, message: 'in lava' });
-    if (bot.lastError) alerts.push({ level: 'warn', bot: bot.name, message: bot.lastError });
+    if (bot.lastError && bot.online === true) alerts.push({ level: 'warn', bot: bot.name, message: bot.lastError });
   }
   if (services.runtime && services.runtime.serverVersionError) {
     alerts.push({ level: 'error', message: `server version: ${services.runtime.serverVersionError}` });
