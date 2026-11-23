@@ -8,7 +8,7 @@
  * board/memory, so losing the leader never loses the plan.
  */
 class Leadership {
-  constructor({ preferred = '______', order = [], now = () => Date.now() } = {}) {
+  constructor({ preferred = '_______', order = [], now = () => Date.now() } = {}) {
     this.preferred = preferred;
     this.order = order.slice();
     this.now = now;

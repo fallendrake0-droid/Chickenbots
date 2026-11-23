@@ -56,7 +56,8 @@ function envBool(name, fallback) {
 }
 
 /** The five bot usernames are fixed. Never rename, never add bots. */
-const BOT_NAMES = Object.freeze(['______', '101010', '010101', '110011', '001100']);
+const BOT_NAMES = Object.freeze(['_______', '1010100', '0101010', '1100110', '0011000']);
+const DEFAULT_AUTH_PASSWORD = 'chickenbot12345';
 
 const DEFAULT_RESERVES = Object.freeze({
   food: 128,
@@ -91,9 +92,11 @@ const config = {
     // time, with jitter, instead of starting all five bots simultaneously.
     connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 7000),
     connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 2000),
-    // Optional registration / login (Aternos + AuthMe style plugins).
-    registerPassword: env('MC_REGISTER_PASSWORD', ''),
-    loginPassword: env('MC_LOGIN_PASSWORD', ''),
+    // Registration / login (Aternos + AuthMe style plugins). Set
+    // MC_AUTH_ENABLED=false for a server without a password plugin.
+    authEnabled: envBool('MC_AUTH_ENABLED', true),
+    registerPassword: env('MC_REGISTER_PASSWORD', DEFAULT_AUTH_PASSWORD),
+    loginPassword: env('MC_LOGIN_PASSWORD', DEFAULT_AUTH_PASSWORD),
     loginCommand: env('MC_LOGIN_COMMAND', '/login {password}'),
     registerCommand: env('MC_REGISTER_COMMAND', '/register {password} {password}'),
     // AuthMe-style plugins confirm in chat; stay unready and frozen until that
@@ -116,7 +119,7 @@ const config = {
   team: {
     names: BOT_NAMES,
     // Initial coordinator. Leadership is elected, never assumed.
-    preferredLeader: '______',
+    preferredLeader: '_______',
     coordinatorTickMs: envInt('TEAM_TICK_MS', 1000),
     claimTtlMs: envInt('TASK_CLAIM_TTL_MS', 45000),
     lockTtlMs: envInt('TASK_LOCK_TTL_MS', 30000),

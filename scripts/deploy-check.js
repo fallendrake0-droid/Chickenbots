@@ -55,7 +55,7 @@ async function main() {
 
   check('roster is the fixed five usernames', () => {
     const { config, BOT_NAMES } = requireLocal('src/config.js');
-    const expected = ['______', '101010', '010101', '110011', '001100'];
+    const expected = ['_______', '1010100', '0101010', '1100110', '0011000'];
     assert(BOT_NAMES.length === 5, `roster has ${BOT_NAMES.length} names`);
     assert(expected.every((name, index) => BOT_NAMES[index] === name), 'roster order changed');
     assert(config.team.names.every((name, index) => name === expected[index]), 'configured team names changed');

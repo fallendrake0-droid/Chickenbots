@@ -15,7 +15,7 @@ const { SleepController } = require('../src/actions/sleep');
 const { SchematicLibrary } = require('../src/schematics/library');
 const { SchematicBuilder } = require('../src/builder/builder');
 
-function flatBot(name = '______', inventory = {}, position = { x: 0, y: 64, z: 0 }) {
+function flatBot(name = '_______', inventory = {}, position = { x: 0, y: 64, z: 0 }) {
   const world = new MockWorld({ flat: true });
   const bot = new MockBot({ name, world, inventory });
   bot.position = { ...position };
@@ -34,7 +34,7 @@ async function simulation() {
 }
 
 test('fishing requires a rod and water, counts a real catch and honours stop', async () => {
-  const { bot, world } = flatBot('______', { fishing_rod: 1 });
+  const { bot, world } = flatBot('_______', { fishing_rod: 1 });
   const ledger = new ResourceLedger();
   const memory = new TeamMemory();
   addWaterAt(world, { x: 2, y: 64, z: 0 });
@@ -53,14 +53,14 @@ test('fishing requires a rod and water, counts a real catch and honours stop', a
   assert.equal(stopped.stopped, true);
   assert.equal(stopped.ok, false);
 
-  const noRod = new FishingController({ bot: flatBot('101010').bot });
+  const noRod = new FishingController({ bot: flatBot('1010100').bot });
   const rejected = await noRod.cast({ timeoutMs: 10 });
   assert.equal(rejected.ok, false);
   assert.ok(/fishing_rod/.test(rejected.error));
 });
 
 test('structure clue search needs three blocks and only then records discovery', () => {
-  const { bot, world } = flatBot('010101');
+  const { bot, world } = flatBot('0101010');
   const memory = new TeamMemory();
   const exploration = new ExplorationController({ bot, memory, home: { x: 0, y: 64, z: 0 } });
   const empty = exploration.findClue('village', { radius: 12 });
@@ -82,7 +82,7 @@ test('structure clue search needs three blocks and only then records discovery',
 });
 
 test('automatic sleep can be disabled per bot without affecting manual sleep', async () => {
-  const { bot } = flatBot('110011', { white_bed: 1 });
+  const { bot } = flatBot('1100110', { white_bed: 1 });
   const sleep = new SleepController({ bot });
   const off = sleep.setAuto(false);
   assert.equal(off.ok, true);
@@ -107,7 +107,7 @@ test('a running build can be paused, resumed and cancelled with visible state', 
   const schematic = library.build(design.id);
   const world = new MockWorld({ flat: true });
   const inventory = { ...schematic.materials };
-  const bots = ['______', '101010', '010101', '110011', '001100'].map((name) => {
+  const bots = ['_______', '1010100', '0101010', '1100110', '0011000'].map((name) => {
     const bot = new MockBot({ name, world, inventory: { ...inventory } });
     bot.position = { x: 8, y: 70, z: 8 };
     return bot;

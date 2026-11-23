@@ -9,7 +9,7 @@ is local, deterministic and configuration-driven. There is **no AI service, no A
 runtime; the optional AI hook exists as a disabled flag.
 
 ```
-roster (fixed):  ______   101010   010101   110011   001100
+roster (fixed):  _______   1010100   0101010   1100110   0011000
 server:          cr3xlol.aternos.me:55742   (MC_VERSION=auto, ViaVersion/ViaBackwards friendly)
 dashboard:       http://127.0.0.1:3000      (binds 0.0.0.0 for sandbox previews)
 ```
@@ -289,7 +289,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `7000` / `2000` | gap between joining bots; avoids Aternos join throttling |
 | `MC_THROTTLE_DELAY_MS` | `30000` | minimum retry delay after a throttled join |
-| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | optional AuthMe-style register/login after spawn; bots stay frozen and unready until confirmed |
+| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | `chickenbot12345` | AuthMe-style register/login after spawn; bots stay frozen and unready until confirmed. Set `MC_AUTH_ENABLED=false` to disable. |
+| `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `1000` / `12000` | settle delay and confirmation timeout for password auth |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
@@ -366,11 +367,11 @@ node src/cli.js --simulate "home set 10 64 -10"
 node src/cli.js --simulate "fish all 1"
 node src/cli.js --simulate "combat status"
 node src/cli.js --simulate "pve on"
-node src/cli.js --simulate "gear status 101010"
+node src/cli.js --simulate "gear status 1010100"
 node src/cli.js --simulate "totem status"
 node src/cli.js --simulate "target add FriendlyRival"
-node src/cli.js --simulate "follow 101010 4"
-node src/cli.js --simulate "gear progression 101010"
+node src/cli.js --simulate "follow 1010100 4"
+node src/cli.js --simulate "gear progression 1010100"
 node src/cli.js --simulate "team combat heal"
 node src/cli.js --simulate "team combat retreat"
 ```
@@ -460,7 +461,7 @@ commissioning.
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
   Bots join one at a time with jitter, and throttled joins use a 30-second floor before retrying.
-  When `MC_LOGIN_PASSWORD` or `MC_REGISTER_PASSWORD` is set, movement is frozen and autonomy stays
+  When `MC_LOGIN_PASSWORD` or `MC_REGISTER_PASSWORD` is set (the default is `chickenbot12345`), movement is frozen and autonomy stays
   gated until the server confirms authentication in chat; a failed or unconfirmed password disconnects
   the bot instead of letting it move.
   A server-side `Invalid move player packet` kick usually means the protocol version does not match;

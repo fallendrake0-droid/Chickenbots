@@ -18,7 +18,7 @@ const { SleepController } = require('../src/actions/sleep');
 const { ExplorationController } = require('../src/actions/exploration');
 const { InventoryManager } = require('../src/actions/inventory');
 
-function flatBot(name = '______', inventory = {}, y = 64) {
+function flatBot(name = '_______', inventory = {}, y = 64) {
   const world = new MockWorld({ flat: true });
   const bot = new MockBot({ name, world, inventory });
   bot.position = { x: 0, y, z: 0 };
@@ -26,7 +26,7 @@ function flatBot(name = '______', inventory = {}, y = 64) {
 }
 
 test('configuration preserves the five usernames, server defaults and safety switches', () => {
-  assert.deepEqual(config.team.names, ['______', '101010', '010101', '110011', '001100']);
+  assert.deepEqual(config.team.names, ['_______', '1010100', '0101010', '1100110', '0011000']);
   assert.deepEqual(BOT_NAMES, config.team.names);
   assert.equal(config.server.host, 'cr3xlol.aternos.me');
   assert.equal(config.server.port, 55742);
@@ -40,7 +40,7 @@ test('configuration preserves the five usernames, server defaults and safety swi
 });
 
 test('survival eats real food, heals and equips armour', async () => {
-  const { bot } = flatBot('______', { bread: 4, golden_apple: 1, iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 });
+  const { bot } = flatBot('_______', { bread: 4, golden_apple: 1, iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 });
   bot.food = 6;
   bot.health = 6;
   const survival = new SurvivalController({ bot });
@@ -55,7 +55,7 @@ test('survival eats real food, heals and equips armour', async () => {
 });
 
 test('survival routines are real per-bot toggles and safety stays enforced', async () => {
-  const { bot } = flatBot('010101', { bread: 4 });
+  const { bot } = flatBot('0101010', { bread: 4 });
   bot.food = 5;
   const survival = new SurvivalController({ bot });
   assert.equal(survival.status().features.eat, true);
@@ -75,7 +75,7 @@ test('survival routines are real per-bot toggles and safety stays enforced', asy
 });
 
 test('survival refuses to pretend it ate without food and crafts a tool when able', async () => {
-  const { bot } = flatBot('101010', { cobblestone: 6, stick: 4 });
+  const { bot } = flatBot('1010100', { cobblestone: 6, stick: 4 });
   bot.food = 4;
   const survival = new SurvivalController({ bot });
   const eat = await survival.eat();
@@ -89,7 +89,7 @@ test('survival refuses to pretend it ate without food and crafts a tool when abl
 });
 
 test('lava clutch places water instead of dying', async () => {
-  const { bot, world } = flatBot('010101', { water_bucket: 1 });
+  const { bot, world } = flatBot('0101010', { water_bucket: 1 });
   bot.inLava = true;
   const survival = new SurvivalController({ bot });
   const result = await survival.clutch();
@@ -100,7 +100,7 @@ test('lava clutch places water instead of dying', async () => {
 });
 
 test('combat kills hostile mobs, never teammates or players, and retreats when hurt', async () => {
-  const { bot, world } = flatBot('110011', { iron_sword: 1, shield: 1 });
+  const { bot, world } = flatBot('1100110', { iron_sword: 1, shield: 1 });
   const zombie = world.addMob('zombie', { x: 2, y: 64, z: 0 });
   const combat = new CombatController({ bot });
   const defended = await combat.defend({ maxAttacks: 6 });
@@ -109,7 +109,7 @@ test('combat kills hostile mobs, never teammates or players, and retreats when h
   assert.equal(world.entities.length, 0);
   assert.equal(combat.stats.kills, 1);
 
-  const teammate = world.addMob('______', { x: 1, y: 64, z: 0 });
+  const teammate = world.addMob('_______', { x: 1, y: 64, z: 0 });
   const refused = await combat.attackEntity(teammate);
   assert.equal(refused.ok, false);
   assert.ok(refused.error.includes('teammates'));
@@ -123,7 +123,7 @@ test('combat kills hostile mobs, never teammates or players, and retreats when h
   const animal = await combat.attackEntity(cow);
   assert.equal(animal.ok, false, 'ordinary animals are not combat targets');
 
-  const second = flatBot('001100', { iron_sword: 1 });
+  const second = flatBot('0011000', { iron_sword: 1 });
   second.world.addMob('zombie', { x: 2, y: 64, z: 0 });
   second.bot.health = 5;
   const hurt = new CombatController({ bot: second.bot });
@@ -133,7 +133,7 @@ test('combat kills hostile mobs, never teammates or players, and retreats when h
 });
 
 test('mining respects tool tiers, hazards and removes a real ore', async () => {
-  const { bot, world } = flatBot('______', { iron_pickaxe: 1, stone_pickaxe: 1, torch: 8 });
+  const { bot, world } = flatBot('_______', { iron_pickaxe: 1, stone_pickaxe: 1, torch: 8 });
   const orePos = { x: 2, y: 64, z: 2 };
   world.setBlock(orePos, 'diamond_ore');
   const mining = new MiningController({ bot });
@@ -145,7 +145,7 @@ test('mining respects tool tiers, hazards and removes a real ore', async () => {
   assert.equal(mining.stats.oresMined, 1);
 
   world.setBlock({ x: -2, y: 64, z: -2 }, 'diamond_ore');
-  const poor = flatBot('101010', { stone_pickaxe: 1 });
+  const poor = flatBot('1010100', { stone_pickaxe: 1 });
   poor.world.setBlock({ x: 2, y: 64, z: 2 }, 'diamond_ore');
   const weakMining = new MiningController({ bot: poor.bot });
   const denied = await weakMining.mineOre({ x: 2, y: 64, z: 2 });
@@ -163,7 +163,7 @@ test('mining respects tool tiers, hazards and removes a real ore', async () => {
 });
 
 test('woodcutting chops a real tree and replants a sapling', async () => {
-  const { bot, world } = flatBot('010101', { iron_axe: 1, oak_sapling: 2 }, 65);
+  const { bot, world } = flatBot('0101010', { iron_axe: 1, oak_sapling: 2 }, 65);
   for (let y = 64; y <= 67; y++) world.setBlock({ x: 3, y, z: 3 }, 'oak_log');
   world.setBlock({ x: 3, y: 63, z: 3 }, 'dirt');
   world.setBlock({ x: 3, y: 68, z: 3 }, 'oak_leaves');
@@ -182,7 +182,7 @@ test('woodcutting chops a real tree and replants a sapling', async () => {
 });
 
 test('farming harvests crops and replants seeds', async () => {
-  const { bot, world } = flatBot('001100', { wheat_seeds: 4 }, 65);
+  const { bot, world } = flatBot('0011000', { wheat_seeds: 4 }, 65);
   world.setBlock({ x: 2, y: 64, z: 2 }, 'farmland');
   world.setBlock({ x: 2, y: 65, z: 2 }, 'wheat');
   const farming = new FarmingController({ bot });
@@ -196,8 +196,8 @@ test('farming harvests crops and replants seeds', async () => {
 
 test('sleep requires night, reserves beds and rejects double reservation', async () => {
   const world = new MockWorld({ flat: true });
-  const a = new MockBot({ name: '______', world });
-  const b = new MockBot({ name: '101010', world });
+  const a = new MockBot({ name: '_______', world });
+  const b = new MockBot({ name: '1010100', world });
   world.setBlock({ x: 2, y: 64, z: 0 }, 'white_bed');
   world.setTime(14000);
   const board = new TaskBoard();
@@ -220,7 +220,7 @@ test('sleep requires night, reserves beds and rejects double reservation', async
 });
 
 test('exploration walks deterministic waypoints and records discoveries', async () => {
-  const { bot, world } = flatBot('110011', {}, 64);
+  const { bot, world } = flatBot('1100110', {}, 64);
   const memory = new TeamMemory();
   const exploration = new ExplorationController({ bot, memory, home: { x: 0, y: 64, z: 0 }, radius: 16 });
   const first = exploration.nextWaypoint();
@@ -234,7 +234,7 @@ test('exploration walks deterministic waypoints and records discoveries', async 
 });
 
 test('inventory reserves, deposits, withdraws and shares real items', async () => {
-  const { bot, world } = flatBot('______', {}, 64);
+  const { bot, world } = flatBot('_______', {}, 64);
   bot.addItem('oak_log', 20);
   bot.addItem('bread', 8);
   const ledger = new ResourceLedger();
@@ -253,7 +253,7 @@ test('inventory reserves, deposits, withdraws and shares real items', async () =
   assert.equal(withdraw.ok, true);
   assert.equal(bot.countItem('oak_log'), 14);
 
-  const other = new MockBot({ name: '101010', world });
+  const other = new MockBot({ name: '1010100', world });
   const shared = await inv.share('bread', 3, other);
   assert.equal(shared.ok, true, shared.error);
   assert.equal(other.countItem('bread'), 3);

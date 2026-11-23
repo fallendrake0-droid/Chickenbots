@@ -179,15 +179,15 @@ test('mask-aware region volumes exclude preserved terrace/circle blocks', () => 
 test('region assignment uses four workers plus a supervisor, or all five as a team', () => {
   const bounds = { min: { x: 0, y: 40, z: 0 }, max: { x: 15, y: 47, z: 15 } };
   const regions = splitRegions(bounds, 4);
-  const names = ['______', '101010', '010101', '110011', '001100'];
-  const quad = assignRegions(regions, names, { supervisor: '______' });
+  const names = ['_______', '1010100', '0101010', '1100110', '0011000'];
+  const quad = assignRegions(regions, names, { supervisor: '_______' });
   assert.equal(quad.assignments.length, 4);
-  assert.ok(!quad.assignments.some((a) => a.bot === '______'));
-  const team = assignRegions(regions, names, { supervisor: '______', includeSupervisor: true });
-  assert.ok(team.assignments.some((a) => a.bot === '______'));
-  const re = reassignRegion(quad.assignments, '101010', ['010101', '110011', '001100']);
+  assert.ok(!quad.assignments.some((a) => a.bot === '_______'));
+  const team = assignRegions(regions, names, { supervisor: '_______', includeSupervisor: true });
+  assert.ok(team.assignments.some((a) => a.bot === '_______'));
+  const re = reassignRegion(quad.assignments, '1010100', ['0101010', '1100110', '0011000']);
   assert.equal(re.ok, true);
-  assert.ok(!re.assignments.some((a) => a.bot === '101010'));
+  assert.ok(!re.assignments.some((a) => a.bot === '1010100'));
 });
 
 test('layer iteration is top-down and covers each block once', () => {
@@ -204,16 +204,16 @@ test('layer iteration is top-down and covers each block once', () => {
 
 test('executor removes blocks, preserves ores/protected blocks and verifies real removal', async () => {
   const world = flatWorld();
-  const bot = new MockBot({ name: '101010', world, inventory: { iron_pickaxe: 1, shovel: 1, torch: 16 } });
+  const bot = new MockBot({ name: '1010100', world, inventory: { iron_pickaxe: 1, shovel: 1, torch: 16 } });
   bot.position = { x: 0, y: 65, z: 0 };
   world.setBlock({ x: 1, y: 62, z: 1 }, 'iron_ore');
   world.setBlock({ x: 2, y: 62, z: 1 }, 'chest');
   const plan = createExcavationPlan({
     mode: 'AT', origin: { x: 0, y: 58, z: 0 }, width: 4, length: 4, depth: 4,
-    blockAt: (p) => world.getBlock(p), botNames: ['101010'], workers: 1
+    blockAt: (p) => world.getBlock(p), botNames: ['1010100'], workers: 1
   }).plan;
   const region = plan.regions[0];
-  const executor = new ExcavationExecutor({ botName: '101010', bot, plan, region });
+  const executor = new ExcavationExecutor({ botName: '1010100', bot, plan, region });
   const summary = await executor.run();
   assert.equal(summary.status, 'completed');
   assert.ok(summary.stats.dug > 0);
@@ -231,13 +231,13 @@ test('executor removes blocks, preserves ores/protected blocks and verifies real
 test('executor never opens a block adjacent to lava', async () => {
   const world = flatWorld();
   world.setBlock({ x: 1, y: 61, z: 1 }, 'lava');
-  const bot = new MockBot({ name: '101010', world, inventory: { iron_pickaxe: 1 } });
+  const bot = new MockBot({ name: '1010100', world, inventory: { iron_pickaxe: 1 } });
   bot.position = { x: 0, y: 65, z: 0 };
   const plan = createExcavationPlan({
     mode: 'AT', origin: { x: 0, y: 60, z: 0 }, width: 3, length: 3, depth: 4,
     blockAt: (p) => world.getBlock(p)
   }).plan;
-  const executor = new ExcavationExecutor({ botName: '101010', bot, plan, region: { id: 'R1', box: { min: { x: 0, y: 60, z: 0 }, max: { x: 2, y: 61, z: 2 } }, volume: 3 * 3 * 2 } });
+  const executor = new ExcavationExecutor({ botName: '1010100', bot, plan, region: { id: 'R1', box: { min: { x: 0, y: 60, z: 0 }, max: { x: 2, y: 61, z: 2 } }, volume: 3 * 3 * 2 } });
   const summary = await executor.run();
   assert.ok(summary.stats.skippedHazard > 0);
   assert.notEqual(world.getBlock({ x: 1, y: 60, z: 1 }).name, 'air'); // directly below lava is preserved
@@ -246,11 +246,11 @@ test('executor never opens a block adjacent to lava', async () => {
 
 test('executor never digs the block it is standing on', async () => {
   const world = flatWorld();
-  const bot = new MockBot({ name: '101010', world, inventory: { iron_pickaxe: 1 } });
+  const bot = new MockBot({ name: '1010100', world, inventory: { iron_pickaxe: 1 } });
   bot.position = { x: 1, y: 62, z: 1 };
   bot.goTo = async (pos) => { bot.position = { x: pos.x, y: pos.y + 1, z: pos.z }; return { ok: true }; };
   const plan = createExcavationPlan({ mode: 'AT', origin: { x: 0, y: 58, z: 0 }, width: 3, length: 3, depth: 4, blockAt: (p) => world.getBlock(p) }).plan;
-  const executor = new ExcavationExecutor({ botName: '101010', bot, plan, region: { id: 'R1', box: { min: { x: 0, y: 58, z: 0 }, max: { x: 2, y: 61, z: 2 } }, volume: 3 * 3 * 4 } });
+  const executor = new ExcavationExecutor({ botName: '1010100', bot, plan, region: { id: 'R1', box: { min: { x: 0, y: 58, z: 0 }, max: { x: 2, y: 61, z: 2 } }, volume: 3 * 3 * 4 } });
   const summary = await executor.run();
   assert.ok(summary.stats.moved > 0);
   assert.equal(summary.stats.attempted > 0, true);
@@ -258,10 +258,10 @@ test('executor never digs the block it is standing on', async () => {
 
 test('executor pause/resume and stop are honoured', async () => {
   const world = flatWorld();
-  const bot = new MockBot({ name: '101010', world, inventory: { iron_pickaxe: 1 } });
+  const bot = new MockBot({ name: '1010100', world, inventory: { iron_pickaxe: 1 } });
   bot.position = { x: 0, y: 65, z: 0 };
   const plan = createExcavationPlan({ mode: 'AT', origin: { x: 0, y: 58, z: 0 }, width: 2, length: 2, depth: 2, blockAt: (p) => world.getBlock(p) }).plan;
-  const executor = new ExcavationExecutor({ botName: '101010', bot, plan, region: { id: 'R1', box: { min: { x: 0, y: 58, z: 0 }, max: { x: 1, y: 59, z: 1 } }, volume: 8 } });
+  const executor = new ExcavationExecutor({ botName: '1010100', bot, plan, region: { id: 'R1', box: { min: { x: 0, y: 58, z: 0 }, max: { x: 1, y: 59, z: 1 } }, volume: 8 } });
   executor.pause('test pause');
   const running = executor.run();
   await new Promise((r) => setTimeout(r, 30));
@@ -271,7 +271,7 @@ test('executor pause/resume and stop are honoured', async () => {
   const summary = await running;
   assert.ok(summary.stats.dug > 0);
   const stopPlan = createExcavationPlan({ mode: 'AT', origin: { x: 10, y: 58, z: 0 }, width: 2, length: 2, depth: 2, blockAt: (p) => world.getBlock(p) }).plan;
-  const ex2 = new ExcavationExecutor({ botName: '101010', bot, plan: stopPlan, region: { id: 'R2', box: { min: { x: 10, y: 58, z: 0 }, max: { x: 11, y: 59, z: 1 } }, volume: 8 } });
+  const ex2 = new ExcavationExecutor({ botName: '1010100', bot, plan: stopPlan, region: { id: 'R2', box: { min: { x: 10, y: 58, z: 0 }, max: { x: 11, y: 59, z: 1 } }, volume: 8 } });
   ex2.stop('operator stop');
   const stopped = await ex2.run();
   assert.equal(stopped.status, 'stopped');

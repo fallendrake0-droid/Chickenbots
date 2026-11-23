@@ -1,4 +1,4 @@
-export const BOT_NAMES = ['______', '101010', '010101', '110011', '001100'];
+export const BOT_NAMES = ['_______', '1010100', '0101010', '1100110', '0011000'];
 
 export function esc(value) {
   return String(value === undefined || value === null ? '' : value)

@@ -30,7 +30,7 @@ function makeBots(world, schematic, count = 5, { giveAll = true } = {}) {
   const inventory = giveAll ? { ...schematic.materials } : {};
   const bots = [];
   for (let i = 0; i < count; i++) {
-    const bot = new MockBot({ name: ['______', '101010', '010101', '110011', '001100'][i], world, inventory: { ...inventory } });
+    const bot = new MockBot({ name: ['_______', '1010100', '0101010', '1100110', '0011000'][i], world, inventory: { ...inventory } });
     bot.position = { x: 4, y: 70, z: 4 };
     bots.push(bot);
   }

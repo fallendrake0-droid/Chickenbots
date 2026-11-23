@@ -30,7 +30,8 @@ class RealBot extends BotAdapter {
     auth = config.server.auth, logger = null, mineflayer = null, createBot = null,
     loginPassword = config.server.loginPassword, registerPassword = config.server.registerPassword,
     connectTimeoutMs = config.server.connectTimeoutMs,
-    authDelayMs = config.server.authDelayMs, authTimeoutMs = config.server.authTimeoutMs
+    authDelayMs = config.server.authDelayMs, authTimeoutMs = config.server.authTimeoutMs,
+    authEnabled = config.server.authEnabled
   } = {}) {
     super({ name, logger: logger || new Logger({ level: config.logging.level }), speed: 1 });
     if (!BOT_NAMES.includes(name)) throw new Error(`refusing to create a bot outside the fixed team roster: ${name}`);
@@ -41,6 +42,7 @@ class RealBot extends BotAdapter {
     this.loginPassword = loginPassword;
     this.registerPassword = registerPassword;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.authEnabled = authEnabled !== false;
     this.authDelayMs = authDelayMs;
     this.authTimeoutMs = authTimeoutMs;
     this._mineflayer = mineflayer;
@@ -49,7 +51,7 @@ class RealBot extends BotAdapter {
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
-    this.passwordRequired = Boolean(this.loginPassword || this.registerPassword);
+    this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
     this.authConfirmed = false;
     this.lastError = null;
     this.lastDeath = null;
@@ -87,7 +89,7 @@ class RealBot extends BotAdapter {
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
-    this.passwordRequired = Boolean(this.loginPassword || this.registerPassword);
+    this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
     this.authConfirmed = false;
     this.lastError = null;
     try {

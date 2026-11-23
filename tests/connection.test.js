@@ -28,7 +28,7 @@ test('join and recovery starts are staggered so bots do not retry in lockstep', 
 });
 
 test('kick reasons are flattened into readable chat text', () => {
-  const bot = new RealBot({ name: '______' });
+  const bot = new RealBot({ name: '_______' });
   const reason = {
     type: 'compound',
     value: {
@@ -42,7 +42,7 @@ test('kick reasons are flattened into readable chat text', () => {
 });
 
 function authHarness({ loginPassword = 'secret', registerPassword = null, reply = null } = {}) {
-  const real = new RealBot({ name: '______', loginPassword, registerPassword, authDelayMs: 0, authTimeoutMs: 500 });
+  const real = new RealBot({ name: '_______', loginPassword, registerPassword, authDelayMs: 0, authTimeoutMs: 500 });
   const commands = [];
   const fake = {
     entity: {},
@@ -108,9 +108,14 @@ test('status scans are skipped until a live bot is ready', () => {
     getBlock() { throw new Error('world not loaded'); }
   };
   assert.deepEqual(findBlocks(fake, ['stone']), []);
-  const real = new RealBot({ name: '______' });
+  const real = new RealBot({ name: '_______' });
   real.bot = {};
   real.connected = true;
   real.spawned = true;
   assert.equal(real._blockAt({ x: 0, y: 64, z: 0 }), null);
+});
+
+test('password auth can be disabled for a server without a plugin', () => {
+  const real = new RealBot({ name: '_______', authEnabled: false, loginPassword: 'secret', registerPassword: 'secret' });
+  assert.equal(real.passwordRequired, false);
 });

@@ -274,7 +274,7 @@ export const combatTeamPage = {
       <div class="card card--pad"><div class="card-title">Follow</div>
         <p class="muted">Follow a teammate or a visible player at a safe distance. Following never authorises PvP by itself.</p>
         <form class="form-row" data-combat-form="follow">
-          <div class="field"><label class="field-label" for="combat-follow-target">Bot or player</label><input class="input" id="combat-follow-target" name="target" maxlength="32" placeholder="e.g. 101010 or an exact player name" required></div>
+          <div class="field"><label class="field-label" for="combat-follow-target">Bot or player</label><input class="input" id="combat-follow-target" name="target" maxlength="32" placeholder="e.g. 1010100 or an exact player name" required></div>
           <div class="field"><label class="field-label" for="combat-follow-distance">Distance</label><select class="input" id="combat-follow-distance" name="distance"><option value="3">3</option><option value="4" selected>4</option><option value="6">6</option><option value="8">8</option></select></div>
           <button class="button button--primary" type="submit">${icon('users')} Follow</button>
           ${commandButton('Stop following', 'follow stop', 'pause')}

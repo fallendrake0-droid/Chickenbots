@@ -30,7 +30,7 @@ test('the base plan stays active instead of failing on reachable work', async ()
 test('stone mining sinks a safe shaft when no surface block is reachable', async () => {
   const rt = await runtime();
   try {
-    const actions = rt.actions.bots.get('______');
+    const actions = rt.actions.bots.get('_______');
     const before = actions.bot.countItem('cobblestone');
     const result = await actions.mining.mineBlocks({ block: 'stone', limit: 6 });
     assert.equal(result.ok, true, JSON.stringify(result.results.filter((r) => !r.ok).slice(0, 3)));
@@ -45,8 +45,8 @@ test('stone mining sinks a safe shaft when no surface block is reachable', async
 test('all four survival-base phases place and verify real blocks on a shared anchor', async () => {
   const rt = await runtime();
   try {
-    const first = rt.actions.bots.get('010101');
-    const second = rt.actions.bots.get('110011');
+    const first = rt.actions.bots.get('0101010');
+    const second = rt.actions.bots.get('1100110');
     for (const phase of ['FOUNDATION', 'WALLS', 'ROOF', 'PERIMETER']) {
       const actor = phase === 'WALLS' ? second : first;
       const result = await actor.buildBasePhase(phase);
@@ -70,7 +70,7 @@ test('all four survival-base phases place and verify real blocks on a shared anc
 test('storage discovery finds the real chest and deposits are verified', async () => {
   const rt = await runtime();
   try {
-    const actions = rt.actions.bots.get('101010');
+    const actions = rt.actions.bots.get('1010100');
     const storage = await actions.inventory.findStorage();
     assert.ok(storage, 'the world hut chest must be discovered');
     assert.equal(storage.position.x, 9);
