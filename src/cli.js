@@ -5,6 +5,7 @@ const readline = require('readline');
 const { config } = require('./config');
 const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
+const { printStartupBanner } = require('./branding');
 
 function usage() {
   process.stdout.write(`Chickenbots V6 CLI
@@ -37,6 +38,7 @@ async function main() {
   const simulate = !live || args.includes('--simulate');
   const commandArgs = args.filter((a) => !a.startsWith('--'));
   const logger = new Logger({ level: config.logging.level });
+  if (!commandArgs.length) printStartupBanner();
   const runtime = await createRuntime({ simulate, connect: live && !simulate, dashboard: false, logger });
   await runtime.start();
   if (simulate) {

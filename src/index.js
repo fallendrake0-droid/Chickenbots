@@ -4,6 +4,7 @@
 const { config, BOT_NAMES } = require('./config');
 const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
+const { printStartupBanner } = require('./branding');
 
 function parseArgs(argv) {
   const args = { simulate: config.sim.enabled, dashboard: true, port: config.dashboard.port, host: config.dashboard.host, connect: true };
@@ -42,8 +43,9 @@ Roster (fixed): ${BOT_NAMES.join(' ')}
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { usage(); return 0; }
+  printStartupBanner();
   const logger = new Logger({ level: config.logging.level });
-  logger.info('Chickenbots V6 starting');
+  logger.info('runtime starting');
   logger.info(`roster: ${BOT_NAMES.join(', ')}`);
   logger.info(args.simulate ? 'mode: deterministic simulation' : `mode: live (${config.server.host}:${config.server.port}, version ${config.server.version})`);
   const runtime = await createRuntime({
