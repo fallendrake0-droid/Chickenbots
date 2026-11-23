@@ -152,3 +152,25 @@ test('a handshake error fails the connection immediately instead of waiting for 
   assert.match(result.error, /socket closed/);
   assert.ok(Date.now() - started < 1000, 'connect should not wait for the full timeout');
 });
+
+test('position packets are suppressed until password auth is released', () => {
+  const writes = [];
+  const fake = {
+    _client: { write(name) { writes.push(name); return true; } },
+    quit() {}
+  };
+  const real = new RealBot({ name: '________', loginPassword: 'secret', registerPassword: null, authEnabled: true });
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  real._lockMovement();
+  fake._client.write('position_look', {});
+  fake._client.write('position', {});
+  fake._client.write('chat', {});
+  assert.deepEqual(writes, ['chat']);
+  assert.equal(real._movementLock, true);
+  real._unlockMovement();
+  fake._client.write('position_look', {});
+  assert.deepEqual(writes, ['chat', 'position_look']);
+  assert.equal(real._movementLock, false);
+});

@@ -61,6 +61,9 @@ class RealBot extends BotAdapter {
     this._chatLog = [];
     this._chatListeners = new Set();
     this._spawnWaiters = new Set();
+    this._movementLock = false;
+    this._clientWriteOriginal = null;
+    this._suppressedMovement = 0;
     this._blockCache = new Map();
     this._inventoryDirty = false;
     this._lastHealth = undefined;
@@ -79,6 +82,41 @@ class RealBot extends BotAdapter {
   /** Runtime resolves 'auto' once and pushes the explicit version to each bot. */
   setVersion(version) {
     if (version) this.version = version;
+  }
+
+  /**
+   * Drop every position/look/flying packet while the password is unconfirmed.
+   * mineflayer's physics loop keeps calling updatePosition() even when
+   * physicsEnabled is false, and an early movement packet makes AuthMe/Paper
+   * kick the bot with "Invalid move player packet received" before /register
+   * can complete.
+   */
+  _lockMovement() {
+    const client = this.bot && this.bot._client;
+    if (!client || typeof client.write !== 'function' || this._movementLock) return;
+    const movement = new Set(['position', 'position_look', 'look', 'flying']);
+    const original = client.write.bind(client);
+    this._clientWriteOriginal = original;
+    this._movementLock = true;
+    client.write = (name, packet) => {
+      if (movement.has(name)) {
+        this._suppressedMovement++;
+        return true;
+      }
+      return original(name, packet);
+    };
+  }
+
+  _unlockMovement() {
+    const client = this.bot && this.bot._client;
+    if (!this._movementLock) return;
+    if (client && this._clientWriteOriginal) client.write = this._clientWriteOriginal;
+    this._movementLock = false;
+    this._clientWriteOriginal = null;
+    if (this._suppressedMovement > 0) {
+      const outcome = this.authenticated ? 'released movement after auth' : 'discarded movement while unauthenticated';
+      this.logger.info(`[${this.name}] ${outcome} (${this._suppressedMovement} packet(s) held)`);
+    }
   }
 
   _failSpawnWaiters(error) {
@@ -109,6 +147,9 @@ class RealBot extends BotAdapter {
     this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
     this.authConfirmed = false;
     this.lastError = null;
+    this._movementLock = false;
+    this._clientWriteOriginal = null;
+    this._suppressedMovement = 0;
     try {
       this.bot = createBot({
         username: this.name,
@@ -157,6 +198,7 @@ class RealBot extends BotAdapter {
     if (!bot) return;
     bot.on('login', () => {
       if (this.bot !== bot) return;
+      if (this.passwordRequired) this._lockMovement();
       this.authenticated = !this.passwordRequired;
       this.logger.info(`[${this.name}] protocol login accepted with ${this.host}${this.passwordRequired ? '; waiting for password authentication' : ''}`);
     });
@@ -311,8 +353,9 @@ class RealBot extends BotAdapter {
       return { ok: true, required: false };
     }
     if (!this.bot || !this.connected || !this.spawned) return { ok: false, error: 'cannot authenticate before spawn' };
-    // Freeze movement until the password is accepted. Every adapter action also
-    // sees ready=false, but disabling physics stops mineflayer's position stream.
+    // Freeze movement until the password is accepted. physicsEnabled alone is
+    // not enough: mineflayer's updatePosition() keeps sending packets.
+    this._lockMovement();
     if (this.bot.clearControlStates) this.bot.clearControlStates();
     this.bot.physicsEnabled = false;
     await sleep(this.authDelayMs);
@@ -343,6 +386,7 @@ class RealBot extends BotAdapter {
     if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password confirmation' };
     this.authenticated = true;
     this.authConfirmed = true;
+    this._unlockMovement();
     if (this.bot) this.bot.physicsEnabled = true;
     this.logger.info(`[${this.name}] password authentication confirmed${registered ? ' (registered)' : ''}`);
     return { ok: true, required: true, registered };
@@ -1045,6 +1089,7 @@ class RealBot extends BotAdapter {
   get chatLog() { return this._chatLog.slice(-50); }
 
   async disconnect(reason = 'shutdown') {
+    this._unlockMovement();
     const bot = this.bot;
     this.bot = null;
     try { if (bot) bot.quit(reason); } catch (_) { /* already gone */ }
