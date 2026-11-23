@@ -46,6 +46,7 @@ Useful scripts:
 | `npm test` | all layer tests (team, excavation, construction, schematics, builder, survival, controllers) |
 | `npm run lint` | syntax check + project-specific safety rules + ESLint |
 | `npm run validate` | lint, tests, full library regeneration/validation and consistency checks |
+| `npm run deploy:check -- --url http://127.0.0.1:3000` | read-only commissioning check: config, V5 surface, browser URLs, live health/state/commands |
 | `npm run schematics:generate` | regenerates `data/schematics/manifest.json` from the seeded generator |
 | `npm run schematics:validate` | regenerates every design, verifies hashes, materials, phases, support |
 | `npm run schematics:stats` | prints tier/category/material statistics |
@@ -334,6 +335,18 @@ only completed with `verified: true`, and destructive commands without confirmat
 
 Known environment constraints: `npm run schematics:validate` regenerates all 1120 designs and takes
 roughly two minutes; the full validation pass is therefore not part of the default `npm test`.
+
+## Deployment check
+
+```bash
+npm run deploy:check                                        # static checks only
+npm run deploy:check -- --url http://127.0.0.1:3000        # static + live dashboard probe
+```
+
+The check verifies the frozen roster, safe server/PvP/AI defaults, the eight V5 construction modules,
+the nine Builder Operations routes, relative-only browser URLs and V5 package metadata. With `--url`
+it also probes `/healthz`, `/api/state`, `/api/commands` and the dashboard shell, so a broken preview
+or a missing construction snapshot fails before commissioning.
 
 ## Limitations / next commissioning step
 

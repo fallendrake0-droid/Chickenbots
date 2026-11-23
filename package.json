@@ -13,6 +13,7 @@
     "test": "node --test --test-concurrency=1 tests/*.test.js",
     "lint": "node scripts/lint.js",
     "validate": "node scripts/validate-all.js",
+    "deploy:check": "node scripts/deploy-check.js",
     "schematics:generate": "node scripts/schematics-generate.js",
     "schematics:validate": "node scripts/schematics-validate.js",
     "schematics:stats": "node scripts/schematics-stats.js",

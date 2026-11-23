@@ -59,7 +59,7 @@ function consistency() {
       'src/construction/sitePreparer.js', 'src/construction/lighting.js', 'src/construction/materials.js',
       'src/construction/storage.js', 'src/dashboard/public/js/pages/operations.js',
       'tests/survival.test.js', 'tests/controllers.test.js', 'tests/schematics.test.js', 'tests/builder.test.js',
-      'tests/construction.test.js'
+      'tests/construction.test.js', 'scripts/deploy-check.js'
     ];
     const missing = required.filter((file) => !fs.existsSync(path.join(ROOT, file)));
     return { ok: missing.length === 0, detail: missing.length ? `missing ${missing.join(', ')}` : `${required.length} files` };
