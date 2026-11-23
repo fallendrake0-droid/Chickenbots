@@ -352,7 +352,13 @@ class TeamRuntime {
           .finally(() => { this.supervisorBusy = false; });
       }
     }
-    if (!this.autonomyAllowed) return;
+    if (!this.autonomyAllowed) {
+      // A ready bot must still eat, flee or defend itself while the team waits
+      // for the remaining members; otherwise it stands still and is slain by
+      // the first zombie that finds it.
+      await this._safetyOnlyTick();
+      return;
+    }
     this.ticking = true;
     this.ticks++;
     try {
@@ -404,6 +410,19 @@ class TeamRuntime {
       }
     } finally {
       this.ticking = false;
+    }
+  }
+
+  async _safetyOnlyTick() {
+    if (!this.actions) return;
+    for (const actions of this.actions.list()) {
+      const bot = actions.bot;
+      if (!bot.ready || !bot.connected || !bot.spawned || bot.health <= 0) continue;
+      try {
+        await actions.safetyTick();
+      } catch (err) {
+        this.logger.warn(`[${bot.name}] pre-join safety tick failed: ${err.message}`);
+      }
     }
   }
 
