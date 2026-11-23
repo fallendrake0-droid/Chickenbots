@@ -222,7 +222,7 @@ class TeamRuntime {
         const summary = typeof bot.summary === 'function' ? bot.summary() : { name: bot.name };
         this.coordinator.updateBot(bot.name, summary);
         this.ledger.updateBotInventory(bot.name, bot.inventory);
-        if (bot.health <= 0) {
+        if (bot.ready && bot.connected !== false && bot.health <= 0) {
           const actions = this.actions && typeof this.actions.get === 'function' ? this.actions.get(bot.name) : null;
           if (actions && actions.combat) actions.combat.onDeath('runtime observed death');
         }
