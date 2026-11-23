@@ -56,7 +56,7 @@ function envBool(name, fallback) {
 }
 
 /** The five bot usernames are fixed. Never rename, never add bots. */
-const BOT_NAMES = Object.freeze(['_______', '1010100', '0101010', '1100110', '0011000']);
+const BOT_NAMES = Object.freeze(['________', '10101000', '01010100', '11001100', '00110000']);
 const DEFAULT_AUTH_PASSWORD = 'chickenbot12345';
 
 const DEFAULT_RESERVES = Object.freeze({
@@ -125,7 +125,7 @@ const config = {
   team: {
     names: BOT_NAMES,
     // Initial coordinator. Leadership is elected, never assumed.
-    preferredLeader: '_______',
+    preferredLeader: '________',
     coordinatorTickMs: envInt('TEAM_TICK_MS', 1000),
     claimTtlMs: envInt('TASK_CLAIM_TTL_MS', 45000),
     lockTtlMs: envInt('TASK_LOCK_TTL_MS', 30000),

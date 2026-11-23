@@ -16,7 +16,7 @@ const { COMBAT_STATES, ACTION_PRIORITY } = require('../src/combat/constants');
 const { TeamRuntime } = require('../src/runtime');
 const { RealBot } = require('../src/bot/realBot');
 
-const NAMES = ['_______', '1010100', '0101010', '1100110', '0011000'];
+const NAMES = ['________', '10101000', '01010100', '11001100', '00110000'];
 
 function flatBot(name = NAMES[0], inventory = {}, position = { x: 0, y: 64, z: 0 }, meta = null) {
   const world = new MockWorld({ flat: true, seed: 101 });
@@ -174,8 +174,8 @@ test('PvP policy is explicit, refuses teammates/protected players and requires e
   assert.equal(policy.canEngage(enemy, { serverPvp: false }).code, 'SERVER_PVP_DISABLED');
   policy.protect('FriendOne');
   assert.equal(policy.canEngage(friend, { serverPvp: true }).code, 'PROTECTED');
-  assert.equal(policy.canEngage({ username: '_______' }, { serverPvp: true }).code, 'TEAMMATE');
-  assert.equal(policy.addTarget('0011000').ok, false);
+  assert.equal(policy.canEngage({ username: '________' }, { serverPvp: true }).code, 'TEAMMATE');
+  assert.equal(policy.addTarget('00110000').ok, false);
   policy.removeTarget('EnemyOne');
   assert.equal(policy.canEngage(enemy, { serverPvp: true }).code, 'NOT_AUTHORIZED');
 });
@@ -209,7 +209,7 @@ test('combat controller prepares gear, kills real mobs and refuses unauthorised 
   controller.setPvp(true);
   const authorized = controller.pvp.canEngage(player, { serverPvp: true });
   assert.equal(authorized.ok, true);
-  const teammate = world.addMob('_______', { x: 1, y: 64, z: 0 });
+  const teammate = world.addMob('________', { x: 1, y: 64, z: 0 });
   assert.equal((await controller.attackEntity(teammate)).ok, false);
   const cow = world.addMob('cow', { x: 1, y: 64, z: 0 });
   assert.equal((await controller.attackEntity(cow)).ok, false);
@@ -304,7 +304,7 @@ test('combat commands control the real five-bot fleet and never authorise a team
     assert.equal(controllers.every((controller) => controller.pvp.enabled === true), true);
     assert.equal((await run('target add EnemyOne')).ok, true);
     assert.deepEqual(controllers[0].pvp.list(), ['enemyone']);
-    const teammate = { id: 'mate', username: '_______', name: '_______', type: 'player', position: { x: 1, y: 64, z: 0 }, health: 20 };
+    const teammate = { id: 'mate', username: '________', name: '________', type: 'player', position: { x: 1, y: 64, z: 0 }, health: 20 };
     const refused = await controllers[0].attackEntity(teammate);
     assert.equal(refused.ok, false);
     assert.match(refused.error, /team|teammate/i);
@@ -323,7 +323,7 @@ test('combat commands control the real five-bot fleet and never authorise a team
     assert.equal(totems.ok, true);
     assert.equal(totems.result.bots.length, 5);
 
-    const food = await run('food status 1010100');
+    const food = await run('food status 10101000');
     assert.equal(food.ok, true);
     assert.ok(Array.isArray(food.result.supplies.food));
 
@@ -518,7 +518,7 @@ test('live adapter maps equipped armour, offhand, potions and nearby entities in
     entity: { position: { x: 0, y: 64, z: 0 } },
     time: { timeOfDay: 1000, day: 1 }
   };
-  const real = new RealBot({ name: '_______', createBot: () => fake });
+  const real = new RealBot({ name: '________', createBot: () => fake });
   real.bot = fake;
   real.position = { x: 0, y: 64, z: 0 };
   real._syncInventory();

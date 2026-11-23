@@ -43,7 +43,7 @@ test('runtime snapshot exposes every dashboard section with live values', async 
     assert.equal(snapshot.overview.total, 5);
     assert.ok(snapshot.schematics.stats.count >= 1100);
     assert.equal(snapshot.diagnostics.config.pvp, false);
-    assert.deepEqual(snapshot.diagnostics.config.roster, ['_______', '1010100', '0101010', '1100110', '0011000']);
+    assert.deepEqual(snapshot.diagnostics.config.roster, ['________', '10101000', '01010100', '11001100', '00110000']);
   } finally {
     await runtime.shutdown('test');
   }
@@ -143,11 +143,11 @@ test('task manager commands create, assign and cancel real tasks', async () => {
     const added = await runtime.executeCommand('task add CHOP_WOOD manual wood run', { source: 'dashboard' });
     assert.equal(added.result.ok, true);
     const taskId = added.result.task.id;
-    const assigned = await runtime.executeCommand(`task assign ${taskId} 1010100`, { source: 'dashboard' });
+    const assigned = await runtime.executeCommand(`task assign ${taskId} 10101000`, { source: 'dashboard' });
     assert.equal(assigned.result.ok, true);
-    assert.equal(assigned.result.assignedTo, '1010100');
+    assert.equal(assigned.result.assignedTo, '10101000');
     const info = await runtime.executeCommand(`task info ${taskId}`, { source: 'dashboard' });
-    assert.equal(info.result.task.claimedBy, '1010100');
+    assert.equal(info.result.task.claimedBy, '10101000');
     const priority = await runtime.executeCommand(`task priority ${taskId} 80`, { source: 'dashboard' });
     assert.equal(priority.result.ok, true);
     assert.equal(priority.result.task.priority, 80);
@@ -190,7 +190,7 @@ test('dashboard serves the operations console, state, commands and schematic dow
     assert.equal(JSON.parse(logs.body).ok, true);
     const settings = await httpGet(port, '/api/settings');
     assert.equal(JSON.parse(settings.body).ok, true);
-    const botState = await httpGet(port, '/api/bot/_______/state', 'POST', {});
+    const botState = await httpGet(port, '/api/bot/________/state', 'POST', {});
     assert.equal(JSON.parse(botState.body).ok, true);
     const state = await httpGet(port, '/api/state');
     const parsed = JSON.parse(state.body);
@@ -233,7 +233,7 @@ class FakeBot extends EventEmitter {
 
 test('RealBot refuses autonomy until login and spawn are both verified', async () => {
   const fake = new FakeBot();
-  const real = new RealBot({ name: '_______', createBot: () => fake, connectTimeoutMs: 2000, loginPassword: '', registerPassword: '' });
+  const real = new RealBot({ name: '________', createBot: () => fake, connectTimeoutMs: 2000, loginPassword: '', registerPassword: '' });
   assert.equal(real.ready, false);
   const pre = await real.digBlock({ x: 1, y: 64, z: 1 });
   assert.equal(pre.ok, false);
@@ -243,7 +243,7 @@ test('RealBot refuses autonomy until login and spawn are both verified', async (
   assert.equal(timeout.ok, false);
   assert.equal(real.ready, false);
 
-  const second = new RealBot({ name: '1010100', createBot: () => fake, connectTimeoutMs: 2000, loginPassword: '', registerPassword: '' });
+  const second = new RealBot({ name: '10101000', createBot: () => fake, connectTimeoutMs: 2000, loginPassword: '', registerPassword: '' });
   const pending = second.connect({ timeoutMs: 2000 });
   fake.emit('login');
   fake.emit('spawn');
@@ -254,7 +254,7 @@ test('RealBot refuses autonomy until login and spawn are both verified', async (
   assert.equal(second.spawned, true);
   assert.equal(second.getBlock({ x: 1, y: 64, z: 1 }).name, 'air');
 
-  const teammate = await second.attack({ id: 99, username: '_______' });
+  const teammate = await second.attack({ id: 99, username: '________' });
   assert.equal(teammate.ok, false);
   assert.ok(teammate.error.includes('teammates'));
   const player = await second.attack({ id: 98, username: 'SomePlayer' });

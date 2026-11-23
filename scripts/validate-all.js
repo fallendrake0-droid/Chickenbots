@@ -40,7 +40,7 @@ function consistency() {
     checks.push({ name, ok, detail });
     process.stdout.write(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}\n`);
   };
-  check('roster is exactly five fixed usernames', () => ({ ok: JSON.stringify(config.team.names) === JSON.stringify(['_______', '1010100', '0101010', '1100110', '0011000']) && config.team.names.length === 5, detail: config.team.names.join(', ') }));
+  check('roster is exactly five fixed usernames', () => ({ ok: JSON.stringify(config.team.names) === JSON.stringify(['________', '10101000', '01010100', '11001100', '00110000']) && config.team.names.length === 5, detail: config.team.names.join(', ') }));
   check('default server preserved', () => ({ ok: config.server.host === 'cr3xlol.aternos.me' && config.server.port === 55742 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port}` }));
   check('AI disabled and keyless', () => ({ ok: config.autonomy.ai.enabled === false, detail: 'deterministic mode' }));
   check('PvP disabled', () => ({ ok: config.autonomy.pvp === false, detail: 'false' }));

@@ -55,8 +55,8 @@ test('excavation requires preview + explicit confirmation', () => {
       assert.equal(overlap, false);
     }
   }
-  assert.equal(started.excavation.supervisor, '_______');
-  assert.ok(!started.excavation.assignments.some((a) => a.bot === '_______'));
+  assert.equal(started.excavation.supervisor, '________');
+  assert.ok(!started.excavation.assignments.some((a) => a.bot === '________'));
 });
 
 test('protected blocks block a start until authorised', () => {
@@ -131,7 +131,7 @@ test('disconnected excavator regions are reassigned to healthy teammates', () =>
   const { coordinator, manager } = setup();
   const res = manager.start({
     mode: 'AT', origin: { x: -20, y: 58, z: -20 }, width: 8, length: 8, depth: 2,
-    blockAt: (p) => coordinator && manager && p ? manager.adapters.get('_______').getBlock(p) : null,
+    blockAt: (p) => coordinator && manager && p ? manager.adapters.get('________').getBlock(p) : null,
     confirm: true
   });
   assert.equal(res.ok, true);
@@ -153,8 +153,8 @@ test('foundation excavation derives its footprint from a schematic', async () =>
   };
   const preview = manager.preview({
     mode: 'FOUNDATION', schematic, origin: { x: 0, y: 63, z: 0 },
-    blockAt: (p) => bots.get('_______').getBlock(p),
-    surfaceAt: (x, z) => bots.get('_______').surfaceAt(x, z)
+    blockAt: (p) => bots.get('________').getBlock(p),
+    surfaceAt: (x, z) => bots.get('________').surfaceAt(x, z)
   });
   assert.equal(preview.ok, true);
   assert.equal(preview.plan.schematicId, 'test_keep');

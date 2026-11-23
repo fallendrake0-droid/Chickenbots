@@ -18,7 +18,7 @@ const { billOfMaterials, materialStatus, validateSubstitution, categoryForItem }
 const { Warehouse } = require('../src/construction/storage');
 const { createCommandHandler } = require('../src/commands');
 
-const NAMES = ['_______', '1010100', '0101010', '1100110', '0011000'];
+const NAMES = ['________', '10101000', '01010100', '11001100', '00110000'];
 
 function tmpState(name) {
   return path.join(os.tmpdir(), `chickenbots-${name}-${process.pid}-${Date.now()}.json`);
@@ -124,10 +124,10 @@ test('warehouse performs verified physical deposits/withdrawals, categorises che
   assert.equal(scan.ok, true);
   assert.equal(scan.containers.length, 1);
   const container = scan.containers[0];
-  const lock = warehouse.lock(container.id, '_______');
+  const lock = warehouse.lock(container.id, '________');
   assert.equal(lock.ok, true);
   assert.equal(warehouse.lock(container.id, 'other').ok, false);
-  warehouse.unlock(container.id, '_______');
+  warehouse.unlock(container.id, '________');
   const before = bot.countItem('cobblestone');
   const deposit = await warehouse.deposit({ item: 'cobblestone', count: 5, bot, container });
   assert.equal(deposit.ok, true);

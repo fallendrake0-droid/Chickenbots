@@ -28,7 +28,7 @@ test('join and recovery starts are staggered so bots do not retry in lockstep', 
 });
 
 test('kick reasons are flattened into readable chat text', () => {
-  const bot = new RealBot({ name: '_______' });
+  const bot = new RealBot({ name: '________' });
   const reason = {
     type: 'compound',
     value: {
@@ -42,7 +42,7 @@ test('kick reasons are flattened into readable chat text', () => {
 });
 
 function authHarness({ loginPassword = 'secret', registerPassword = null, reply = null } = {}) {
-  const real = new RealBot({ name: '_______', loginPassword, registerPassword, authDelayMs: 0, authTimeoutMs: 500 });
+  const real = new RealBot({ name: '________', loginPassword, registerPassword, authDelayMs: 0, authTimeoutMs: 500 });
   const commands = [];
   const fake = {
     entity: {},
@@ -108,7 +108,7 @@ test('status scans are skipped until a live bot is ready', () => {
     getBlock() { throw new Error('world not loaded'); }
   };
   assert.deepEqual(findBlocks(fake, ['stone']), []);
-  const real = new RealBot({ name: '_______' });
+  const real = new RealBot({ name: '________' });
   real.bot = {};
   real.connected = true;
   real.spawned = true;
@@ -116,7 +116,7 @@ test('status scans are skipped until a live bot is ready', () => {
 });
 
 test('password auth can be disabled for a server without a plugin', () => {
-  const real = new RealBot({ name: '_______', authEnabled: false, loginPassword: 'secret', registerPassword: 'secret' });
+  const real = new RealBot({ name: '________', authEnabled: false, loginPassword: 'secret', registerPassword: 'secret' });
   assert.equal(real.passwordRequired, false);
 });
 
@@ -140,7 +140,7 @@ test('a handshake error fails the connection immediately instead of waiting for 
     quit() {}
   };
   const real = new RealBot({
-    name: '_______', createBot: () => fake, version: '1.21.4',
+    name: '________', createBot: () => fake, version: '1.21.4',
     loginPassword: '', registerPassword: '', connectTimeoutMs: 5000
   });
   const started = Date.now();

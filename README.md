@@ -9,7 +9,7 @@ is local, deterministic and configuration-driven. There is **no AI service, no A
 runtime; the optional AI hook exists as a disabled flag.
 
 ```
-roster (fixed):  _______   1010100   0101010   1100110   0011000
+roster (fixed):  ________   10101000   01010100   11001100   00110000
 server:          cr3xlol.aternos.me:55742   (MC_VERSION=auto, ViaVersion/ViaBackwards friendly)
 dashboard:       http://127.0.0.1:3000      (binds 0.0.0.0 for sandbox previews)
 ```
@@ -370,11 +370,11 @@ node src/cli.js --simulate "home set 10 64 -10"
 node src/cli.js --simulate "fish all 1"
 node src/cli.js --simulate "combat status"
 node src/cli.js --simulate "pve on"
-node src/cli.js --simulate "gear status 1010100"
+node src/cli.js --simulate "gear status 10101000"
 node src/cli.js --simulate "totem status"
 node src/cli.js --simulate "target add FriendlyRival"
-node src/cli.js --simulate "follow 1010100 4"
-node src/cli.js --simulate "gear progression 1010100"
+node src/cli.js --simulate "follow 10101000 4"
+node src/cli.js --simulate "gear progression 10101000"
 node src/cli.js --simulate "team combat heal"
 node src/cli.js --simulate "team combat retreat"
 ```
