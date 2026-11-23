@@ -66,6 +66,7 @@ class RealBot extends BotAdapter {
     this._suppressedMovement = 0;
     this._traceLog = [];
     this.lastServerPosition = null;
+    this._authWaiters = new Set();
     this._blockCache = new Map();
     this._inventoryDirty = false;
     this._lastHealth = undefined;
@@ -174,6 +175,12 @@ class RealBot extends BotAdapter {
     }
   }
 
+  _abortAuth(error) {
+    for (const finish of [...this._authWaiters]) {
+      finish({ ok: false, error: error || 'connection lost during password authentication', kind: 'connection' });
+    }
+  }
+
   _failSpawnWaiters(error) {
     if (!this._spawnWaiters.size) return;
     for (const waiter of this._spawnWaiters) {
@@ -207,6 +214,7 @@ class RealBot extends BotAdapter {
     this._suppressedMovement = 0;
     this._traceLog = [];
     this.lastServerPosition = null;
+    this._authWaiters = new Set();
     try {
       this.bot = createBot({
         username: this.name,
@@ -318,6 +326,7 @@ class RealBot extends BotAdapter {
       this.spawned = false;
       this.logger.warn(`[${this.name}] kicked: ${this._redact(this.lastError)}`);
       this._dumpTrace(`kicked: ${this.lastError}`);
+      this._abortAuth(this.lastError);
       this._failSpawnWaiters(this.lastError);
       if (/invalid move player packet/i.test(this.lastError)) {
         this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
@@ -327,6 +336,7 @@ class RealBot extends BotAdapter {
       if (this.bot !== bot) return;
       this.lastError = err.message;
       this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${err.message}`);
+      this._abortAuth(this.lastError);
       this._failSpawnWaiters(this.lastError);
     });
     if (bot._client && typeof bot._client.on === 'function') {
@@ -363,6 +373,7 @@ class RealBot extends BotAdapter {
       this.authenticated = false;
       const detail = this.lastError && this.lastError !== reason ? `${reason || 'end'}: ${this.lastError}` : (reason || 'end');
       this.logger.warn(`[${this.name}] disconnected: ${detail}`);
+      this._abortAuth(this.lastError || `connection closed (${reason || 'end'})`);
       this._failSpawnWaiters(this.lastError || `connection closed (${reason || 'end'})`);
     });
     bot.on('message', (message) => {
@@ -420,11 +431,13 @@ class RealBot extends BotAdapter {
     const failure = /wrong password|incorrect password|invalid password|password (?:is )?(?:wrong|incorrect)|not registered|please register|register first|too many (?:attempts|tries)|kicked/i;
     return new Promise((resolve) => {
       let settled = false;
+      let timer;
       const finish = (value) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         off();
+        this._authWaiters.delete(finish);
         resolve(value);
       };
       const off = this.onChat((text) => {
@@ -432,7 +445,8 @@ class RealBot extends BotAdapter {
         if (success.test(clean)) finish({ ok: true, kind, message: clean, alreadyRegistered: /already registered/i.test(clean) });
         else if (failure.test(clean)) finish({ ok: false, error: clean, kind });
       });
-      const timer = setTimeout(() => finish({ ok: false, error: `no ${kind} confirmation from the server`, kind }), this.authTimeoutMs);
+      this._authWaiters.add(finish);
+      timer = setTimeout(() => finish({ ok: false, error: `no ${kind} confirmation from the server`, kind }), this.authTimeoutMs);
       this.logger.debug(`[${this.name}] auth ${kind}: sending command (password redacted), timeout=${this.authTimeoutMs}ms`);
       try {
         this.bot.chat(command);
@@ -1193,6 +1207,7 @@ class RealBot extends BotAdapter {
     this.spawned = false;
     this.authenticated = false;
     this.authConfirmed = false;
+    this._abortAuth(reason || 'disconnected');
     this._failSpawnWaiters(reason || 'disconnected');
     return { ok: true };
   }
