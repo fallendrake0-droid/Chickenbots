@@ -210,7 +210,7 @@ const config = {
     seed: env('SIM_SEED', 'chickenbots-v4'),
     tickMs: envInt('SIM_TICK_MS', 120)
   },
-  logging: { level: env('LOG_LEVEL', 'info') }
+  logging: { level: env('LOG_LEVEL', 'debug') }
 };
 
 module.exports = { config, BOT_NAMES, loadDotEnv, ROOT };

@@ -274,10 +274,13 @@ class TeamRuntime {
     let attempt = 0;
     while (!this.shutdownRequested && !bot.ready) {
       attempt++;
+      const startedAt = Date.now();
+      this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.passwordRequired ? 'password' : 'none'} timeout=${config.server.connectTimeoutMs}ms`);
       const result = await bot.connect();
+      const elapsed = Date.now() - startedAt;
       if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
-        this.logger.info(`[${bot.name}] ready (attempt ${attempt})`);
+        this.logger.info(`[${bot.name}] ready (attempt ${attempt}, ${elapsed}ms)`);
         return result;
       }
       if (result.ok && !bot.ready) {
@@ -296,7 +299,7 @@ class TeamRuntime {
         jitterMs: config.server.reconnect.jitterMs
       });
       const reason = isThrottleError(result.error) ? 'server join throttle' : 'connection failed';
-      this.logger.warn(`[${bot.name}] ${reason}: ${result.error}; retrying in ${(delay / 1000).toFixed(1)}s`);
+      this.logger.warn(`[${bot.name}] ${reason} after ${elapsed}ms: ${result.error}; retrying in ${(delay / 1000).toFixed(1)}s`);
       await sleep(delay, this.shutdownController.signal);
     }
     return { ok: bot.ready };

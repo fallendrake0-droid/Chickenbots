@@ -299,6 +299,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `0.0.0.0` | bind address (sandbox preview needs this) |
+| `LOG_LEVEL` | `debug` | `debug` prints movement/auth/lifecycle traces; use `info` for quiet runs |
 | `AUTONOMY_ENABLED` | `true` | autonomy request; still gated on connection+auth+spawn |
 | `PvP_ENABLED` | `false` | PvP stays off unless explicitly enabled |
 | `SERVER_PVP_ENABLED` | `true` | set `false` when the Minecraft server itself has `pvp=false`; all PvP is then refused |
@@ -476,6 +477,9 @@ commissioning.
   real version instead of sending five bots into mineflayer's autoVersion crash path.
   The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy
   advertises a newer status name than the protocol it answered with, the protocol mapping wins.
+  `LOG_LEVEL=debug` (the default) prints each outgoing movement packet, each server position packet,
+  auth timing, spawn/respawn events, and a 40-event trace dump when a bot is kicked. Passwords are
+  never printed; auth commands and echoed `/register`/`/login` chat are redacted.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
   real placement; a Grandmaster design is a multi-session project, not instant.
 * The construction pipeline is validated against `MockWorld`. Live operation still depends on the

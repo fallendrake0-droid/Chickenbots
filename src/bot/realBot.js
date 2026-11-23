@@ -64,6 +64,8 @@ class RealBot extends BotAdapter {
     this._movementLock = false;
     this._clientWriteOriginal = null;
     this._suppressedMovement = 0;
+    this._traceLog = [];
+    this.lastServerPosition = null;
     this._blockCache = new Map();
     this._inventoryDirty = false;
     this._lastHealth = undefined;
@@ -91,31 +93,84 @@ class RealBot extends BotAdapter {
    * kick the bot with "Invalid move player packet received" before /register
    * can complete.
    */
-  _lockMovement() {
+  _installClientTrace() {
     const client = this.bot && this.bot._client;
-    if (!client || typeof client.write !== 'function' || this._movementLock) return;
-    const movement = new Set(['position', 'position_look', 'look', 'flying']);
+    if (!client || typeof client.write !== 'function' || this._clientWriteOriginal) return;
     const original = client.write.bind(client);
     this._clientWriteOriginal = original;
-    this._movementLock = true;
+    const movement = new Set(['position', 'position_look', 'look', 'flying']);
     client.write = (name, packet) => {
       if (movement.has(name)) {
-        this._suppressedMovement++;
-        return true;
+        try { this._trace(this._movementLock ? 'held-out' : 'out', name, packet); } catch (_) { /* tracing must never break movement */ }
+        if (this._movementLock) {
+          this._suppressedMovement++;
+          return true;
+        }
       }
       return original(name, packet);
     };
   }
 
-  _unlockMovement() {
+  _lockMovement() {
     const client = this.bot && this.bot._client;
+    if (!client || typeof client.write !== 'function') return;
+    this._installClientTrace();
+    this._movementLock = true;
+  }
+
+  _unlockMovement() {
     if (!this._movementLock) return;
-    if (client && this._clientWriteOriginal) client.write = this._clientWriteOriginal;
     this._movementLock = false;
-    this._clientWriteOriginal = null;
     if (this._suppressedMovement > 0) {
       const outcome = this.authenticated ? 'released movement after auth' : 'discarded movement while unauthenticated';
       this.logger.info(`[${this.name}] ${outcome} (${this._suppressedMovement} packet(s) held)`);
+    }
+  }
+
+  _restoreClientTrace() {
+    const client = this.bot && this.bot._client;
+    if (client && this._clientWriteOriginal) client.write = this._clientWriteOriginal;
+    this._clientWriteOriginal = null;
+    this._movementLock = false;
+  }
+
+  _redact(value) {
+    return String(value == null ? '' : value).replace(/\/(register|login)\s+\S+.*/gi, '/$1 [redacted]');
+  }
+
+  _trace(direction, name, packet = {}) {
+    packet = packet || {};
+    const n3 = (value) => (Number.isFinite(Number(value)) ? Number(Number(value).toFixed(3)) : value);
+    const entity = this.bot && this.bot.entity && this.bot.entity.position;
+    const entry = {
+      at: new Date().toISOString(),
+      direction,
+      packet: name,
+      x: Number.isFinite(packet.x) ? n3(packet.x) : undefined,
+      y: Number.isFinite(packet.y) ? n3(packet.y) : undefined,
+      z: Number.isFinite(packet.z) ? n3(packet.z) : undefined,
+      yaw: Number.isFinite(packet.yaw) ? n3(packet.yaw) : undefined,
+      pitch: Number.isFinite(packet.pitch) ? n3(packet.pitch) : undefined,
+      onGround: packet.onGround,
+      flags: packet.flags,
+      auth: this.authenticated,
+      locked: this._movementLock,
+      entity: entity ? { x: n3(entity.x), y: n3(entity.y), z: n3(entity.z) } : null
+    };
+    this._traceLog.push(entry);
+    if (this._traceLog.length > 120) this._traceLog.shift();
+    const pos = `${entry.x ?? '-'},${entry.y ?? '-'},${entry.z ?? '-'}`;
+    const line = `[${this.name}] TRACE ${direction} ${name} pos=${pos} yaw=${entry.yaw ?? '-'} pitch=${entry.pitch ?? '-'} ground=${entry.onGround} flags=${JSON.stringify(entry.flags)} auth=${entry.auth} locked=${entry.locked}`;
+    // Held packets are logged at info so the diagnostic is visible even when
+    // LOG_LEVEL is not debug; after auth the per-tick stream is debug-only.
+    if (direction === 'held-out') this.logger.info(line);
+    else this.logger.debug(line);
+  }
+
+  _dumpTrace(reason) {
+    this.logger.error(`[${this.name}] TRACE DUMP (${this._redact(reason)}) version=${this.version} spawned=${this.spawned} authenticated=${this.authenticated} locked=${this._movementLock} held=${this._suppressedMovement} entity=${JSON.stringify(this.position)} serverPosition=${JSON.stringify(this.lastServerPosition)}`);
+    for (const entry of this._traceLog.slice(-40)) {
+      this.logger.error(`[${this.name}] TRACE ${entry.at} ${entry.direction} ${entry.packet} pos=${entry.x ?? '-'},${entry.y ?? '-'},${entry.z ?? '-'} yaw=${entry.yaw ?? '-'} pitch=${entry.pitch ?? '-'} ground=${entry.onGround} flags=${JSON.stringify(entry.flags)} auth=${entry.auth} locked=${entry.locked}`);
     }
   }
 
@@ -150,6 +205,8 @@ class RealBot extends BotAdapter {
     this._movementLock = false;
     this._clientWriteOriginal = null;
     this._suppressedMovement = 0;
+    this._traceLog = [];
+    this.lastServerPosition = null;
     try {
       this.bot = createBot({
         username: this.name,
@@ -198,12 +255,15 @@ class RealBot extends BotAdapter {
     if (!bot) return;
     bot.on('login', () => {
       if (this.bot !== bot) return;
+      this.logger.info(`[${this.name}] TRACE login event (protocol=${bot.protocolVersion}, version=${bot.version}, physics=${bot.physicsEnabled}, passwordRequired=${this.passwordRequired})`);
+      this._installClientTrace();
       if (this.passwordRequired) this._lockMovement();
       this.authenticated = !this.passwordRequired;
       this.logger.info(`[${this.name}] protocol login accepted with ${this.host}${this.passwordRequired ? '; waiting for password authentication' : ''}`);
     });
     bot.on('spawn', () => {
       if (this.bot !== bot) return;
+      this.logger.info(`[${this.name}] TRACE spawn event (position=${bot.entity?.position ? `${bot.entity.position.x.toFixed(3)},${bot.entity.position.y.toFixed(3)},${bot.entity.position.z.toFixed(3)}` : 'none'}, onGround=${bot.entity?.onGround}, locked=${this._movementLock})`);
       const firstSpawn = !this.spawned;
       this.connected = true;
       this.spawned = true;
@@ -252,7 +312,8 @@ class RealBot extends BotAdapter {
       this.lastError = this._formatKickReason(reason);
       this.connected = false;
       this.spawned = false;
-      this.logger.warn(`[${this.name}] kicked: ${this.lastError}`);
+      this.logger.warn(`[${this.name}] kicked: ${this._redact(this.lastError)}`);
+      this._dumpTrace(`kicked: ${this.lastError}`);
       this._failSpawnWaiters(this.lastError);
       if (/invalid move player packet/i.test(this.lastError)) {
         this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
@@ -264,6 +325,33 @@ class RealBot extends BotAdapter {
       this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${err.message}`);
       this._failSpawnWaiters(this.lastError);
     });
+    if (bot._client && typeof bot._client.on === 'function') {
+      bot._client.on('position', (packet) => {
+        if (this.bot !== bot) return;
+        this.lastServerPosition = {
+          x: Number.isFinite(packet.x) ? Number(packet.x.toFixed(3)) : packet.x,
+          y: Number.isFinite(packet.y) ? Number(packet.y.toFixed(3)) : packet.y,
+          z: Number.isFinite(packet.z) ? Number(packet.z.toFixed(3)) : packet.z,
+          yaw: packet.yaw,
+          pitch: packet.pitch,
+          flags: packet.flags,
+          teleportId: packet.teleportId
+        };
+        this.logger.info(`[${this.name}] TRACE in position x=${packet.x} y=${packet.y} z=${packet.z} yaw=${packet.yaw} pitch=${packet.pitch} flags=${JSON.stringify(packet.flags)} teleportId=${packet.teleportId}`);
+      });
+      bot._client.on('respawn', () => {
+        if (this.bot === bot) this.logger.info(`[${this.name}] TRACE in respawn`);
+      });
+      bot._client.on('update_health', (packet) => {
+        if (this.bot === bot) this.logger.info(`[${this.name}] TRACE in update_health health=${packet.health} food=${packet.food}`);
+      });
+      bot._client.on('packet', (data, meta) => {
+        if (this.bot !== bot || !meta) return;
+        if (['kick_disconnect', 'system_chat', 'player_loaded', 'start_configuration', 'login'].includes(meta.name)) {
+          this.logger.debug(`[${this.name}] TRACE in packet ${meta.name} ${this._redact(JSON.stringify(data).slice(0, 600))}`);
+        }
+      });
+    }
     bot.on('end', (reason) => {
       if (this.bot !== bot) return;
       this.connected = false;
@@ -276,6 +364,8 @@ class RealBot extends BotAdapter {
     bot.on('message', (message) => {
       if (this.bot !== bot) return;
       const text = message.toString();
+      const safe = this._redact(text);
+      this.logger.debug(`[${this.name}] TRACE chat: ${safe}`);
       this._chatLog.push({ at: Date.now(), text });
       if (this._chatLog.length > 200) this._chatLog.shift();
       for (const listener of this._chatListeners) listener(text);
@@ -339,6 +429,7 @@ class RealBot extends BotAdapter {
         else if (failure.test(clean)) finish({ ok: false, error: clean, kind });
       });
       const timer = setTimeout(() => finish({ ok: false, error: `no ${kind} confirmation from the server`, kind }), this.authTimeoutMs);
+      this.logger.debug(`[${this.name}] auth ${kind}: sending command (password redacted), timeout=${this.authTimeoutMs}ms`);
       try {
         this.bot.chat(command);
       } catch (err) {
@@ -1090,6 +1181,7 @@ class RealBot extends BotAdapter {
 
   async disconnect(reason = 'shutdown') {
     this._unlockMovement();
+    this._restoreClientTrace();
     const bot = this.bot;
     this.bot = null;
     try { if (bot) bot.quit(reason); } catch (_) { /* already gone */ }
