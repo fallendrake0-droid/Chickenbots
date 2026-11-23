@@ -849,7 +849,7 @@ function registerBuild(registry, services) {
         const result = await builder.run({ maxIterations: args[2] ? intArg(args[2], 'steps', { min: 1, max: 500 }) : 40 });
         return { ok: result.status.state !== 'FAILED', ...result };
       }
-      if (sub === 'start' && (!args[1] || String(args[1]).toLowerCase() === 'run')) {
+      if (sub === 'start' && (!args[1] || ['run', 'confirm'].includes(String(args[1]).toLowerCase()))) {
         if (!services.selectedBuild) throw new CommandError('no design selected; use build select <id>');
         if (!ctx.confirmed) return { ok: false, error: "starting a build is destructive and requires explicit confirmation (append 'confirm')", code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
         const result = await buildDesign(services, resolveDesign(services, services.selectedBuild), { confirm: true, run: args.includes('run') });
