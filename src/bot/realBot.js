@@ -31,7 +31,7 @@ class RealBot extends BotAdapter {
     loginPassword = config.server.loginPassword, registerPassword = config.server.registerPassword,
     connectTimeoutMs = config.server.connectTimeoutMs,
     authDelayMs = config.server.authDelayMs, authTimeoutMs = config.server.authTimeoutMs,
-    authEnabled = config.server.authEnabled
+    authEnabled = config.server.authEnabled, registerOnFirstJoin = config.server.registerOnFirstJoin
   } = {}) {
     super({ name, logger: logger || new Logger({ level: config.logging.level }), speed: 1 });
     if (!BOT_NAMES.includes(name)) throw new Error(`refusing to create a bot outside the fixed team roster: ${name}`);
@@ -43,6 +43,7 @@ class RealBot extends BotAdapter {
     this.registerPassword = registerPassword;
     this.connectTimeoutMs = connectTimeoutMs;
     this.authEnabled = authEnabled !== false;
+    this.registerOnFirstJoin = registerOnFirstJoin;
     this.hasRegistered = false;
     this.authDelayMs = authDelayMs;
     this.authTimeoutMs = authTimeoutMs;
@@ -487,9 +488,9 @@ class RealBot extends BotAdapter {
     if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
 
     let registered = false;
-    // Register once per bot process, on the first join. Reconnects use /login:
-    // repeatedly sending /register only earns "already registered" errors.
-    if (this.registerPassword && !this.hasRegistered) {
+    // Existing accounts are login-only. Registration is opt-in because every
+    // bot already has an account; /register only earns "already registered".
+    if (this.registerPassword && this.registerOnFirstJoin && !this.hasRegistered) {
       this.logger.info(`[${this.name}] first join: sending /register (password hidden)`);
       const command = config.server.registerCommand.replace(/\{password\}/g, this.registerPassword);
       const result = await this._sendAuthCommand(command, 'register');
@@ -503,6 +504,9 @@ class RealBot extends BotAdapter {
       return { ok: false, error: 'account is already registered; set MC_LOGIN_PASSWORD for reconnects', kind: 'login' };
     }
     if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
+    if (!this.loginPassword) {
+      return { ok: false, error: 'no login password configured; set MC_LOGIN_PASSWORD', kind: 'login' };
+    }
     if (this.loginPassword) {
       const command = config.server.loginCommand.replace(/\{password\}/g, this.loginPassword);
       const result = await this._sendAuthCommand(command, 'login');

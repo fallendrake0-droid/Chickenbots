@@ -105,6 +105,9 @@ const config = {
     loginPassword: env('MC_LOGIN_PASSWORD', DEFAULT_AUTH_PASSWORD),
     loginCommand: env('MC_LOGIN_COMMAND', '/login {password}'),
     registerCommand: env('MC_REGISTER_COMMAND', '/register {password} {password}'),
+    // Accounts already exist on the server, so normal operation is login-only.
+    // Set MC_AUTH_REGISTER_ON_FIRST_JOIN=true only for a brand-new account.
+    registerOnFirstJoin: envBool('MC_AUTH_REGISTER_ON_FIRST_JOIN', false),
     // AuthMe-style plugins confirm in chat; stay unready and frozen until that
     // confirmation arrives so no bot can move before authenticating.
     authDelayMs: envInt('MC_AUTH_DELAY_MS', 300),

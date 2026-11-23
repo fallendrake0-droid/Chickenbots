@@ -292,7 +292,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `5000` / `1000` | gap between joining bots; the runtime serializes logins and pauses all joins after an Aternos throttle |
 | `MC_THROTTLE_DELAY_MS` | `30000` | minimum retry delay after a throttled join |
-| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | `chickenbot12345` | AuthMe-style register/login after spawn; bots stay frozen and unready until confirmed. Set `MC_AUTH_ENABLED=false` to disable. |
+| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | `chickenbot12345` | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
+| `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
@@ -465,13 +466,15 @@ commissioning.
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
   Bots join one at a time with jitter, and throttled joins use a 30-second floor before retrying.
-  When `MC_LOGIN_PASSWORD` or `MC_REGISTER_PASSWORD` is set (the default is `chickenbot12345`), the first
-  join sends `/register` and later reconnects use `/login`. Movement is frozen and autonomy stays gated
-  until the server confirms authentication in chat; all position/look/flying packets are held so Paper or
-  AuthMe cannot kick the bot for moving during registration. A failed or unconfirmed password disconnects
-  the bot instead of letting it move.
-  A server-side `Invalid move player packet` kick usually means the protocol version does not match;
-  set `MC_VERSION` to the server's exact version instead of `auto`.
+  When `MC_LOGIN_PASSWORD` is set (the default is `chickenbot12345`), every join sends only `/login`
+  because the accounts already exist. Set `MC_AUTH_REGISTER_ON_FIRST_JOIN=true` to send `/register`
+  once before `/login` for a brand-new account. Movement is frozen and autonomy stays gated until the
+  server confirms authentication in chat; all position/look/flying packets are held so Paper or AuthMe
+  cannot kick the bot for moving before login. A failed or unconfirmed password disconnects the bot
+  instead of letting it move.
+  A server-side `Invalid move player packet` kick on Minecraft 26.x is normally caused by a missing
+  `client_tick_end`; Chickenbots sends it after every movement packet. If kicks continue, set
+  `MC_VERSION` to the server's exact version instead of `auto`.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
   real version instead of sending five bots into mineflayer's autoVersion crash path.

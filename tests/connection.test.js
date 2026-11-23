@@ -41,8 +41,8 @@ test('kick reasons are flattened into readable chat text', () => {
   assert.equal(bot._formatKickReason(null), 'null');
 });
 
-function authHarness({ loginPassword = 'secret', registerPassword = null, reply = null } = {}) {
-  const real = new RealBot({ name: '________', loginPassword, registerPassword, authDelayMs: 0, authTimeoutMs: 500 });
+function authHarness({ loginPassword = 'secret', registerPassword = null, registerOnFirstJoin = false, reply = null } = {}) {
+  const real = new RealBot({ name: '________', loginPassword, registerPassword, registerOnFirstJoin, authDelayMs: 0, authTimeoutMs: 500 });
   const commands = [];
   const fake = {
     entity: {},
@@ -83,21 +83,29 @@ test('a bot with a password stays unauthenticated until the server confirms logi
   assert.deepEqual(commands, ['/login secret']);
 });
 
-test('registration is confirmed before the login step and a failure blocks the bot', async () => {
-  const { real, commands } = authHarness({ registerPassword: 'secret', loginPassword: 'secret' });
+test('registration is confirmed before the login step when explicitly enabled', async () => {
+  const { real, commands } = authHarness({ registerPassword: 'secret', loginPassword: 'secret', registerOnFirstJoin: true });
   const ok = await real._handleLoginCommands();
   assert.equal(ok.ok, true, JSON.stringify(ok));
   assert.deepEqual(commands, ['/register secret secret', '/login secret']);
   assert.equal(real.authenticated, true);
 
   const failed = authHarness({
-    registerPassword: 'secret', loginPassword: 'secret',
+    registerPassword: 'secret', loginPassword: 'secret', registerOnFirstJoin: true,
     reply: (line) => line.startsWith('/register') ? 'Successfully registered!' : 'Wrong password. Try again.'
   });
   const denied = await failed.real._handleLoginCommands();
   assert.equal(denied.ok, false);
   assert.match(denied.error, /wrong password/i);
   assert.equal(failed.real.authenticated, false);
+});
+
+test('existing accounts send only /login and never /register by default', async () => {
+  const { real, commands } = authHarness({ registerPassword: 'secret', loginPassword: 'secret' });
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(commands, ['/login secret']);
+  assert.equal(real.hasRegistered, false);
 });
 
 test('status scans are skipped until a live bot is ready', () => {
@@ -120,11 +128,11 @@ test('password auth can be disabled for a server without a plugin', () => {
   assert.equal(real.passwordRequired, false);
 });
 
-test('registration is sent on the first join and only login is used afterwards', async () => {
+test('register is only sent when registration is opt-in', async () => {
   const { real, commands } = authHarness({ registerPassword: 'secret', loginPassword: 'secret' });
   const first = await real._handleLoginCommands();
   assert.equal(first.ok, true, JSON.stringify(first));
-  assert.deepEqual(commands, ['/register secret secret', '/login secret']);
+  assert.deepEqual(commands, ['/login secret']);
 
   commands.length = 0;
   real.authenticated = false;
@@ -181,7 +189,7 @@ test('position packets are suppressed until password auth is released', () => {
 
 test('AuthMe replies "Login successful." and "You are already registered." are accepted', async () => {
   const { real, commands } = authHarness({
-    registerPassword: 'secret', loginPassword: 'secret',
+    registerPassword: 'secret', loginPassword: 'secret', registerOnFirstJoin: true,
     reply: (line) => line.startsWith('/register') ? 'You are already registered.' : 'Login successful.'
   });
   const result = await real._handleLoginCommands();
