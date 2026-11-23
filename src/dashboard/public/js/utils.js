@@ -1,4 +1,14 @@
-export const BOT_NAMES = ['________', '10101000', '01010100', '11001100', '00110000'];
+// The roster is served by /api/settings so the dashboard and the runtime can
+// never disagree about team membership. Until settings arrive this is empty
+// and the helpers below fall back to the bot's own name.
+let botRoster = [];
+
+export function configureRoster(names) {
+  botRoster = Array.isArray(names) ? names.filter((name) => typeof name === 'string' && name) : [];
+  return botRoster;
+}
+
+export function roster() { return botRoster; }
 
 export function esc(value) {
   return String(value === undefined || value === null ? '' : value)
@@ -73,13 +83,13 @@ export function humanize(name) {
 }
 
 export function initials(name) {
-  const index = BOT_NAMES.indexOf(name);
+  const index = botRoster.indexOf(name);
   if (index >= 0) return String(index + 1).padStart(2, '0');
   return String(name || '?').replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '??';
 }
 
 export function botNumber(name) {
-  const index = BOT_NAMES.indexOf(name);
+  const index = botRoster.indexOf(name);
   return index >= 0 ? index + 1 : null;
 }
 
@@ -106,7 +116,7 @@ export function progressTone(value) {
 const CHART_COLORS = ['#39b8a5', '#5998e8', '#e5a947', '#a78bfa', '#e05b68', '#35b779'];
 export function chartColor(nameOrIndex) {
   if (typeof nameOrIndex === 'number') return CHART_COLORS[nameOrIndex % CHART_COLORS.length];
-  const index = BOT_NAMES.indexOf(nameOrIndex);
+  const index = botRoster.indexOf(nameOrIndex);
   if (index >= 0) return CHART_COLORS[index];
   let hash = 0;
   for (const c of String(nameOrIndex)) hash = (hash * 31 + c.charCodeAt(0)) | 0;

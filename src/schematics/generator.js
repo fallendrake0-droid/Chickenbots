@@ -455,7 +455,6 @@ function fortressArchetype(spec, palette, rng) {
   // Inner keep: a scaled-down house archetype in the courtyard.
   const keepW = Math.max(7, Math.floor(outerW * 0.45));
   const keepL = Math.max(7, Math.floor(outerL * 0.45));
-  const keep = new BlockGrid();
   const keepSpec = {
     ...spec, w: keepW, l: keepL, floors: Math.max(2, Math.min(4, spec.floors)), shape: 'rect',
     towers: spec.towers.slice(0, 2), wings: spec.wings.slice(0, 1), decor: { ...spec.decor, garden: false, fountain: false, trees: 0 },
@@ -1056,7 +1055,7 @@ function fantasyArchetype(spec, palette, rng) {
     w: buildW, l: buildL, shape: spec.shape === 'rect' ? 'octagon' : spec.shape, floors: Math.max(2, spec.floors),
     floorHeight: spec.floorHeight, palette, windowPattern: spec.windowPattern, doorSide: spec.doorSide, baseY: 0
   });
-  const top = roofOver(keepGrid, info, { ...spec, roofType: spec.roofType }, palette, rng);
+  roofOver(keepGrid, info, { ...spec, roofType: spec.roofType }, palette, rng);
   P.interiorRooms(keepGrid, { mask: info.mask, w: buildW, l: buildL, floorYs: info.floorYs, floorHeight: spec.floorHeight, palette, rng, phases: PHASES, tier: spec.tier });
   grid.merge(keepGrid, cx - Math.floor(buildW / 2), baseY + 1, cz - Math.floor(buildL / 2));
   // Towers

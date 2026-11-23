@@ -3,7 +3,7 @@
 const { config } = require('../config');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { findBlocks, nearestBlock } = require('./common');
+const { findBlocks } = require('./common');
 
 const ORE_TIERS = {
   coal_ore: 1, deepslate_coal_ore: 1, copper_ore: 1, deepslate_copper_ore: 1,

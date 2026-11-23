@@ -225,7 +225,7 @@ export const builderPage = {
                   ['Unique geometry', num(lib.uniqueGeometry || 0)],
                   ['Categories', num((lib.categories || []).length)],
                   ['Generated', lib.generatedAt ? esc(timeAgo(lib.generatedAt)) : '—']
-                ])}
+                ], { htmlValues: true })}
               </div>
             </section>
             <section class="card">

@@ -1,7 +1,7 @@
 'use strict';
 
 const { Logger } = require('../logger');
-const { findBlocks, nearestBlock } = require('./common');
+const { findBlocks } = require('./common');
 
 const LOG_PATTERN = /_log$/;
 const SAPLING_FOR = {

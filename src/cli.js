@@ -2,7 +2,7 @@
 'use strict';
 
 const readline = require('readline');
-const { config } = require('./config');
+const { config, validateConfig } = require('./config');
 const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
 const { printStartupBanner } = require('./branding');
@@ -38,9 +38,32 @@ async function main() {
   const simulate = !live || args.includes('--simulate');
   const commandArgs = args.filter((a) => !a.startsWith('--'));
   const logger = new Logger({ level: config.logging.level });
+  const validation = validateConfig(config, { requireCredentials: live && !simulate, simulate });
+  for (const warning of validation.warnings) logger.warn(`config warning: ${warning}`);
+  if (!validation.ok) {
+    for (const error of validation.errors) logger.error(`config error: ${error}`);
+    process.stderr.write('\nRefusing to start with an invalid configuration. Fix the above and retry.\n');
+    return 2;
+  }
   if (!commandArgs.length) printStartupBanner();
   const runtime = await createRuntime({ simulate, connect: live && !simulate, dashboard: false, logger });
   await runtime.start();
+  let shuttingDown = false;
+  const shutdown = async (reason) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try { await runtime.shutdown(reason); } catch (err) { process.stderr.write(`shutdown error: ${err.message}\n`); }
+  };
+  const stop = async (signal) => {
+    process.stdout.write(`\n${signal}; shutting down…\n`);
+    const watchdog = setTimeout(() => process.exit(130), 5000);
+    if (watchdog.unref) watchdog.unref();
+    await shutdown(signal);
+    clearTimeout(watchdog);
+    process.exit(0);
+  };
+  process.on('SIGINT', () => stop('SIGINT'));
+  process.on('SIGTERM', () => stop('SIGTERM'));
   if (simulate) {
     process.stdout.write(`Simulation ready: ${runtime.bots.size} bots, home ${runtime.home.x},${runtime.home.y},${runtime.home.z}\n`);
   } else {
@@ -50,7 +73,7 @@ async function main() {
     const line = commandArgs.join(' ');
     const result = await runtime.executeCommand(line, { source: 'cli', operator: 'cli' });
     printResult(result);
-    await runtime.shutdown('cli command complete');
+    await shutdown('cli command complete');
     return;
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'chickenbots> ' });
@@ -72,7 +95,7 @@ async function main() {
     rl.prompt();
   });
   rl.on('close', async () => {
-    await runtime.shutdown('cli exit');
+    await shutdown('cli exit');
     process.stdout.write('\nbye\n');
     process.exit(0);
   });

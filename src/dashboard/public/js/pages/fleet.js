@@ -194,7 +194,7 @@ function profileSummary(bot, actions, team, name) {
               ['Dimension', esc(bot.dimension || '—')],
               ['Position', esc(positionText(bot.position)), true],
               ['Deaths', num(bot.deaths || 0)]
-            ])}
+            ], { htmlValues: true })}
             <div class="row gap-2" style="margin-top:12px">
               <button class="button" type="button" data-bot-action="reconnect" data-bot="${esc(name)}">${icon('refresh')} Reconnect</button>
               <button class="button button--danger" type="button" data-bot-action="disconnect" data-bot="${esc(name)}" data-confirm="true">${icon('wifi-off')} Disconnect</button>
@@ -250,7 +250,7 @@ function profileSurvival(bot, actions, name) {
               ['In water', survival.inWater ? 'Yes' : 'No'],
               ['On fire', survival.onFire ? badge('Yes', 'danger') : 'No'],
               ['Last action', esc(survival.lastAction || '—')]
-            ])}
+            ], { htmlValues: true })}
           </div>
         </section>
       </div>
@@ -361,7 +361,7 @@ function profileCombat(bot, actions, name) {
             ['Shield', combat.shield ? badge('Equipped', 'ok') : badge('Missing', 'neutral')],
             ['Nearest threat', esc(combat.nearestThreat ? `${combat.nearestThreat.name || combat.nearestThreat.type || 'hostile'} · ${combat.nearestThreat.distance ?? '?'}m` : 'None detected')],
             ['Last action', esc(combat.lastAction || '—')]
-          ])}
+          ], { htmlValues: true })}
         </div>
       </section>
       <aside class="stack gap-4">

@@ -2,10 +2,11 @@
 
 const { BotAdapter } = require('./adapter');
 const { config, BOT_NAMES } = require('../config');
+const { redactString } = require('../util/redact');
+const { classifyKick, sleep } = require('./connection');
 const { Logger } = require('../logger');
-const { distance, key } = require('../util/vec');
+const { distance } = require('../util/vec');
 const { bestTool, FOODS, BED_NAMES, toolTier } = require('../world/items');
-const { sleep } = require('./connection');
 
 const HOSTILE = new Set([
   'zombie', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider', 'cave_spider',
@@ -73,7 +74,12 @@ class RealBot extends BotAdapter {
     this._traceLog = [];
     this.lastServerPosition = null;
     this._authWaiters = new Set();
+    this._connectPromise = null;
+    this._clientGeneration = 0;
+    this._connectionGeneration = 0;
     this._tickEndSent = false;
+    this.kickKind = null;
+    this.retryPaused = false;
     this._blockCache = new Map();
     this._inventoryDirty = false;
     this._lastHealth = undefined;
@@ -105,9 +111,14 @@ class RealBot extends BotAdapter {
     const client = this.bot && this.bot._client;
     if (!client || typeof client.write !== 'function' || this._clientWriteOriginal) return;
     const original = client.write.bind(client);
+    const owner = this.bot;
+    const generation = this._connectionGeneration;
     this._clientWriteOriginal = original;
     const movement = new Set(['position', 'position_look', 'look', 'flying']);
     client.write = (name, packet) => {
+      // A queued Mineflayer physics callback from an old socket must never
+      // write into the replacement socket after a reconnect.
+      if (this.bot !== owner || this._connectionGeneration !== generation) return true;
       if (movement.has(name)) {
         try { this._trace(this._movementLock ? 'held-out' : 'out', name, packet); } catch (_) { /* tracing must never break movement */ }
         if (this._movementLock) {
@@ -153,10 +164,12 @@ class RealBot extends BotAdapter {
     if (client && this._clientWriteOriginal) client.write = this._clientWriteOriginal;
     this._clientWriteOriginal = null;
     this._movementLock = false;
+    // Invalidate closures that still hold the old wrapper.
+    this._connectionGeneration = ++this._clientGeneration;
   }
 
   _redact(value) {
-    return String(value == null ? '' : value).replace(/\/(register|login)\s+\S+.*/gi, '/$1 [redacted]');
+    return redactString(value == null ? '' : value);
   }
 
   _trace(direction, name, packet = {}) {
@@ -196,9 +209,9 @@ class RealBot extends BotAdapter {
   }
 
   _abortAuth(error) {
-    for (const finish of [...this._authWaiters]) {
-      finish({ ok: false, error: error || 'connection lost during password authentication', kind: 'connection' });
-    }
+    const failure = { ok: false, error: error || 'connection lost during password authentication', kind: 'connection' };
+    for (const finish of [...this._authWaiters]) finish(failure);
+    this._authWaiters.clear();
   }
 
   _failSpawnWaiters(error) {
@@ -217,15 +230,33 @@ class RealBot extends BotAdapter {
     return mineflayer.createBot.bind(mineflayer);
   }
 
-  async connect({ timeoutMs = this.connectTimeoutMs } = {}) {
+  async connect(options = {}) {
+    if (this.shuttingDown) return { ok: false, error: 'shutting down', code: 'SHUTDOWN' };
+    if (this.connected) return { ok: true, already: true };
+    // One socket per bot. A dashboard reconnect and the supervisor must never
+    // race into two simultaneous logins for the same username.
+    if (this._connectPromise) return this._connectPromise;
+    this._connectPromise = this._connectOnce(options).finally(() => { this._connectPromise = null; });
+    return this._connectPromise;
+  }
+
+  async _connectOnce({ timeoutMs = this.connectTimeoutMs } = {}) {
     if (this.connected) return { ok: true, already: true };
     if (!this._createBot && this.version === 'auto') {
       return { ok: false, code: 'VERSION_UNRESOLVED', error: 'server version has not been resolved; the runtime must probe it before connecting' };
     }
     const createBot = this._loadMineflayer();
+    // Restore the previous socket before replacing it, then give this socket
+    // its own generation. Callbacks and the write wrapper can now prove they
+    // still belong to the active connection before touching anything.
+    this._restoreClientTrace();
+    this._clientGeneration++;
+    this._connectionGeneration = this._clientGeneration;
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
+    this.kickKind = null;
+    this.retryPaused = false;
     this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
     this.authConfirmed = false;
     this.lastError = null;
@@ -256,6 +287,12 @@ class RealBot extends BotAdapter {
     } catch (err) {
       this.lastError = err.message;
       return { ok: false, error: err.message };
+    }
+    // A shutdown can land between the loop's last check and createBot(); close
+    // the socket immediately rather than letting it outlive the runtime.
+    if (this.shuttingDown) {
+      await this.disconnect('shutdown');
+      return { ok: false, error: 'shutting down', code: 'SHUTDOWN' };
     }
     this.stats.connections++;
     this._attachEvents();
@@ -352,23 +389,29 @@ class RealBot extends BotAdapter {
     });
     bot.on('kicked', (reason) => {
       if (this.bot !== bot) return;
-      this.lastError = this._formatKickReason(reason);
+      this.lastError = this._redact(this._formatKickReason(reason));
+      const kick = classifyKick(this.lastError);
+      this.kickKind = kick.kind;
+      if (kick.pauseRetries) this.retryPaused = true;
       if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
       this.connected = false;
       this.spawned = false;
       this.authenticated = false;
-      this.logger.warn(`[${this.name}] kicked: ${this._redact(this.lastError)}`);
+      this.logger.warn(`[${this.name}] kicked (${kick.label}): ${this.lastError}`);
       this._dumpTrace(`kicked: ${this.lastError}`);
       this._abortAuth(this.lastError);
       this._failSpawnWaiters(this.lastError);
+      if (kick.pauseRetries) {
+        this.logger.error(`[${this.name}] automatic retries paused after ${kick.kind} kick; an explicit dashboard reconnect is required`);
+      }
       if (/invalid move player packet/i.test(this.lastError)) {
         this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
       }
     });
     bot.on('error', (err) => {
       if (this.bot !== bot) return;
-      this.lastError = err.message;
-      this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${err.message}`);
+      this.lastError = this._redact(err.message);
+      this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${this.lastError}`);
       this._abortAuth(this.lastError);
       this._failSpawnWaiters(this.lastError);
     });
@@ -413,7 +456,7 @@ class RealBot extends BotAdapter {
       this.spawned = false;
       this.authenticated = false;
       const detail = this.lastError && this.lastError !== reason ? `${reason || 'end'}: ${this.lastError}` : (reason || 'end');
-      this.logger.warn(`[${this.name}] disconnected: ${detail}`);
+      this.logger.warn(`[${this.name}] disconnected: ${this._redact(detail)}`);
       this._abortAuth(this.lastError || `connection closed (${reason || 'end'})`);
       this._failSpawnWaiters(this.lastError || `connection closed (${reason || 'end'})`);
     });
@@ -423,7 +466,9 @@ class RealBot extends BotAdapter {
       const text = message.toString();
       const safe = this._redact(text);
       this.logger.debug(`[${this.name}] TRACE chat: ${safe}`);
-      this._chatLog.push({ at: Date.now(), text });
+      // Only the redacted text is retained. Auth listeners still receive the
+      // raw chat line locally so login confirmation parsing keeps working.
+      this._chatLog.push({ at: Date.now(), text: safe });
       if (this._chatLog.length > 200) this._chatLog.shift();
       for (const listener of this._chatListeners) listener(text);
     });
@@ -1280,6 +1325,8 @@ class RealBot extends BotAdapter {
       port: this.port,
       version: this.version,
       lastError: this.lastError,
+      kickKind: this.kickKind,
+      retryPaused: this.retryPaused,
       lastEventAt: this.lastEventAt,
       lastSessionEndedAt: this.lastSessionEndedAt,
       lastDeath: this.lastDeath,

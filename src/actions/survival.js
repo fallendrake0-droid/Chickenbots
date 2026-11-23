@@ -2,8 +2,8 @@
 
 const { config } = require('../config');
 const { Logger } = require('../logger');
-const { bestFood, FOODS, bestTool } = require('../world/items');
-const { needsFood, foodItems, hasFood, nearestBlock } = require('./common');
+const { bestFood } = require('../world/items');
+const { needsFood, foodItems, hasFood } = require('./common');
 
 const ARMOUR_SLOTS = [
   { slot: 'head', names: ['netherite_helmet', 'diamond_helmet', 'iron_helmet', 'chainmail_helmet', 'golden_helmet', 'leather_helmet'] },

@@ -79,6 +79,7 @@ class TeamRuntime {
     this.disconnectedNotified = new Set();
     this.reconnectTasks = new Map();
     this.intentionalDisconnects = new Set();
+    this.retryPausedBots = new Map();
     this.supervisorTicks = 0;
     this.supervisorBusy = false;
     this.serverVersion = null;
@@ -186,7 +187,9 @@ class TeamRuntime {
       this.logger.info(`dashboard listening on http://${dashboardInfo.host}:${dashboardInfo.port}`);
     }
     if (!this.simulate && this.shouldConnect) {
-      this.connectLoop = this._connectAll().catch((err) => this.logger.error(`connection supervisor failed: ${err.message}`));
+      this.connectLoop = this._connectAll().catch((err) => {
+      if (!this.shutdownRequested) this.logger.error(`connection supervisor failed: ${err.message}`);
+    });
     }
     this.timer = setInterval(() => this._tick().catch((err) => this.logger.error(`autonomy tick failed: ${err.message}`)), config.autonomy.tickMs);
     return { ok: true, mode: this.mode, dashboard: dashboardInfo, autonomyAllowed: this.autonomyAllowed };
@@ -258,6 +261,7 @@ class TeamRuntime {
    * a bot is already retrying.
    */
   _startConnection(bot) {
+    if (bot.retryPaused) return Promise.resolve({ ok: false, paused: true, error: bot.lastError || 'automatic retries paused' });
     const existing = this.reconnectTasks.get(bot.name);
     if (existing) return existing;
     const task = this._connectWithRetry(bot)
@@ -294,6 +298,14 @@ class TeamRuntime {
   async _connectWithRetry(bot) {
     let attempt = 0;
     while (!this.shutdownRequested && !bot.ready) {
+      if (this.intentionalDisconnects.has(bot.name)) {
+        return { ok: false, error: 'disconnected by operator', stopped: true };
+      }
+      if (bot.retryPaused || this.retryPausedBots.has(bot.name)) {
+        const reason = this.retryPausedBots.get(bot.name) || bot.lastError || 'automatic retries paused';
+        this.connectionErrors[bot.name] = reason;
+        return { ok: false, error: reason, paused: true };
+      }
       attempt++;
       // Aternos throttles an immediate rejoin after a real session ends. Wait
       // behind the hold-down *before* taking the join slot, so the server never
@@ -321,8 +333,30 @@ class TeamRuntime {
         this.joinCooldownUntil = Math.max(this.joinCooldownUntil, Date.now() + config.server.reconnect.throttleDelayMs);
         this.logger.warn(`join queue: throttled; all joins paused until ${new Date(this.joinCooldownUntil).toISOString()}`);
       }
+      if (this.intentionalDisconnects.has(bot.name)) {
+        return { ok: false, error: 'disconnected by operator', stopped: true };
+      }
+      if (bot.retryPaused) {
+        const pauseReason = bot.lastError || `${bot.kickKind || 'moderation'} kick`;
+        this.retryPausedBots.set(bot.name, pauseReason);
+        this.connectionErrors[bot.name] = pauseReason;
+        this.logger.error(`[${bot.name}] retries paused (${bot.kickKind || 'moderation'}); explicit reconnect required`);
+        return { ok: false, error: pauseReason, paused: true, kickKind: bot.kickKind };
+      }
+      // A rejected password will stay rejected. Retrying it on a timer can
+      // trip AuthMe's lockout, so pause until an operator fixes the credential
+      // and explicitly reconnects. Transient auth timeouts recover on retry.
+      if (!result.ok && result.code === 'AUTH_FAILED' && /password|login|register|auth/i.test(String(result.error || ''))) {
+        const pauseReason = result.error || 'password authentication failed';
+        bot.retryPaused = true;
+        this.retryPausedBots.set(bot.name, pauseReason);
+        this.connectionErrors[bot.name] = pauseReason;
+        this.logger.error(`[${bot.name}] authentication failed; automatic retries paused: ${pauseReason}`);
+        return { ok: false, error: pauseReason, paused: true, code: 'AUTH_FAILED' };
+      }
       if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
+        this.retryPausedBots.delete(bot.name);
         this.logger.info(`[${bot.name}] ready (attempt ${attempt}, ${elapsed}ms)`);
         return result;
       }
@@ -423,18 +457,31 @@ class TeamRuntime {
           if (actions && actions.combat) actions.combat.onDeath('runtime observed death');
         }
       }
-      this.coordinator.tick();
+      try {
+        this.coordinator.tick();
+      } catch (err) {
+        this.logger.error(`coordinator tick failed: ${err.message}`);
+      }
       for (const actions of this.actions.list()) {
         const bot = actions.bot;
         if (!bot.connected || !bot.spawned || bot.health <= 0) continue;
-        await actions.safetyTick();
-        if (this.ticks % 5 === 0) this.combatTeam.assignRoles();
-        const assignment = this.coordinator.getAssignment(bot.name);
-        if (assignment) {
-          await actions.step({ coordinator: this.coordinator, bots: this.bots });
-        } else if (this.ticks % 20 === 0) {
-          await this._idleWork(actions);
+        try {
+          await actions.safetyTick();
+          const assignment = this.coordinator.getAssignment(bot.name);
+          if (assignment) {
+            await actions.step({ coordinator: this.coordinator, bots: this.bots });
+          } else if (this.ticks % 20 === 0) {
+            await this._idleWork(actions);
+          }
+        } catch (err) {
+          // One controller failure must not stop the other four bots.
+          this.logger.warn(`[${bot.name}] action tick failed: ${err.message}`);
         }
+      }
+      try {
+        if (this.ticks % 5 === 0) this.combatTeam.assignRoles();
+      } catch (err) {
+        this.logger.warn(`combat role assignment failed: ${err.message}`);
       }
       if (this.combatTeam && this.ticks % 8 === 0) {
         await this.combatTeam.autoRescue().catch((err) => this.logger.warn(`team rescue: ${err.message}`));
@@ -477,7 +524,7 @@ class TeamRuntime {
     let started = 0;
     for (const name of BOT_NAMES) {
       const bot = this.bots.get(name);
-      if (!bot || this.intentionalDisconnects.has(name) || this.reconnectTasks.has(name)) continue;
+      if (!bot || this.intentionalDisconnects.has(name) || this.retryPausedBots.has(name) || this.reconnectTasks.has(name)) continue;
       const status = connectionStatus(bot);
       // A silently dead socket still has connected=true. Drop it explicitly so
       // the supervisor opens a fresh one instead of trusting a zombie flag.
@@ -528,6 +575,9 @@ class TeamRuntime {
       return { ok: true, queued: true, already: true, bot: this.botState(name) };
     }
     this.intentionalDisconnects.delete(name);
+    this.retryPausedBots.delete(name);
+    bot.shuttingDown = false;
+    if (bot.retryPaused) { bot.retryPaused = false; bot.kickKind = null; }
 
     // Simulated adapters have no socket. Flip their flags so the dashboard
     // control still works in the deterministic demo.
@@ -536,6 +586,9 @@ class TeamRuntime {
       bot.connected = true;
       bot.spawned = true;
       bot.authenticated = true;
+      // BaseAdapter.disconnect() also stops the simulated ticker; resume it or
+      // the preview's world clock would freeze after a dashboard reconnect.
+      if (typeof bot.startTicking === 'function' && !bot._tickHandle) bot.startTicking();
       delete this.connectionErrors[name];
       return { ok: true, bot: this.botState(name) };
     }
@@ -590,6 +643,8 @@ class TeamRuntime {
       statusDetail: status.statusDetail,
       lastEventAt: status.lastEventAt,
       lastEventAgeMs: status.lastEventAgeMs,
+      kickKind: bot.kickKind || null,
+      retryPaused: Boolean(bot.retryPaused || this.retryPausedBots.has(name)),
       error: this.connectionErrors[name] || this.connectionErrors.server || bot.lastError || null
     };
   }
@@ -632,6 +687,9 @@ class TeamRuntime {
     this.shutdownRequested = true;
     this.running = false;
     if (this.shutdownController) this.shutdownController.abort();
+    // Stop any in-flight connect() from opening a new socket during the
+    // dashboard/SSE teardown that follows.
+    for (const bot of this.bots.values()) bot.shuttingDown = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     try { if (this.coordinator) this.coordinator.disable(); } catch (_) { /* ignore */ }
@@ -640,12 +698,17 @@ class TeamRuntime {
     }
     const results = [];
     for (const bot of this.bots.values()) {
+      bot.shuttingDown = true;
       try {
-        if (typeof bot.disconnect === 'function' && bot.connected) results.push({ bot: bot.name, ...(await bot.disconnect(reason)) });
+        // Simulated adapters have no socket, but they own a ticking interval.
+        // Disconnect every adapter, connected or not, so the final state is honest.
+        if (typeof bot.stopTicking === 'function') bot.stopTicking();
+        if (typeof bot.disconnect === 'function') results.push({ bot: bot.name, ...(await bot.disconnect(reason)) });
       } catch (err) {
         results.push({ bot: bot.name, ok: false, error: err.message });
       }
     }
+    this.reconnectTasks.clear();
     this.logger.info(`runtime stopped: ${reason}`);
     return { ok: true, reason, disconnected: results };
   }

@@ -1,6 +1,6 @@
 'use strict';
 
-const { boxVolume, iterateBox, key } = require('../util/vec');
+const { boxVolume } = require('../util/vec');
 const { classifyBlock, summarizeArea, buildWarnings, isLiquid } = require('./safety');
 const {
   boxPlan, radiusPlan, quarryPlan, trenchPlan, flattenPlan, foundationPlan, describeFootprint
@@ -49,7 +49,6 @@ function scanArea(bounds, blockAt, { scanLimit = 120000, mask = null } = {}) {
   const falling = [];
   let scanned = 0;
   let unknownErrors = 0;
-  const start = { x: bounds.min.x, y: bounds.min.y, z: bounds.min.z };
   for (let y = bounds.min.y; y <= bounds.max.y; y += stride) {
     for (let z = bounds.min.z; z <= bounds.max.z; z += stride) {
       for (let x = bounds.min.x; x <= bounds.max.x; x += stride) {

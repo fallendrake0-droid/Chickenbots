@@ -13,7 +13,7 @@ let requestSeq = 0;
  * between bots requires an actual in-game container/throw interaction.
  */
 class ResourceLedger {
-  constructor({ reserves = {}, now = () => Date.now() } = {}) {
+  constructor({ reserves = {}, now = () => Date.now(), maxHistory = 2000, maxInactiveReservations = 5000 } = {}) {
     this.reserves = { ...reserves };
     this.inventories = new Map(); // name -> { counts, updatedAt }
     this.storages = new Map(); // id -> { position, counts, verifiedAt, dimension, label }
@@ -21,13 +21,29 @@ class ResourceLedger {
     this.targets = new Map(); // item/category -> count
     this.transferRequests = [];
     this.history = [];
+    this.maxHistory = Math.max(100, Number(maxHistory) || 2000);
+    this.maxInactiveReservations = Math.max(100, Number(maxInactiveReservations) || 5000);
     this.now = now;
     for (const [item, count] of Object.entries(this.reserves)) this.targets.set(item, count);
+  }
+
+  _trimHistory() {
+    if (this.history.length > this.maxHistory) this.history.splice(0, this.history.length - this.maxHistory);
+  }
+
+  _trimReservations() {
+    if (this.reservations.length <= this.maxInactiveReservations) return;
+    const inactive = this.reservations.filter((r) => !r.active);
+    const excess = this.reservations.length - this.maxInactiveReservations;
+    if (inactive.length <= excess) return;
+    const drop = new Set(inactive.slice(0, excess));
+    this.reservations = this.reservations.filter((r) => !drop.has(r));
   }
 
   setReserveTarget(item, count, source = 'config') {
     this.targets.set(item, count);
     this.history.push({ at: this.now(), type: 'target', item, count, source });
+    this._trimHistory();
     return this.getTarget(item);
   }
 
@@ -71,7 +87,7 @@ class ResourceLedger {
 
   reserved(item, { excludePurpose = null } = {}) {
     return this.reservations
-      .filter((r) => r.active && matchesCategory(r.item, item) && r.item !== excludePurpose)
+      .filter((r) => r.active && matchesCategory(r.item, item) && (!excludePurpose || r.purpose !== excludePurpose))
       .reduce((sum, r) => sum + r.remaining, 0);
   }
 
@@ -81,16 +97,20 @@ class ResourceLedger {
 
   /** Reserve resources for a purpose. Reservations never exceed real stock. */
   reserve(item, count, { purpose = 'general', owner = 'team', id = null } = {}) {
-    if (!item || count <= 0) return { ok: false, error: 'invalid reservation' };
+    const amount = Number(count);
+    if (!item || !Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'invalid reservation' };
     const free = this.available(item);
-    if (free < count) {
-      const shortage = { item, requested: count, free, purpose };
+    if (free < amount) {
+      const shortage = { item, requested: amount, free, purpose };
       this.history.push({ at: this.now(), type: 'reserve-failed', ...shortage });
+      this._trimHistory();
       return { ok: false, error: 'insufficient resources', shortage };
     }
-    const reservation = { id: id || `res-${++reservationSeq}`, item, count, remaining: count, purpose, owner, createdAt: this.now(), active: true };
+    const reservation = { id: id || `res-${++reservationSeq}`, item, count: amount, remaining: amount, purpose, owner, createdAt: this.now(), active: true };
     this.reservations.push(reservation);
     this.history.push({ at: this.now(), type: 'reserve', ...reservation });
+    this._trimHistory();
+    this._trimReservations();
     return { ok: true, reservation };
   }
 
@@ -98,9 +118,13 @@ class ResourceLedger {
   commit(reservationId, count) {
     const res = this.reservations.find((r) => r.id === reservationId);
     if (!res) return { ok: false, error: 'unknown reservation' };
-    res.remaining = Math.max(0, res.remaining - count);
+    const amount = Number(count);
+    if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'commit count must be positive' };
+    res.remaining = Math.max(0, res.remaining - amount);
     if (res.remaining === 0) res.active = false;
-    this.history.push({ at: this.now(), type: 'commit', id: reservationId, count, remaining: res.remaining });
+    this.history.push({ at: this.now(), type: 'commit', id: reservationId, count: amount, remaining: res.remaining });
+    this._trimHistory();
+    this._trimReservations();
     return { ok: true, reservation: res };
   }
 
@@ -110,6 +134,8 @@ class ResourceLedger {
     res.active = false;
     res.remaining = 0;
     this.history.push({ at: this.now(), type: 'release', id: reservationId });
+    this._trimHistory();
+    this._trimReservations();
     return true;
   }
 
@@ -148,6 +174,7 @@ class ResourceLedger {
     req.status = success ? 'COMPLETED' : 'FAILED';
     req.completedAt = this.now();
     this.history.push({ at: this.now(), type: 'transfer', id, success });
+    this._trimHistory();
     return true;
   }
 

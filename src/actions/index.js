@@ -197,6 +197,8 @@ class BotActions {
         const chopped = (result.results || []).reduce((sum, r) => sum + (r.chopped || 0), 0);
         result.quantity = chopped;
         result.verified = chopped > 0;
+        // No reachable tree is a location problem, not a failed work order.
+        if (chopped === 0) { result.ok = true; result.pending = true; }
         break;
       }
       case 'MINE_ORE':
@@ -211,6 +213,9 @@ class BotActions {
         result = await this.mining.mineBlocks({ block: task.params?.block || 'stone', radius: 24, limit: 8 });
         result.quantity = result.mined;
         result.verified = result.mined > 0;
+        // Same rule as ore: an empty local search must not burn the task's
+        // remaining attempts and collapse the whole objective.
+        if (result.mined === 0) { result.ok = true; result.pending = true; }
         break;
       case 'FARM_CROP':
         result = await this.farming.harvestAll({ limit: 16, crop: task.params?.crop || null });
@@ -311,7 +316,15 @@ class BotActions {
     if (task.status === 'COMPLETED' || task.status === 'CANCELLED') return { ok: true, idle: true };
     if (!task.claimedBy) {
       const claim = this.taskBoard.claim(task.id, this.bot.name);
-      if (!claim.ok) return { ok: false, error: claim.error };
+      if (!claim.ok) {
+        // A task whose retry budget is exhausted can never be claimed again.
+        // Close it instead of leaving the assignment wedged for every tick.
+        if (claim.error === 'retry limit reached') {
+          this.taskBoard.fail(task.id, 'retry limit reached', { by: null, retry: false });
+          if (coordinator) coordinator.clearAssignment(this.bot.name);
+        }
+        return { ok: false, error: claim.error };
+      }
     }
     if (task.status !== 'ACTIVE') {
       const started = this.taskBoard.start(task.id, this.bot.name);

@@ -57,7 +57,6 @@ function envBool(name, fallback) {
 
 /** The five bot usernames are fixed. Never rename, never add bots. */
 const BOT_NAMES = Object.freeze(['________', '10101000', '01010100', '11001100', '00110000']);
-const DEFAULT_AUTH_PASSWORD = 'chickenbot12345';
 
 const DEFAULT_RESERVES = Object.freeze({
   food: 128,
@@ -107,11 +106,14 @@ const config = {
     // time, with jitter, instead of starting all five bots simultaneously.
     connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 5000),
     connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 1000),
-    // Registration / login (Aternos + AuthMe style plugins). Set
-    // MC_AUTH_ENABLED=false for a server without a password plugin.
+    // Registration / login (Aternos + AuthMe style plugins). There is no
+    // built-in password and no default credential: live connections refuse to
+    // start with auth enabled unless a password is supplied through the
+    // environment or .env. Set MC_AUTH_ENABLED=false for a server without a
+    // password plugin.
     authEnabled: envBool('MC_AUTH_ENABLED', true),
-    registerPassword: env('MC_REGISTER_PASSWORD', DEFAULT_AUTH_PASSWORD),
-    loginPassword: env('MC_LOGIN_PASSWORD', DEFAULT_AUTH_PASSWORD),
+    registerPassword: env('MC_REGISTER_PASSWORD', ''),
+    loginPassword: env('MC_LOGIN_PASSWORD', ''),
     loginCommand: env('MC_LOGIN_COMMAND', '/login {password}'),
     registerCommand: env('MC_REGISTER_COMMAND', '/register {password} {password}'),
     // Accounts already exist on the server, so normal operation is login-only.
@@ -130,9 +132,16 @@ const config = {
     }
   },
   dashboard: {
-    host: env('DASHBOARD_HOST', '0.0.0.0'),
+    // DASHBOARD_LOCAL=true always wins over DASHBOARD_HOST. The server has no
+    // authentication of its own when DASHBOARD_TOKEN is empty, so loopback is
+    // the safe choice on a machine that is not behind the sandbox preview.
+    host: envBool('DASHBOARD_LOCAL', false) ? '127.0.0.1' : env('DASHBOARD_HOST', '0.0.0.0'),
     port: envInt('DASHBOARD_PORT', 3000),
-    bind127: envBool('DASHBOARD_LOCAL', false)
+    bind127: envBool('DASHBOARD_LOCAL', false),
+    // Optional HTTP Basic/Bearer password. Required before exposing the
+    // control plane beyond loopback; an empty value leaves the local demo
+    // unauthenticated and logs a prominent warning when bound non-locally.
+    token: env('DASHBOARD_TOKEN', '')
   },
   team: {
     names: BOT_NAMES,
@@ -225,4 +234,120 @@ const config = {
   logging: { level: env('LOG_LEVEL', 'debug') }
 };
 
-module.exports = { config, BOT_NAMES, loadDotEnv, ROOT };
+/**
+ * Validate a configuration object without contacting a server.
+ *
+ * Env parsing is deliberately forgiving (a typo falls back to a default), so
+ * this is the single place that turns a bad value into a clear startup error
+ * instead of a mysterious socket/behaviour failure later. Pass
+ * `requireCredentials: true` for a live, connecting run: password auth enabled
+ * with no password is a configuration error, not a bot that silently tries to
+ * move unauthenticated.
+ */
+function validateConfig(candidate = config, { requireCredentials = false, simulate = false } = {}) {
+  const errors = [];
+  const warnings = [];
+  const fail = (path, message) => errors.push(`${path}: ${message}`);
+  const warn = (path, message) => warnings.push(`${path}: ${message}`);
+  const integer = (path, value, min, max) => {
+    if (!Number.isInteger(value) || value < min || value > max) fail(path, `must be an integer in ${min}..${max} (got ${value})`);
+  };
+  const boolean = (path, value) => {
+    if (typeof value !== 'boolean') fail(path, `must be true or false (got ${value})`);
+  };
+  const text = (path, value, max = 512) => {
+    if (typeof value !== 'string' || !value.trim()) fail(path, 'must be a non-empty string');
+    else if (value.length > max) fail(path, `must be at most ${max} characters`);
+  };
+
+  if (!candidate || typeof candidate !== 'object') {
+    return { ok: false, errors: ['config: must be an object'], warnings };
+  }
+  const server = candidate.server || {};
+  const dashboard = candidate.dashboard || {};
+  const team = candidate.team || {};
+  const autonomy = candidate.autonomy || {};
+  const reconnect = server.reconnect || {};
+
+  text('server.host', server.host, 255);
+  integer('server.port', server.port, 1, 65535);
+  text('server.version', server.version, 64);
+  if (server.auth !== 'offline' && server.auth !== 'microsoft') fail('server.auth', "must be 'offline' or 'microsoft'");
+  integer('server.connectTimeoutMs', server.connectTimeoutMs, 1000, 600000);
+  integer('server.keepAliveMs', server.keepAliveMs, 1000, 3600000);
+  integer('server.staleAfterMs', server.staleAfterMs, 1000, 3600000);
+  integer('server.rejoinDelayMs', server.rejoinDelayMs, 0, 3600000);
+  integer('server.connectStaggerMs', server.connectStaggerMs, 0, 3600000);
+  integer('server.connectJitterMs', server.connectJitterMs, 0, 3600000);
+  integer('server.versionProbeTimeoutMs', server.versionProbeTimeoutMs, 1000, 120000);
+  integer('server.serverStartDelayMs', server.serverStartDelayMs, 1000, 3600000);
+  integer('server.versionRetryDelayMs', server.versionRetryDelayMs, 1000, 3600000);
+  boolean('server.authEnabled', server.authEnabled);
+  boolean('server.registerOnFirstJoin', server.registerOnFirstJoin);
+  integer('server.authDelayMs', server.authDelayMs, 0, 60000);
+  integer('server.authTimeoutMs', server.authTimeoutMs, 1000, 300000);
+  text('server.loginCommand', server.loginCommand, 255);
+  text('server.registerCommand', server.registerCommand, 255);
+  integer('server.reconnect.maxAttempts', reconnect.maxAttempts, 0, 10000);
+  integer('server.reconnect.baseDelayMs', reconnect.baseDelayMs, 0, 3600000);
+  integer('server.reconnect.maxDelayMs', reconnect.maxDelayMs, 1, 3600000);
+  integer('server.reconnect.throttleDelayMs', reconnect.throttleDelayMs, 0, 3600000);
+  integer('server.reconnect.jitterMs', reconnect.jitterMs, 0, 3600000);
+  if (reconnect.baseDelayMs > reconnect.maxDelayMs) warn('server.reconnect', 'baseDelayMs is greater than maxDelayMs and will be capped');
+
+  text('dashboard.host', dashboard.host, 255);
+  integer('dashboard.port', dashboard.port, 0, 65535);
+  boolean('dashboard.bind127', dashboard.bind127);
+  if (typeof dashboard.token !== 'string') fail('dashboard.token', 'must be a string');
+  else if (dashboard.token && dashboard.token.length < 16) fail('dashboard.token', 'must be at least 16 characters, or empty to leave the local demo open');
+  else if (dashboard.token.length > 256) fail('dashboard.token', 'must be at most 256 characters');
+  const loopbackBind = ['127.0.0.1', '::1', 'localhost'].includes(String(dashboard.host || '').toLowerCase());
+  if (!dashboard.token && !loopbackBind) {
+    warn('dashboard.token', 'is empty while the dashboard is bound beyond loopback; set DASHBOARD_TOKEN before exposing the control plane');
+  }
+
+  if (!Array.isArray(team.names) || team.names.length !== BOT_NAMES.length || team.names.some((name, index) => name !== BOT_NAMES[index])) {
+    fail('team.names', `must be exactly the fixed roster ${BOT_NAMES.join(', ')}`);
+  }
+  integer('team.coordinatorTickMs', team.coordinatorTickMs, 100, 60000);
+  integer('team.claimTtlMs', team.claimTtlMs, 1000, 3600000);
+  integer('team.lockTtlMs', team.lockTtlMs, 1000, 3600000);
+  integer('team.observationTtlMs', team.observationTtlMs, 1000, 86400000);
+  integer('team.maxObservations', team.maxObservations, 1, 100000);
+
+  boolean('autonomy.enabled', autonomy.enabled);
+  integer('autonomy.tickMs', autonomy.tickMs, 50, 60000);
+  integer('autonomy.actionTimeoutMs', autonomy.actionTimeoutMs, 1000, 3600000);
+  boolean('autonomy.pvp', autonomy.pvp);
+  boolean('autonomy.serverPvp', autonomy.serverPvp);
+  if (autonomy.ai && autonomy.ai.enabled) {
+    fail('autonomy.ai.enabled', 'the optional AI hook is not implemented; keep it false so deterministic mode stays authoritative');
+  }
+
+  integer('excavation.maxBlocks', candidate.excavation?.maxBlocks, 1, 10000000);
+  integer('construction.tickEvery', candidate.construction?.tickEvery, 1, 10000);
+  integer('construction.maxProjects', candidate.construction?.maxProjects, 1, 1000);
+  integer('schematics.minimumCount', candidate.schematics?.minimumCount, 1, 100000);
+  integer('schematics.targetCount', candidate.schematics?.targetCount, candidate.schematics?.minimumCount || 1, 100000);
+  if (candidate.logging && !['debug', 'info', 'warn', 'error', 'silent'].includes(candidate.logging.level)) {
+    fail('logging.level', `must be debug, info, warn, error or silent (got ${candidate.logging.level})`);
+  }
+
+  const authEnabled = server.authEnabled !== false;
+  const hasPassword = Boolean(server.loginPassword || server.registerPassword);
+  if (authEnabled && !hasPassword) {
+    if (requireCredentials && !simulate) {
+      fail('server.loginPassword', 'is empty while password auth is enabled; set MC_LOGIN_PASSWORD (or MC_AUTH_ENABLED=false for a server without AuthMe)');
+    } else {
+      warn('server.loginPassword', 'is empty; a live connecting run would refuse to start until it is set');
+    }
+  }
+  if (authEnabled && hasPassword) {
+    const password = String(server.loginPassword || server.registerPassword);
+    if (password.length < 12) warn('server.loginPassword', 'is shorter than 12 characters; use a strong server password');
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+module.exports = { config, BOT_NAMES, loadDotEnv, validateConfig, ROOT };

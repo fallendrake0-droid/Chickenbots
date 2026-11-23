@@ -12,6 +12,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const args = process.argv.slice(2);
@@ -60,6 +61,23 @@ async function main() {
     assert(expected.every((name, index) => BOT_NAMES[index] === name), 'roster order changed');
     assert(config.team.names.every((name, index) => name === expected[index]), 'configured team names changed');
     return expected.join(', ');
+  });
+
+  check('configuration validates without a committed credential', () => {
+    const { config, validateConfig } = requireLocal('src/config.js');
+    const result = validateConfig(config);
+    assert(result.ok, result.errors.join('; '));
+    // Runtime credentials may come from an ignored local .env. What must never
+    // happen is a literal password in the tracked default configuration.
+    const defaults = fs.readFileSync(path.join(ROOT, 'src/config.js'), 'utf8');
+    assert(!/(?:loginPassword|registerPassword|token)\s*:\s*['"`][^'"`\s]+['"`]/.test(defaults), 'a credential literal is committed in src/config.js');
+    return `${result.warnings.length} warning(s); no committed credential literal`;
+  });
+
+  check('tracked tree contains no secret-shaped value', () => {
+    const run = spawnSync(process.execPath, [path.join(ROOT, 'scripts/check-secrets.js')], { cwd: ROOT, encoding: 'utf8', timeout: 30000 });
+    assert(run.status === 0, (run.stderr || run.stdout || 'secret check failed').trim());
+    return 'values never printed';
   });
 
   check('server, PvP and AI defaults are safe', () => {
@@ -148,6 +166,8 @@ async function main() {
 
   if (baseUrl) {
     const base = baseUrl.replace(/\/$/, '');
+    const { config } = requireLocal('src/config.js');
+    const authHeaders = config.dashboard.token ? { authorization: `Bearer ${config.dashboard.token}` } : {};
     const probe = async (name, fn) => {
       try {
         const detail = await fn();
@@ -159,7 +179,7 @@ async function main() {
       }
     };
     const getJson = async (route) => {
-      const response = await fetch(`${base}${route}`, { signal: AbortSignal.timeout(8000), headers: { accept: 'application/json' } });
+      const response = await fetch(`${base}${route}`, { signal: AbortSignal.timeout(8000), headers: { accept: 'application/json', ...authHeaders } });
       assert(response.ok, `${route} returned HTTP ${response.status}`);
       return response.json();
     };
@@ -195,7 +215,7 @@ async function main() {
     });
 
     await probe('live dashboard serves the V6 shell', async () => {
-      const response = await fetch(`${base}/`, { signal: AbortSignal.timeout(8000) });
+      const response = await fetch(`${base}/`, { signal: AbortSignal.timeout(8000), headers: authHeaders });
       assert(response.ok, `root returned HTTP ${response.status}`);
       const html = await response.text();
       assert(html.includes('id="view"'), 'dashboard shell is missing the view root');

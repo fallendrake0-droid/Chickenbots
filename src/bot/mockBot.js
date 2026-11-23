@@ -4,7 +4,7 @@ const { BotAdapter } = require('./adapter');
 const { MockWorld, DROPS } = require('./mockWorld');
 const { delay, CancelledError } = require('../util/async');
 const { distance, key } = require('../util/vec');
-const { PICKAXES, AXES, SHOVELS, SWORDS, toolTier, BED_NAMES, FOODS } = require('../world/items');
+const { BED_NAMES, FOODS } = require('../world/items');
 const { config } = require('../config');
 
 const PICK_REQUIRED = {

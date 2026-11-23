@@ -8,7 +8,6 @@ const { TeamComms } = require('./comms');
 const { EmergencyManager } = require('./emergencies');
 const { computeSlots, separation, normalizeFormation, formationForTask } = require('./formations');
 const { createSurvivalBasePlan } = require('./plans');
-const { scoreTaskForBot } = require('./allocation');
 const { config } = require('../config');
 
 const ROLE_BY_TASK = {
@@ -68,6 +67,11 @@ class TeamCoordinator {
     this.roles = new Map();
     this.formation = config.team.formation;
     this.autoPlan = autoPlan;
+    this.planAttempts = 0;
+    this.planRetryAt = 0;
+    this.planStopped = false;
+    this.planRetryMs = 60000;
+    this.maxAutoPlans = 3;
     this.enabled = false;
     this.ticks = 0;
     this.startedAt = now();
@@ -227,8 +231,19 @@ class TeamCoordinator {
   ensureObjectives() {
     if (!this.autoPlan) return null;
     if (this.board.listObjectives('ACTIVE').length > 0) return null;
+    if (this.planStopped) return null;
+    const now = this.now();
+    if (now < this.planRetryAt) return null;
+    // A failed automatic plan must not be recreated every tick: that filled the
+    // task board with thousands of duplicate objectives and flooded the log.
     const plan = createSurvivalBasePlan(this.board, { botNames: this.botNames });
     if (plan.created) {
+      this.planAttempts++;
+      this.planRetryAt = now + this.planRetryMs;
+      if (this.planAttempts >= this.maxAutoPlans) {
+        this.planStopped = true;
+        if (this.logger) this.logger.error(`automatic planning paused after ${this.planAttempts} failed plan(s); fix the blocking task and restart or add a plan manually`);
+      }
       this.comms.send('OBJECTIVE_CREATED', 'system', { objectiveId: plan.objective.id, title: plan.objective.title });
       if (this.logger) this.logger.info(`new team objective: ${plan.objective.title}`);
     }
@@ -240,13 +255,13 @@ class TeamCoordinator {
     const start = process.hrtime.bigint();
     this.ticks++;
     const now = this.now();
-    const states = [...this.botStates.values()];
     const summary = { tick: this.ticks, at: now, expired: [], emergencies: [], assignments: [], rescues: [], deadlocks: [], leader: this.leader };
 
     // 1. Expire stale claims, locks and regions.
     summary.expired = this.board.expire(now);
 
     // 2. Detect and triage emergencies.
+    const states = [...this.botStates.values()];
     for (const state of states) {
       if (state.connected === false) continue;
       const created = this.emergencies.report(state);
@@ -387,7 +402,6 @@ class TeamCoordinator {
   }
 
   getState() {
-    const states = [...this.botStates.values()];
     const bots = this.botNames.map((name) => {
       const state = this.botStates.get(name) || { name, connected: false, spawned: false, authenticated: false, ready: false, health: 0, food: 0, inventory: {}, position: null };
       const emergency = this.emergencies.byBot(name)[0] || null;

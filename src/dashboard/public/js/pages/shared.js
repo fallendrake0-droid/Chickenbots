@@ -1,6 +1,6 @@
 import { icon } from '../icons.js';
 import { state, bot as getBot, actionsFor, teamMember, tasksFor, botAlerts } from '../store.js';
-import { esc, num, pct, clamp, formatTime, timeAgo, duration, healthTone, progressTone, humanize, initials, BOT_NAMES } from '../utils.js';
+import { esc, num, pct, clamp, formatTime, timeAgo, duration, healthTone, progressTone, humanize, initials, roster } from '../utils.js';
 import { badge, botAvatar, statusDot, progress, kvRows, emptyState, metaList } from '../ui.js';
 import { botStatus, botOnline } from '../botStatus.js';
 
@@ -25,7 +25,7 @@ export function ledger() {
 
 export function botNames() {
   const live = bots().map((entry) => entry.name);
-  return live.length ? live : BOT_NAMES;
+  return live.length ? live : roster();
 }
 
 export function connectionLabel(bot) {

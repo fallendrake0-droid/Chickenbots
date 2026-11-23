@@ -648,6 +648,10 @@ class CombatController {
   _recordKill(target, { verified = false } = {}) {
     if (!target || this.killedIds.has(target.id)) return;
     this.killedIds.add(target.id);
+    if (this.killedIds.size > 1000) {
+      const oldest = this.killedIds.values().next().value;
+      this.killedIds.delete(oldest);
+    }
     this.stats.kills++;
     if (verified) this.stats.verifiedKills++;
     if (target.player) this.stats.playerKills++;

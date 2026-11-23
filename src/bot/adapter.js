@@ -55,6 +55,23 @@ class BotAdapter {
     this.currentTaskId = null;
     this.activity = 'idle';
     this.recentTaskTypes = [];
+    this.shuttingDown = false;
+  }
+
+  // --- lifecycle -----------------------------------------------------------
+  /**
+   * Drop the logical connection. Simulated adapters own no socket, but their
+   * state must still become offline so dashboards and supervisors do not keep
+   * reporting a stopped runtime as five healthy bots.
+   */
+  async disconnect(reason = 'shutdown') {
+    if (typeof this.stopTicking === 'function') this.stopTicking();
+    const wasConnected = Boolean(this.connected);
+    this.connected = false;
+    this.spawned = false;
+    this.authenticated = false;
+    this.activity = 'offline';
+    return { ok: true, wasConnected, reason };
   }
 
   // --- synchronous state helpers -------------------------------------------

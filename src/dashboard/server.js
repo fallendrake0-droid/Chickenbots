@@ -2,6 +2,7 @@
 
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const { config } = require('../config');
 const { statusSnapshot } = require('../runtimeState');
@@ -16,9 +17,68 @@ const logStore = require('../logStore');
 function createDashboard(services, { port = config.dashboard.port, host = config.dashboard.host } = {}) {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', false);
+
+  // Optional control-plane password. Basic auth is used because browsers show
+  // a native prompt and EventSource/fetch reuse the cached credentials. An
+  // empty token is allowed for the loopback demo, but startup warns loudly
+  // when the dashboard is bound beyond loopback.
+  const accessToken = String(config.dashboard.token || '');
+  const sessionCookie = accessToken ? crypto.createHash('sha256').update(`chickenbots:${accessToken}`).digest('hex') : '';
+  const secureEqual = (a, b) => {
+    const left = Buffer.from(String(a));
+    const right = Buffer.from(String(b));
+    return left.length === right.length && crypto.timingSafeEqual(left, right);
+  };
+  const suppliedToken = (req) => {
+    const header = String(req.headers.authorization || '');
+    const basic = header.match(/^Basic\s+(.+)$/i);
+    if (basic) {
+      try {
+        const decoded = Buffer.from(basic[1], 'base64').toString('utf8');
+        // Username is ignored; the password is the configured token.
+        return decoded.includes(':') ? decoded.slice(decoded.indexOf(':') + 1) : decoded;
+      } catch (_) { return ''; }
+    }
+    const bearer = header.match(/^Bearer\s+(.+)$/i);
+    if (bearer) return bearer[1];
+    const cookies = String(req.headers.cookie || '');
+    const match = cookies.match(/(?:^|;\s*)cb_dash=([^;]+)/);
+    return match ? match[1] : '';
+  };
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    res.setHeader('Content-Security-Policy', [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "connect-src 'self'",
+      "font-src 'self'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'self'"
+    ].join('; '));
+    if (req.path === '/healthz' || !accessToken) return next();
+    const supplied = suppliedToken(req);
+    if (secureEqual(supplied, accessToken) || secureEqual(supplied, sessionCookie)) {
+      // Remember the authenticated session so EventSource and static asset
+      // requests do not depend on every browser re-sending Basic credentials.
+      res.setHeader('Set-Cookie', `cb_dash=${sessionCookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
+      return next();
+    }
+    res.setHeader('WWW-Authenticate', 'Basic realm="Chickenbots control plane", charset="UTF-8"');
+    return res.status(401).json({ ok: false, error: 'dashboard authentication required' });
+  });
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
   app.use(express.json({ limit: '2mb' }));
   const publicDir = path.join(__dirname, 'public');
-  app.use('/', express.static(publicDir, {
+  app.use(express.static(publicDir, {
     index: 'index.html',
     setHeaders(res, file) {
       // A running dashboard is frequently updated during commissioning; force
@@ -47,9 +107,26 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     // that a kicked bot no longer reads as online for several seconds.
     eventTimer = setInterval(() => {
       if (!eventClients.size) return;
-      const payload = `event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`;
-      for (const client of eventClients) {
-        try { client.write(payload); } catch (_) { eventClients.delete(client); }
+      let payload;
+      try {
+        payload = `event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`;
+      } catch (err) {
+        // A status-assembly bug must not take down the process or leave the
+        // browser showing the previous (possibly all-online) frame.
+        services.logger?.error(`dashboard snapshot failed: ${err.message}`);
+        payload = `event: error\ndata: ${JSON.stringify({ at: new Date().toISOString(), error: 'state snapshot failed' })}\n\n`;
+      }
+      for (const client of [...eventClients]) {
+        try {
+          // Drop a client that cannot keep up instead of growing the socket
+          // buffer without bound.
+          if (client.writableLength > 1024 * 1024) {
+            eventClients.delete(client);
+            client.end();
+            continue;
+          }
+          client.write(payload);
+        } catch (_) { eventClients.delete(client); }
       }
     }, 1000);
     if (eventTimer.unref) eventTimer.unref();
@@ -60,6 +137,12 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   const rateLimit = (req, res, next) => {
     const now = Date.now();
     const ip = req.ip || req.socket.remoteAddress || 'local';
+    // Prune expired buckets so a long-lived dashboard cannot be memory-DoSed
+    // by many source addresses. The map also has a hard cap.
+    if (buckets.size > 2048) {
+      for (const [key, entry] of buckets) if (entry.resetAt <= now) buckets.delete(key);
+      if (buckets.size > 8192) buckets.clear();
+    }
     const bucket = buckets.get(ip) || { count: 0, resetAt: now + 60000 };
     if (now > bucket.resetAt) { bucket.count = 0; bucket.resetAt = now + 60000; }
     bucket.count++;
@@ -108,6 +191,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       settings: {
         server: { host: config.server.host, port: config.server.port, version: config.server.version, auth: config.server.auth },
         dashboard: { host: config.dashboard.host, port: config.dashboard.port },
+        security: { tokenRequired: Boolean(accessToken), passwordConfigured: Boolean(config.server.loginPassword || config.server.registerPassword) },
         roster: config.team.names,
         pvp: config.autonomy.pvp,
         ai: { enabled: config.autonomy.ai.enabled, provider: config.autonomy.ai.provider || null },
@@ -152,9 +236,13 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     if (!services.commands) return res.status(503).json({ ok: false, error: 'commands unavailable' });
     const { line, confirm } = req.body || {};
     if (!line) return res.status(400).json({ ok: false, error: 'missing command line' });
-    const result = await services.commands.execute(line, { source: 'dashboard', operator: (req.body && req.body.operator) || 'dashboard', confirmed: Boolean(confirm) });
-    invalidate();
-    res.json(result);
+    try {
+      const result = await services.commands.execute(line, { source: 'dashboard', operator: (req.body && req.body.operator) || 'dashboard', confirmed: confirm === true });
+      invalidate();
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   });
 
   app.get('/api/schematics', (req, res) => {
@@ -209,6 +297,13 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   });
 
   app.get('/api/events', (req, res) => {
+    // Bound the number of live streams; each one holds a socket and a timer
+    // reference for as long as the browser keeps it open.
+    while (eventClients.size >= 50) {
+      const oldest = eventClients.values().next().value;
+      eventClients.delete(oldest);
+      try { oldest.end(); } catch (_) { /* already gone */ }
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -216,7 +311,12 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       'X-Accel-Buffering': 'no'
     });
     res.write('retry: 3000\n\n');
-    res.write(`event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`);
+    try {
+      res.write(`event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`);
+    } catch (err) {
+      res.end(`event: error\ndata: ${JSON.stringify({ error: 'state snapshot failed' })}\n\n`);
+      return;
+    }
     eventClients.add(res);
     startEventTimer();
     req.on('close', () => {
@@ -229,6 +329,19 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   });
 
   app.use((req, res) => res.status(404).json({ ok: false, error: 'not found' }));
+  // Never return Express's default HTML stack trace (which includes local
+  // filesystem paths) to a network client.
+  app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+    const status = Number(err.status || err.statusCode) || 500;
+    const message = status === 413 ? 'request body too large' : status >= 500 ? 'internal server error' : (err.message || 'request failed');
+    if (status >= 500) services.logger?.error(`dashboard request failed: ${err.message}`);
+    if (res.headersSent) return res.end();
+    return res.status(status).json({ ok: false, error: message });
+  });
+
+  if (!accessToken && !['127.0.0.1', '::1', 'localhost'].includes(String(host).toLowerCase())) {
+    services.logger?.warn(`dashboard is bound to ${host}:${port} without DASHBOARD_TOKEN; anyone who can reach this port can issue commands`);
+  }
 
   const server = http.createServer(app);
   return {

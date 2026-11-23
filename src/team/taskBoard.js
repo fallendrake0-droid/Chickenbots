@@ -1,6 +1,6 @@
 'use strict';
 
-const { boxesOverlap, boxVolume } = require('../util/vec');
+const { boxesOverlap } = require('../util/vec');
 
 const TASK_STATUS = Object.freeze({ PENDING: 'PENDING', CLAIMED: 'CLAIMED', ACTIVE: 'ACTIVE', BLOCKED: 'BLOCKED', COMPLETED: 'COMPLETED', FAILED: 'FAILED', CANCELLED: 'CANCELLED' });
 const OBJECTIVE_STATUS = Object.freeze({ ACTIVE: 'ACTIVE', COMPLETED: 'COMPLETED', FAILED: 'FAILED', CANCELLED: 'CANCELLED' });
@@ -15,10 +15,11 @@ let taskSeq = 0;
  * Everything is coordinated here so two bots can never claim the same work.
  */
 class TaskBoard {
-  constructor({ claimTtlMs = 45000, lockTtlMs = 30000, maxTasks = 4000, now = () => Date.now() } = {}) {
+  constructor({ claimTtlMs = 45000, lockTtlMs = 30000, maxTasks = 4000, maxObjectives = 500, now = () => Date.now() } = {}) {
     this.claimTtlMs = claimTtlMs;
     this.lockTtlMs = lockTtlMs;
     this.maxTasks = maxTasks;
+    this.maxObjectives = maxObjectives;
     this.now = now;
     this.objectives = new Map();
     this.tasks = new Map();
@@ -39,6 +40,15 @@ class TaskBoard {
   // ------------------------------------------------------------------
   createObjective(spec) {
     if (!spec || !spec.title) throw new Error('objective requires a title');
+    if (this.objectives.size >= this.maxObjectives) {
+      const terminal = [...this.objectives.values()]
+        .filter((objective) => objective.status !== OBJECTIVE_STATUS.ACTIVE)
+        .sort((a, b) => (a.completedAt || a.createdAt) - (b.completedAt || b.createdAt));
+      while (this.objectives.size >= this.maxObjectives && terminal.length) {
+        this.objectives.delete(terminal.shift().id);
+      }
+      if (this.objectives.size >= this.maxObjectives) throw new Error(`objective limit reached (${this.maxObjectives})`);
+    }
     const id = spec.id || `obj-${this.objectives.size + 1}-${Date.now().toString(36)}`;
     if (this.objectives.has(id)) throw new Error(`objective ${id} already exists`);
     const objective = {
@@ -164,6 +174,9 @@ class TaskBoard {
     if (!task) return { ok: false, error: 'unknown task' };
     if (!botId) return { ok: false, error: 'botId required' };
     if (task.status === TASK_STATUS.COMPLETED || task.status === TASK_STATUS.CANCELLED) return { ok: false, error: `task ${task.status}` };
+    // Repeated claims by the same owner are idempotent: re-acquiring the
+    // resource locks would inflate their reentrancy count and leak them.
+    if (task.claimedBy === botId) return { ok: true, task, already: true };
     if (task.claimedBy && task.claimedBy !== botId) {
       if (!force) {
         this._noteWait(botId, `task:${taskId}`);
@@ -178,9 +191,23 @@ class TaskBoard {
       const conflict = this.regionConflicts(task.region, botId);
       if (conflict) return { ok: false, error: `region conflict with ${conflict.owner}`, heldBy: conflict.owner };
     }
+    const acquired = [];
     for (const key of task.lockKeys) {
       const lock = this.acquireLock(key, botId, { label: task.type });
-      if (!lock.ok) return { ok: false, error: `lock ${key} held by ${lock.heldBy}`, heldBy: lock.heldBy };
+      if (!lock.ok) {
+        // All-or-nothing: release the locks this claim already took so a
+        // partial failure cannot block another bot until the TTL expires.
+        for (const held of acquired) this.releaseLock(held, botId);
+        return { ok: false, error: `lock ${key} held by ${lock.heldBy}`, heldBy: lock.heldBy };
+      }
+      acquired.push(key);
+    }
+    if (task.region) {
+      const region = this.reserveRegion(botId, task.region, { taskId: task.id, label: task.label });
+      if (!region.ok) {
+        for (const held of acquired) this.releaseLock(held, botId);
+        return { ok: false, error: region.error, conflict: region.conflict };
+      }
     }
     task.claimedBy = botId;
     task.claimedAt = this.now();
@@ -188,7 +215,6 @@ class TaskBoard {
     task.status = TASK_STATUS.CLAIMED;
     task.attempts += 1;
     task.lastError = null;
-    if (task.region) this.reserveRegion(botId, task.region, { taskId: task.id, label: task.label });
     this._clearWait(botId);
     this._event('task.claimed', { taskId, botId });
     return { ok: true, task };
@@ -250,7 +276,9 @@ class TaskBoard {
   complete(taskId, { by = null, verified = false, notes = '' } = {}) {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'unknown task' };
-    if (task.claimedBy && by && task.claimedBy !== by) return { ok: false, error: 'completed by non-owner' };
+    // A completion without an owner identity is never trustworthy when the
+    // task is claimed; verified work must identify the bot that did it.
+    if (task.claimedBy && task.claimedBy !== by) return { ok: false, error: 'completed by non-owner' };
     if (!verified) return { ok: false, error: 'unverified completion rejected' };
     task.status = TASK_STATUS.COMPLETED;
     task.completedAt = this.now();
@@ -265,7 +293,7 @@ class TaskBoard {
   fail(taskId, reason, { by = null, retry = true } = {}) {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'unknown task' };
-    if (task.claimedBy && by && task.claimedBy !== by) return { ok: false, error: 'not owner' };
+    if (task.claimedBy && task.claimedBy !== by) return { ok: false, error: 'not owner' };
     task.lastError = reason || 'unknown failure';
     this._releaseTaskResources(task);
     if (retry && task.attempts < task.maxAttempts) {
@@ -281,7 +309,10 @@ class TaskBoard {
     this._event('task.failed', { taskId, reason: task.lastError });
     if (task.objectiveId) {
       const obj = this.objectives.get(task.objectiveId);
-      if (obj) obj.status = OBJECTIVE_STATUS.FAILED;
+      if (obj) {
+        obj.status = OBJECTIVE_STATUS.FAILED;
+        obj.completedAt = this.now();
+      }
     }
     return { ok: true, retry: false, task };
   }

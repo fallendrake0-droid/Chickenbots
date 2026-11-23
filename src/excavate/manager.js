@@ -66,6 +66,15 @@ class ExcavationManager {
     return { ok: true, plan, text: formatPlan(plan), previewId };
   }
 
+  _trimExcavations(max = 100) {
+    if (this.excavations.size <= max) return;
+    const terminal = new Set(['COMPLETED', 'STOPPED', 'CANCELLED', 'FAILED', 'UNDONE']);
+    const removable = [...this.excavations.values()].filter((exc) => terminal.has(exc.status));
+    while (this.excavations.size > max && removable.length) {
+      this.excavations.delete(removable.shift().id);
+    }
+  }
+
   _trimPreviews() {
     while (this.previews.size > 20) {
       const oldest = this.previews.keys().next().value;
@@ -119,7 +128,6 @@ class ExcavationManager {
     }
     const supervisor = this.coordinator ? this.coordinator.leader : null;
     const botNames = this.coordinator ? this.coordinator.botNames : [];
-    const workerCount = opts.team ? botNames.length : Math.min(4, botNames.length || 4);
     const planRegions = plan.regions && plan.regions.length ? plan.regions : [];
     const uses = planRegions.length ? planRegions : [];
     const assignment = assignRegions(uses, botNames, { supervisor, includeSupervisor: Boolean(opts.team) });
@@ -165,7 +173,6 @@ class ExcavationManager {
         return { ok: false, error: created.error };
       }
       excavation.tasks = created.tasks.filter((t) => t.ok).map((t) => {
-        const region = plan.regions.find((r) => r.id === (t.region.id || t.region));
         const assigned = excavation.assignments.find((a) => a.regionId === (t.region.id || t.region));
         return { taskId: t.task.id, regionId: t.region.id, region: t.region.box, volume: t.region.volume, assignedTo: assigned ? assigned.bot : null };
       });
@@ -192,6 +199,7 @@ class ExcavationManager {
       }
     }
     this.excavations.set(excavation.id, excavation);
+    this._trimExcavations();
     this._event('started', excavation);
     if (this.coordinator) {
       this.coordinator.comms.send('OBJECTIVE_CREATED', 'system', { objectiveId: excavation.objectiveId, title: 'EXCAVATION', excavationId: excavation.id });

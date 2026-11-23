@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { config, BOT_NAMES } = require('./config');
+const { config, BOT_NAMES, validateConfig } = require('./config');
 const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
 const { printStartupBanner } = require('./branding');
@@ -45,13 +45,23 @@ async function main() {
   if (args.help) { usage(); return 0; }
   printStartupBanner();
   const logger = new Logger({ level: config.logging.level });
+  const validation = validateConfig(config, {
+    requireCredentials: !args.simulate && args.connect,
+    simulate: args.simulate
+  });
+  for (const warning of validation.warnings) logger.warn(`config warning: ${warning}`);
+  if (!validation.ok) {
+    for (const error of validation.errors) logger.error(`config error: ${error}`);
+    process.stderr.write('\nRefusing to start with an invalid configuration. Fix the above and retry.\n');
+    return 2;
+  }
   logger.info('runtime starting');
   logger.info(`roster: ${BOT_NAMES.join(', ')}`);
   logger.info(args.simulate ? 'mode: deterministic simulation' : `mode: live (${config.server.host}:${config.server.port}, version ${config.server.version})`);
   logger.info(`logging: ${config.logging.level} (movement/auth/lifecycle tracing ${config.logging.level === 'debug' ? 'on' : 'partial; set LOG_LEVEL=debug for every packet'})`);
   if (!args.simulate) {
     const passwordConfigured = Boolean(config.server.loginPassword || config.server.registerPassword);
-    logger.info(passwordConfigured ? 'password authentication: configured' : 'password authentication: not configured (MC_LOGIN_PASSWORD / MC_REGISTER_PASSWORD empty)');
+    logger.info(passwordConfigured ? 'password authentication: configured (value redacted)' : 'password authentication: not configured (MC_LOGIN_PASSWORD / MC_REGISTER_PASSWORD empty)');
   }
   const runtime = await createRuntime({
     simulate: args.simulate,
@@ -79,22 +89,30 @@ async function main() {
     process.stdout.write('\nForced exit.\n');
     process.exit(code);
   };
-  const shutdown = async (signal) => {
-    if (shuttingDown) { forceExit(); return; }
+  const shutdown = async (signal, exitCode = 0) => {
+    if (shuttingDown) { forceExit(exitCode || 130); return; }
     shuttingDown = true;
-    process.stdout.write(`\nReceived ${signal}; shutting down…\n`);
+    process.stdout.write(`\n${signal}; shutting down…\n`);
     // Never let a stuck dashboard socket or reconnect timer keep the terminal
     // captive: Ctrl+C once is graceful, twice (or 5s) is immediate.
     const watchdog = setTimeout(() => forceExit(), 5000);
     if (watchdog.unref) watchdog.unref();
     try { await runtime.shutdown(signal); } catch (err) { logger.error(err.message); }
     clearTimeout(watchdog);
-    process.exit(0);
+    process.exit(exitCode);
   };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('unhandledRejection', (reason) => logger.error(`unhandled rejection: ${reason && reason.message ? reason.message : reason}`));
-  process.on('uncaughtException', (err) => logger.error(`uncaught exception: ${err.stack || err.message}`));
+  const fatal = (kind, error) => {
+    if (shuttingDown) return;
+    const detail = error && error.stack ? error.stack : (error && error.message ? error.message : String(error));
+    logger.error(`${kind}: ${detail}`);
+    // Continuing after an uncaught exception risks half-applied world actions
+    // and a dashboard that lies about state. Shut down honestly instead.
+    shutdown(kind, 1);
+  };
+  process.on('SIGINT', () => shutdown('Received SIGINT'));
+  process.on('SIGTERM', () => shutdown('Received SIGTERM'));
+  process.on('unhandledRejection', (reason) => fatal('unhandled rejection', reason));
+  process.on('uncaughtException', (err) => fatal('uncaught exception', err));
   return 0;
 }
 

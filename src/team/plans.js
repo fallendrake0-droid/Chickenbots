@@ -77,7 +77,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
   })).filter(Boolean);
 
   const ironQuotas = splitQuota(64, 2);
-  const ironTasks = ironQuotas.map((q, i) => add({
+  ironQuotas.map((q, i) => add({
     type: 'MINE_ORE',
     label: `Mine ${q} iron ore (${i + 1}/2)`,
     priority: 64,
@@ -134,7 +134,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     estimatedMs: 180000
   });
 
-  const storage = add({
+  add({
     type: 'STORE_ITEMS',
     label: 'Install shared storage',
     priority: 60,
@@ -145,7 +145,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     estimatedMs: 90000
   });
 
-  const beds = add({
+  add({
     type: 'PLACE_BED',
     label: 'Install five beds',
     priority: 74,

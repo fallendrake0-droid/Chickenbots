@@ -1,6 +1,7 @@
 'use strict';
 
 const { distance2d } = require('../util/vec');
+const { BOT_NAMES } = require('../config');
 
 const OBSERVATION_TYPES = Object.freeze([
   'ORE_DEPOSIT', 'TREE', 'CAVE', 'VILLAGE', 'STRUCTURE', 'THREAT', 'BED',
@@ -40,7 +41,7 @@ class TeamMemory {
   }
 
   _isBotName(name) {
-    return typeof name === 'string' && name.length > 0 && name.length <= 24;
+    return typeof name === 'string' && BOT_NAMES.includes(name);
   }
 
   _identity(obs) {

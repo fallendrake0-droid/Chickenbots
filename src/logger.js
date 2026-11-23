@@ -2,6 +2,7 @@
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 };
 const logStore = require('./logStore');
+const { redactString, redactValue } = require('./util/redact');
 
 class Logger {
   constructor(scope = 'chickenbots', level = process.env.LOG_LEVEL || 'info') {
@@ -29,7 +30,13 @@ class Logger {
 
   _log(level, msg, meta) {
     if (LEVELS[level] < this.level) return;
-    const entry = { ts: Date.now(), level, scope: this.scope, msg: String(msg), meta: meta === undefined ? null : meta };
+    const entry = {
+      ts: Date.now(),
+      level,
+      scope: this.scope,
+      msg: redactString(msg),
+      meta: meta === undefined ? null : redactValue(meta)
+    };
     logStore.record(entry);
     this.history.push(entry);
     if (this.history.length > this.maxHistory) this.history.shift();
@@ -41,7 +48,7 @@ class Logger {
       try { sink(entry); } catch (_) { /* a broken sink must never break a bot */ }
     }
     if (this.sinks.length === 0) {
-      const metaStr = meta === undefined ? '' : ` ${safeJson(meta)}`;
+      const metaStr = entry.meta === null ? '' : ` ${safeJson(entry.meta)}`;
       process.stdout.write(`[${new Date(entry.ts).toISOString()}] ${level.toUpperCase().padEnd(5)} ${this.scope}: ${entry.msg}${metaStr}\n`);
     }
   }

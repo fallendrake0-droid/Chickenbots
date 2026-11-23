@@ -1,5 +1,6 @@
 import { api, ApiError } from './api.js';
 import { botOnline } from './botStatus.js';
+import { configureRoster } from './utils.js';
 
 const PREFS_KEY = 'chickenbots.prefs.v1';
 const SAMPLE_LIMIT = 80;
@@ -77,7 +78,10 @@ export async function init() {
     state.commandHistory = commandsResult.value.history || [];
     state.taskTypes = commandsResult.value.taskTypes || [];
   }
-  if (settingsResult.status === 'fulfilled') state.settings = settingsResult.value.settings;
+  if (settingsResult.status === 'fulfilled') {
+    state.settings = settingsResult.value.settings;
+    configureRoster(state.settings && state.settings.roster);
+  }
   state.loading = false;
   emit('init');
   connectEvents();
@@ -94,6 +98,9 @@ function applySnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return;
   state.snapshot = snapshot;
   state.lastStateAt = Date.now();
+  if (Array.isArray(snapshot.bots) && snapshot.bots.length && !state.settings) {
+    configureRoster(snapshot.bots.map((entry) => entry.name));
+  }
   state.error = null;
   const point = { at: Date.now(), bots: {} };
   for (const bot of snapshot.bots || []) {

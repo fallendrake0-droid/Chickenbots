@@ -25,13 +25,6 @@ function intArg(value, name, { min = -300000, max = 300000 } = {}) {
   return n;
 }
 
-function numArg(value, name, { min = 0, max = 100000 } = {}) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) throw new CommandError(`${name} must be a number`);
-  if (n < min || n > max) throw new CommandError(`${name} out of range (${min}..${max})`);
-  return n;
-}
-
 function parseOrigin(args, start = 0) {
   return { x: intArg(args[start], 'x'), y: intArg(args[start + 1], 'y', { min: -64, max: 320 }), z: intArg(args[start + 2], 'z') };
 }
@@ -69,8 +62,6 @@ function targetActions(services, target) {
   if (!value || value === 'all' || value === 'fleet' || value === 'team') return allActions(services);
   return [actionsFor(services, pickBot(services, value).name)];
 }
-
-function requireCity(services) { return services; }
 
 const SURVIVAL_FEATURES = ['eat', 'healing', 'armour', 'tools', 'crafting', 'shield'];
 const ORE_ALIASES = {
@@ -140,6 +131,17 @@ function formatCheck(checks) {
   return checks.map((c) => ({ name: c.name, ok: Boolean(c.ok), detail: c.detail }));
 }
 
+function trimBuilders(services, max = 50) {
+  if (!services.builders || services.builders.size <= max) return;
+  const terminal = new Set(['COMPLETE', 'FAILED', 'CANCELLED']);
+  const removable = [...services.builders.values()].filter((builder) => terminal.has(builder.status().state));
+  while (services.builders.size > max && removable.length) {
+    const builder = removable.shift();
+    services.builders.delete(builder.id);
+    if (services.actions) for (const actions of services.actions.list()) actions.builders.delete(builder.id);
+  }
+}
+
 async function buildDesign(services, design, { origin = null, confirm = false, run = false, runSteps = 30, kind = 'build' } = {}) {
   const bots = [...services.bots.values()];
   if (!bots.length) throw new CommandError('no bots connected');
@@ -160,6 +162,7 @@ async function buildDesign(services, design, { origin = null, confirm = false, r
   if (!started.ok) return { ok: false, error: started.error, buildId: builder.id, analysis: builder.analyze(), needsConfirmation: started.needsConfirmation, conflicts: started.conflicts };
   services.builders.set(builder.id, builder);
   if (services.actions) for (const actions of services.actions.list()) actions.builders.set(builder.id, builder);
+  trimBuilders(services);
   let execution = null;
   if (run) {
     execution = await builder.run({ maxIterations: runSteps });
@@ -1391,7 +1394,7 @@ function registerConstruction(registry, services) {
       if (sub === 'preview') return m.preview();
       if (sub === 'advance' || sub === 'run' || sub === 'start') {
         if (!ctx.confirmed) return { ok: false, error: `${sub} performs site preparation and world changes; append confirm`, code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
-        const project = projectOrThrow();
+        projectOrThrow();
         m.setAutonomy(true);
         if (sub === 'advance') return m.advance({ maxPhases: args[1] ? intArg(args[1], 'phases', { min: 1, max: 19 }) : 1 });
         return m.run({ maxPhases: args[1] ? intArg(args[1], 'phases', { min: 1, max: 76 }) : 76 });

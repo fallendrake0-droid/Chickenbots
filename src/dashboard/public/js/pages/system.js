@@ -287,7 +287,7 @@ export const logsPage = {
                 ['Dashboard', `${esc(config.dashboard && config.dashboard.host || '—')}:${esc(config.dashboard && config.dashboard.port || '—')}`],
                 ['PVP', config.pvp ? 'Enabled' : 'Disabled'],
                 ['AI planner', config.ai ? 'Enabled' : 'Disabled']
-              ])}
+              ], { htmlValues: true })}
             </div>
           </section>
           <section class="card">
@@ -384,7 +384,8 @@ export const settingsPage = {
                 ['Port', esc(settings.server.port), true],
                 ['Protocol version', esc(settings.server.version || '—'), true],
                 ['Authentication mode', esc(settings.server.auth || 'offline')],
-                ['Dashboard bind', esc(`${settings.dashboard.host}:${settings.dashboard.port}`), true]
+                ['Dashboard bind', esc(`${settings.dashboard.host}:${settings.dashboard.port}`), true],
+                ['Control-plane auth', settings.security && settings.security.tokenRequired ? 'Token required' : 'No token (local demo only)']
               ])}
               <p class="tiny muted" style="margin:10px 0 0">Credentials are never returned by the settings API.</p>
             </div>
@@ -406,7 +407,7 @@ export const settingsPage = {
                 ['Paused', settings.autonomy.paused ? badge('Yes', 'warn') : 'No'],
                 ['AI planner', settings.ai.enabled ? badge(`Enabled (${settings.ai.provider || 'provider'})`, 'info') : badge('Disabled', 'neutral')],
                 ['PVP', settings.pvp ? badge('Enabled', 'warning') : badge('Disabled', 'neutral')]
-              ])}
+              ], { htmlValues: true })}
               <div class="row gap-2" style="margin-top:12px">
                 <button class="button" type="button" data-command="pause">${icon('pause')} Pause</button>
                 <button class="button" type="button" data-command="resume">${icon('play')} Resume</button>

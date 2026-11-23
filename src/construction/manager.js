@@ -94,6 +94,18 @@ class ConstructionManager {
   createProject({ schematicId, origin = null, rotation = 0, name = null, priority = 50, budgetBlocks = null, excavationDepth = 2 } = {}) {
     const design = this.library.get(schematicId) || this.library.get(String(schematicId || '').split(':')[0]);
     if (!design) return { ok: false, error: `unknown schematic: ${schematicId}` };
+    if (this.projects.size >= this.maxProjects) {
+      // The limit is for concurrent work, not lifetime work: retire the oldest
+      // finished project before refusing a new one.
+      const terminal = [...this.projects.values()]
+        .filter((project) => [STATUS.COMPLETE, STATUS.CANCELLED].includes(project.status))
+        .sort((a, b) => String(a.completedAt || a.createdAt).localeCompare(String(b.completedAt || b.createdAt)));
+      while (this.projects.size >= this.maxProjects && terminal.length) {
+        const old = terminal.shift();
+        this.projects.delete(old.id);
+        if (this.activeId === old.id) this.activeId = null;
+      }
+    }
     if (this.projects.size >= this.maxProjects) return { ok: false, error: `project limit reached (${this.maxProjects}); complete or cancel an old project` };
     const schematic = this.library.build(design.id);
     if (!schematic) return { ok: false, error: `cannot build schematic data for ${design.id}` };

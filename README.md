@@ -32,7 +32,7 @@ npm start                     # live: connects all five bots
 npm start -- --simulate       # deterministic local simulation (no network)
 npm run cli -- --simulate     # interactive command shell
 npm test                      # full test suite
-npm run validate              # lint + tests + full 1120-design validation + consistency
+npm run validate              # secret scan + lint + tests + full 1120-design validation + consistency
 ```
 
 Dashboard (live or simulated): <http://127.0.0.1:3000>. In the Arena sandbox the same server is
@@ -47,7 +47,7 @@ Useful scripts:
 | `npm run cli -- --simulate "status"` | runs one command through the shared validated handler |
 | `npm test` | all layer tests (team, excavation, construction, schematics, builder, survival, combat, controllers) |
 | `npm run lint` | syntax check + project-specific safety rules + ESLint |
-| `npm run validate` | lint, tests, full library regeneration/validation and consistency checks |
+| `npm run validate` | secret scan, lint, tests, full library regeneration/validation and consistency checks |
 | `npm run deploy:check -- --url http://127.0.0.1:3000` | read-only commissioning check: config, V5/V6 surfaces, browser URLs, live health/state/commands |
 | `npm run schematics:generate` | regenerates `data/schematics/manifest.json` from the seeded generator |
 | `npm run schematics:validate` | regenerates every design, verifies hashes, materials, phases, support |
@@ -292,7 +292,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `5000` / `1000` | gap between joining bots; the runtime serializes logins and pauses all joins after an Aternos throttle |
 | `MC_THROTTLE_DELAY_MS` | `30000` | minimum retry delay after a throttled join |
-| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | `chickenbot12345` | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
+| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
@@ -303,12 +303,20 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `0.0.0.0` | bind address (sandbox preview needs this) |
+| `DASHBOARD_LOCAL` | `false` | force `127.0.0.1` regardless of `DASHBOARD_HOST` |
+| `DASHBOARD_TOKEN` | *(empty)* | optional 16+ character control-plane password (HTTP Basic password or Bearer token); set it before exposing the dashboard beyond loopback |
 | `LOG_LEVEL` | `debug` | `debug` prints movement/auth/lifecycle traces; use `info` for quiet runs |
 | `AUTONOMY_ENABLED` | `true` | autonomy request; still gated on connection+auth+spawn |
 | `PvP_ENABLED` | `false` | PvP stays off unless explicitly enabled |
 | `SERVER_PVP_ENABLED` | `true` | set `false` when the Minecraft server itself has `pvp=false`; all PvP is then refused |
 | `EXCAVATE_MAX_BLOCKS` | `250000` | refusal limit for a single excavation |
 | `AI_PROVIDER`, `AI_ENDPOINT`, `AI_API_KEY` | *(empty)* | unused; AI hook disabled |
+
+**Credential note.** Earlier revisions of this repository contained a literal demo password in
+`src/config.js`, `.env.example` and this README. It has been removed from the current tree; no value is
+reproduced here. Treat that historical value as compromised, rotate the Minecraft/AuthMe password for
+the five accounts, and keep the new value only in an untracked `.env`. `npm run check:secrets` fails if
+a credential-shaped value or the old demo value is committed again.
 
 The five usernames are frozen in `src/config.js`. `RealBot` throws if asked to construct any other
 name, and the runtime always builds exactly the same five bots.
@@ -448,7 +456,7 @@ npm run test:survival          # survival, combat, mining, woodcutting, farming,
 npm run test:combat            # weapons, armour, totems, supplies, mobs, PvP policy, controller, team
 npm run test:features          # fishing, structure clues, sleep automation, build pause/resume, command surface
 npm run test:construction      # survey hazards, BOM, warehouse, pipeline, rotation, command families
-npm run validate               # lint + tests + full library validation + consistency
+npm run validate               # secret scan + lint + tests + full library validation + consistency
 ```
 
 The suite asserts real behaviour, not just return codes: blocks disappear from the mock world, ores
@@ -477,13 +485,15 @@ commissioning.
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
   Bots join one at a time with jitter, and throttled joins use a 30-second floor before retrying.
-  When `MC_LOGIN_PASSWORD` is set (the default is `chickenbot12345`), every join sends only `/login`
-  because the accounts already exist. If the server answers `You are not registered.`, Chickenbots
+  When `MC_LOGIN_PASSWORD` is set (there is no built-in default; put it in an untracked `.env`),
+  every join sends only `/login` because the accounts already exist. If the server answers `You are not registered.`, Chickenbots
   creates that account once (`/register`) and retries `/login`. Set
   `MC_AUTH_REGISTER_ON_FIRST_JOIN=true` to register before the first login attempt instead. Movement is frozen and autonomy stays gated until the
   server confirms authentication in chat; all position/look/flying packets are held so Paper or AuthMe
   cannot kick the bot for moving before login. A failed or unconfirmed password disconnects the bot
-  instead of letting it move.
+  instead of letting it move. An operator/staff kick or a ban pauses automatic retries for that bot;
+  reconnect explicitly from the dashboard after reviewing the reason. Generic network/protocol kicks
+  still use bounded, jittered backoff, and the runtime never deliberately spams reconnects.
   A server-side `Invalid move player packet` kick on Minecraft 26.x is normally caused by a missing
   `client_tick_end`; Chickenbots sends it after every movement packet. If kicks continue, set
   `MC_VERSION` to the server's exact version instead of `auto`.
@@ -494,7 +504,11 @@ commissioning.
   advertises a newer status name than the protocol it answered with, the protocol mapping wins.
   `LOG_LEVEL=debug` (the default) prints each outgoing movement packet, each server position packet,
   auth timing, spawn/respawn events, and a 40-event trace dump when a bot is kicked. Passwords are
-  never printed; auth commands and echoed `/register`/`/login` chat are redacted.
+  never printed; auth commands, echoed `/register`/`/login` chat, configured secret values and
+  password/token-shaped metadata are redacted centrally before they reach the terminal, log store or
+  dashboard. A control-plane token is optional for the sandbox demo but should always be set when the
+  dashboard is reachable from an untrusted network; without it the server logs a warning and applies
+  same-origin, rate-limit, CSP and no-store protections only.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
   real placement; a Grandmaster design is a multi-session project, not instant.
 * The construction pipeline is validated against `MockWorld`. Live operation still depends on the

@@ -23,7 +23,8 @@
     "test:features": "node --test --test-concurrency=1 tests/v4-features.test.js",
     "test:construction": "node --test --test-concurrency=1 tests/construction.test.js",
     "test:schematics": "node --test --test-concurrency=1 tests/schematics.test.js tests/builder.test.js",
-    "test:combat": "node --test --test-concurrency=1 tests/combat.test.js"
+    "test:combat": "node --test --test-concurrency=1 tests/combat.test.js",
+    "check:secrets": "node scripts/check-secrets.js"
   },
   "dependencies": {
     "express": "^4.21.2",

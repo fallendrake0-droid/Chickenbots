@@ -74,7 +74,6 @@ function shell(grid, { w, l, shape = 'rect', floors = 1, floorHeight = 4, wallTh
             let name = palette.wall;
             if (corner) name = palette.frame;
             if (boundary && isWindowHeight) {
-              const sx = x + (doorSide === 'north' ? 0 : 0);
               const pattern = (x * 3 + z * 5 + f * 7) % (windowPattern === 'sparse' ? 9 : windowPattern === 'dense' ? 3 : 5);
               if (floorHeight >= 3 && pattern === 0) name = palette.glass;
             }

@@ -608,7 +608,7 @@ function renderPreview(preview) {
         ['Regions', num(plan.regions ?? 0)],
         ['Bounds', esc(boundsText(plan.bounds))],
         ['Authorisation', plan.authorizationRequired ? badge('Required', 'warn') : badge('Not required', 'ok')]
-      ])}
+      ], { htmlValues: true })}
       ${(plan.warnings || []).length ? `<div class="callout callout--warn" style="margin-top:10px">${icon('alert')}<div>${plan.warnings.map((warning) => esc(warningText(warning))).join('<br>')}</div></div>` : ''}
       <button class="button button--danger" type="button" data-start-preview="${esc(preview.previewId || plan.id)}" style="margin-top:12px">${icon('shovel')} Start this excavation</button>
     </div>`;

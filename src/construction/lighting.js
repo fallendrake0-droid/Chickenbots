@@ -1,6 +1,5 @@
 'use strict';
 
-const { distance } = require('../util/vec');
 
 /** Actual block-light emission values used by modern Java Edition. */
 const LIGHT_SOURCES = Object.freeze({
@@ -51,8 +50,6 @@ const HOSTILE_SPAWN_RULES = Object.freeze({
     guardian: 'ocean monument rules'
   }
 });
-
-function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 
 function makeBlockAccess({ bot = null, blockAt = null, surfaceAt = null } = {}) {
   if (bot) {

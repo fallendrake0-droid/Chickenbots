@@ -3,7 +3,7 @@
 const { Logger } = require('../logger');
 const { classifyBlock, isAir } = require('../excavate/safety');
 const { PHASES } = require('../schematics/blockGrid');
-const { distance, boxVolume } = require('../util/vec');
+const { distance } = require('../util/vec');
 
 const DEFAULT_CHUNK_SIZE = 96;
 

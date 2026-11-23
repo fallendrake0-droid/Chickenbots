@@ -46,4 +46,29 @@ function sleep(ms, signal = null) {
   });
 }
 
-module.exports = { isThrottleError, reconnectDelay, staggerDelay, sleep };
+module.exports = { isThrottleError, reconnectDelay, staggerDelay, sleep, classifyKick };
+
+/**
+ * Classify why a socket ended. Operator/staff kicks and bans must stop the
+ * automatic reconnect loop: immediately rejoining after moderation is spam
+ * and can turn a temporary kick into a ban. A generic network/protocol kick
+ * remains retryable with backoff.
+ */
+function classifyKick(reason) {
+  const text = String(reason || '').toLowerCase();
+  if (/\b(banned|ban|blacklisted|blacklist)\b/.test(text)) {
+    return { kind: 'ban', retry: false, pauseRetries: true, operator: false, label: 'Banned by the server' };
+  }
+  if (/(kicked|removed|disconnected)\s+by\s+(an?\s+)?(operator|admin|administrator|staff|moderator|mod)\b/.test(text)
+    || /\b(operator|staff|admin)\s+kick(ed)?\b/.test(text)
+    || /not allowed on this server|not whitelisted|whitelist/i.test(text)) {
+    return { kind: 'operator', retry: false, pauseRetries: true, operator: true, label: 'Kicked by a server operator' };
+  }
+  if (THROTTLE_RE.test(text)) {
+    return { kind: 'throttle', retry: true, pauseRetries: false, operator: false, label: 'Server join throttle' };
+  }
+  if (/invalid move player packet|bad packet|protocol error|unsupported protocol/i.test(text)) {
+    return { kind: 'protocol', retry: true, pauseRetries: false, operator: false, label: 'Protocol rejection' };
+  }
+  return { kind: 'generic', retry: true, pauseRetries: false, operator: false, label: 'Connection closed' };
+}

@@ -4,11 +4,6 @@ const crypto = require('crypto');
 
 /** Material class used for design identity. Palettes are intentionally ignored:
  * recolouring a design must NOT produce a "new" schematic. */
-const GLASS = /glass|pane/;
-const LIGHT = /lantern|torch|glowstone|sea_lantern|shroomlight|end_rod|candle|campfire|redstone_lamp/;
-const VEGETATION = /leaves|sapling|grass|fern|poppy|dandelion|flower|vine|moss|azalea|lily_pad|sugar_cane|bamboo|bush|petal|berry/;
-const INTERIOR = /bed$|chest|barrel|furnace|smoker|crafting_table|bookshelf|lectern|enchanting_table|anvil|brewing_stand|smithing_table|composter|cauldron|bell|flower_pot|jukebox|note_block|beehive|carpet|scaffolding|ladder|rail|door|trapdoor|fence_gate/;
-const ROOF = /stairs$|slab$|wall$/;
 
 function classOfBlock(name) {
   const n = String(name || '').toLowerCase();

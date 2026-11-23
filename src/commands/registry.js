@@ -2,6 +2,7 @@
 
 const FORBIDDEN = /[;&|`$<>\\\n\r\t]|\.\.\//;
 const NAME_PATTERN = /^[a-z][a-z0-9:_-]{0,31}$/;
+const { redactString, redactValue } = require('../util/redact');
 
 class CommandError extends Error {
   constructor(message, code = 'COMMAND_ERROR', details = {}) {
@@ -67,12 +68,15 @@ class CommandRegistry {
       maxArgs: definition.maxArgs === undefined ? 32 : definition.maxArgs,
       execute: definition.execute
     };
-    this.commands.set(command.name, command);
+    // Validate every alias before mutating the registry. Previously a bad
+    // alias left the command registered without its full alias set, so a
+    // startup error could produce an inconsistent command surface.
     for (const alias of command.aliases) {
       if (!NAME_PATTERN.test(alias)) throw new Error(`invalid alias: ${alias}`);
       if (this.aliases.has(alias) || this.commands.has(alias)) throw new Error(`duplicate alias: ${alias}`);
-      this.aliases.set(alias, command.name);
     }
+    this.commands.set(command.name, command);
+    for (const alias of command.aliases) this.aliases.set(alias, command.name);
     return command;
   }
 
@@ -151,12 +155,15 @@ class CommandRegistry {
     const entry = {
       id: `cmd-${++this.seq}`,
       at: Date.now(),
-      line: meta.line,
+      // Command history is served to the dashboard: redact both the typed
+      // line and the result so a future command that accepts a secret cannot
+      // leak it through /api/commands.
+      line: redactString(meta.line),
       source: meta.source,
       operator: meta.operator,
       durationMs: Date.now() - meta.started,
       ok: result.ok !== false,
-      result
+      result: redactValue(result)
     };
     this.history.push(entry);
     if (this.history.length > 300) this.history.shift();

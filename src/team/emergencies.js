@@ -5,8 +5,6 @@ const { toolTier, SWORDS } = require('../world/items');
 
 const SEVERITY = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
 
-let emergencySeq = 0;
-
 /**
  * Classify a bot's situation into zero or more emergencies. Pure function:
  * the coordinator, the bot itself and tests all classify identically.
@@ -49,6 +47,17 @@ class EmergencyManager {
     this.emergencies = new Map();
     this.history = [];
     this.seq = 0;
+    this.maxHistory = 500;
+    this.maxResolved = 100;
+  }
+
+  _trim() {
+    if (this.history.length > this.maxHistory) this.history.splice(0, this.history.length - this.maxHistory);
+    const inactive = [...this.emergencies.values()].filter((e) => e.status !== 'ACTIVE');
+    if (inactive.length > this.maxResolved) {
+      const drop = new Set(inactive.slice(0, inactive.length - this.maxResolved));
+      for (const emergency of drop) this.emergencies.delete(emergency.id);
+    }
   }
 
   report(state) {
@@ -84,6 +93,7 @@ class EmergencyManager {
       this.history.push({ at: this.now(), type: 'reported', ...emergency, details: undefined });
       created.push(emergency);
     }
+    this._trim();
     return created;
   }
 
@@ -198,6 +208,7 @@ class EmergencyManager {
     emergency.resolvedAt = this.now();
     emergency.resolution = { confirmedSafe, reason };
     this.history.push({ at: this.now(), type: 'resolved', id: emergencyId, confirmedSafe, reason });
+    this._trim();
     return { ok: true, emergency };
   }
 

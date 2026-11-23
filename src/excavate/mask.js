@@ -1,6 +1,6 @@
 'use strict';
 
-const { boxVolume, key } = require('../util/vec');
+const { boxVolume } = require('../util/vec');
 const { circleCells } = require('./footprint');
 
 /**
