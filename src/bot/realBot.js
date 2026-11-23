@@ -426,8 +426,9 @@ class RealBot extends BotAdapter {
   /** Send one auth command and wait for the server's chat confirmation. */
   _sendAuthCommand(command, kind) {
     const success = kind === 'register'
-      ? /successfully registered|registration (?:successful|complete)|you are now registered|already registered|now logged in|successfully logged in|already logged in/i
-      : /successfully logged in|you are now logged in|now logged in|already logged in|welcome back|logged in successfully/i;
+      ? /successfully registered|registration (?:successful|complete)|you are now registered|already registered|now logged in|successfully logged in|already logged in|login successful/i
+      : /successfully logged in|you are now logged in|now logged in|already logged in|welcome back|logged in successfully|login successful|logged in\.?$/i;
+
     const failure = /wrong password|incorrect password|invalid password|password (?:is )?(?:wrong|incorrect)|not registered|please register|register first|too many (?:attempts|tries)|kicked/i;
     return new Promise((resolve) => {
       let settled = false;

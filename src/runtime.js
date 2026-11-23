@@ -85,6 +85,8 @@ class TeamRuntime {
     this.serverVersionError = null;
     this.versionProbe = null;
     this.resolveVersion = resolveVersion;
+    this.joinLock = Promise.resolve();
+    this.joinCooldownUntil = 0;
     this.shutdownController = new AbortController();
   }
 
@@ -270,14 +272,45 @@ class TeamRuntime {
     return task;
   }
 
+  /**
+   * Aternos throttles multiple logins from one IP. Serialize attempts and keep
+   * a fleet-wide cooldown after a throttle instead of firing all five sockets
+   * into the limiter at once.
+   */
+  async _acquireJoinSlot() {
+    let release;
+    const previous = this.joinLock;
+    this.joinLock = new Promise((resolve) => { release = resolve; });
+    await previous;
+    while (!this.shutdownRequested && Date.now() < this.joinCooldownUntil) {
+      const wait = Math.max(50, this.joinCooldownUntil - Date.now());
+      this.logger.info(`join queue: waiting ${(wait / 1000).toFixed(1)}s for server throttle cooldown`);
+      await sleep(wait, this.shutdownController.signal);
+    }
+    return release;
+  }
+
   async _connectWithRetry(bot) {
     let attempt = 0;
     while (!this.shutdownRequested && !bot.ready) {
       attempt++;
+      const release = await this._acquireJoinSlot();
+      if (this.shutdownRequested) { release(); return { ok: false, error: 'shutting down' }; }
       const startedAt = Date.now();
       this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.passwordRequired ? 'password' : 'none'} timeout=${config.server.connectTimeoutMs}ms`);
-      const result = await bot.connect();
+      let result;
+      try {
+        result = await bot.connect();
+      } catch (err) {
+        result = { ok: false, error: err.message, code: err.code };
+      } finally {
+        release();
+      }
       const elapsed = Date.now() - startedAt;
+      if (!result.ok && isThrottleError(result.error)) {
+        this.joinCooldownUntil = Math.max(this.joinCooldownUntil, Date.now() + config.server.reconnect.throttleDelayMs);
+        this.logger.warn(`join queue: throttled; all joins paused until ${new Date(this.joinCooldownUntil).toISOString()}`);
+      }
       if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
         this.logger.info(`[${bot.name}] ready (attempt ${attempt}, ${elapsed}ms)`);

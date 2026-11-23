@@ -174,3 +174,14 @@ test('position packets are suppressed until password auth is released', () => {
   assert.deepEqual(writes, ['chat', 'position_look']);
   assert.equal(real._movementLock, false);
 });
+
+test('AuthMe replies "Login successful." and "You are already registered." are accepted', async () => {
+  const { real, commands } = authHarness({
+    registerPassword: 'secret', loginPassword: 'secret',
+    reply: (line) => line.startsWith('/register') ? 'You are already registered.' : 'Login successful.'
+  });
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(real.authenticated, true);
+  assert.deepEqual(commands, ['/register secret secret', '/login secret']);
+});
