@@ -51,7 +51,7 @@ function statusSnapshot(services) {
     survival: actionStatus.map((a) => a.survival),
     combat: actionStatus.map((a) => a.combat),
     inventory: {
-      ledger: services.ledger ? services.ledger.summary() : null,
+      ledger: services.ledger ? services.ledger.snapshot() : null,
       bots: actionStatus.map((a) => a.inventory)
     },
     mining: actionStatus.map((a) => a.mining),
@@ -82,7 +82,11 @@ function statusSnapshot(services) {
     taskManager: {
       stats: board ? board.stats() : null,
       tasks: board ? board.listTasks().slice(-100).map(publicTask) : [],
-      objectives: board ? board.listObjectives().map((o) => ({ id: o.id, title: o.title, status: o.status, progress: o.progress })) : []
+      objectives: board ? board.listObjectives().map((o) => {
+        const linked = (o.tasks || []).map((id) => board.getTask(id)).filter(Boolean);
+        const claimed = [...new Set(linked.map((task) => task.claimedBy).filter(Boolean))];
+        return { id: o.id, title: o.title, description: o.description, status: o.status, priority: o.priority, progress: o.progress, assignedBots: [...new Set([...(o.assignedBots || []), ...claimed])], taskCount: linked.length, completionCondition: o.completionCondition };
+      }) : []
     },
     diagnostics: {
       runtime,
@@ -109,7 +113,7 @@ function publicObservation(obs) {
 function publicTask(task) {
   return {
     id: task.id, type: task.type, label: task.label, status: task.status, priority: task.priority,
-    claimedBy: task.claimedBy, region: task.region, units: task.units, dependsOn: task.dependsOn,
+    claimedBy: task.claimedBy, objectiveId: task.objectiveId, region: task.region, units: task.units, dependsOn: task.dependsOn,
     attempts: task.attempts, lastError: task.lastError, verified: Boolean(task.verification)
   };
 }

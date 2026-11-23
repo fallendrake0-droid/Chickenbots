@@ -1,54 +1,102 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chickenbots V4 — Team Command</title>
-  <link rel="stylesheet" href="/style.css" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="Chickenbots operations console — five autonomous Minecraft bots, one coordinated team." />
+  <title>Chickenbots · Operations</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0e13'/%3E%3Cpath d='M9 11h14v9a4 4 0 0 1-4 4h-6a4 4 0 0 1-4-4z' fill='%2339b8a5'/%3E%3Ccircle cx='13' cy='15' r='1.6' fill='%230b0e13'/%3E%3Ccircle cx='19' cy='15' r='1.6' fill='%230b0e13'/%3E%3Cpath d='M13 20h6' stroke='%230b0e13' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/tokens.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/pages.css" />
+  <link rel="stylesheet" href="css/responsive.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">🐔</span>
-      <div>
-        <h1>CHICKENBOTS <span class="ver">V4</span></h1>
-        <p id="subtitle">five-bot overworld team · deterministic · no AI keys</p>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <div class="app" id="app">
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+
+    <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="28" height="28" role="img">
+            <rect width="32" height="32" rx="8" fill="rgba(57,184,165,.14)"/>
+            <path d="M9.5 11.5h13v8.2a4.3 4.3 0 0 1-4.3 4.3h-4.4a4.3 4.3 0 0 1-4.3-4.3z" fill="none" stroke="currentColor" stroke-width="1.7"/>
+            <circle cx="13.4" cy="15.8" r="1.5" fill="currentColor"/>
+            <circle cx="18.6" cy="15.8" r="1.5" fill="currentColor"/>
+            <path d="M13.8 19.6h4.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M9.5 13.2 7.2 12v4.2M22.5 13.2 24.8 12v4.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <strong>Chickenbots</strong>
+          <span>Bot operations</span>
+        </span>
       </div>
-    </div>
-    <div class="stats" id="topstats">
-      <div class="stat"><span class="k">ONLINE</span><span class="v" id="stat-online">–</span></div>
-      <div class="stat"><span class="k">LEADER</span><span class="v" id="stat-leader">–</span></div>
-      <div class="stat"><span class="k">TASKS</span><span class="v" id="stat-tasks">–</span></div>
-      <div class="stat"><span class="k">MODE</span><span class="v" id="stat-mode">–</span></div>
-      <div class="stat"><span class="k">AUTONOMY</span><span class="v" id="stat-auto">–</span></div>
-    </div>
-  </header>
 
-  <nav class="tabs" id="tabs" aria-label="Dashboard sections"></nav>
+      <nav class="nav" id="nav" aria-label="Sections"></nav>
 
-  <main>
-    <section class="panel" id="tab-content">
-      <div class="loading">Connecting to the team state feed…</div>
-    </section>
-
-    <aside class="console">
-      <div class="console-head">
-        <strong>COMMAND CONSOLE</strong>
-        <span class="hint">same validated handler as terminal · destructive commands need <code>confirm</code></span>
+      <div class="sidebar-footer">
+        <div class="sidebar-status" id="sidebar-status">
+          <span class="status-dot status-dot--muted" aria-hidden="true"></span>
+          <span>Waiting for data</span>
+        </div>
+        <button class="sidebar-collapse" id="sidebar-collapse" type="button" aria-label="Collapse sidebar" aria-expanded="true">
+          <span class="icon" data-icon="chevron-left" aria-hidden="true"></span>
+          <span class="sidebar-collapse-label">Collapse</span>
+        </button>
       </div>
-      <div class="quick" id="quick"></div>
-      <div class="output" id="output"></div>
-      <form id="command-form">
-        <input id="command-input" autocomplete="off" spellcheck="false" placeholder="status | excavate preview radius 100 64 100 8 4 | schematics list Beginner" />
-        <button type="submit">RUN</button>
-      </form>
     </aside>
-  </main>
 
-  <footer>
-    <span id="foot-status">initialising…</span>
-    <span>dashboard 0.0.0.0:3000 · chat is output-only · PvP off by default</span>
-  </footer>
-  <script src="/app.js"></script>
+    <div class="workspace">
+      <header class="topbar" role="banner">
+        <div class="topbar-left">
+          <button class="icon-button topbar-menu" id="menu-toggle" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+            <span class="icon" data-icon="menu" aria-hidden="true"></span>
+          </button>
+          <div class="breadcrumbs" id="breadcrumbs" aria-label="Breadcrumb"></div>
+        </div>
+        <div class="topbar-right">
+          <button class="command-trigger" id="command-trigger" type="button" aria-label="Open command palette">
+            <span class="icon" data-icon="search" aria-hidden="true"></span>
+            <span class="command-trigger-label">Search or run a command</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <button class="server-chip" id="server-chip" type="button" title="Configured Minecraft server" aria-label="Open connection settings">
+            <span class="icon" data-icon="server" aria-hidden="true"></span>
+            <span class="server-chip-text">
+              <span id="server-host">—</span>
+              <span class="server-chip-status" id="server-status"><span class="status-dot status-dot--muted"></span> waiting</span>
+            </span>
+          </button>
+          <button class="fleet-chip" id="fleet-chip" type="button" title="Connected bots" aria-label="Open fleet overview">
+            <span class="icon" data-icon="users" aria-hidden="true"></span>
+            <span id="fleet-count">— / —</span>
+          </button>
+          <button class="icon-button" id="notifications-toggle" type="button" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false">
+            <span class="icon" data-icon="bell" aria-hidden="true"></span>
+            <span class="notification-dot" id="notification-dot" hidden></span>
+          </button>
+          <a class="icon-button" href="#/settings" aria-label="Settings">
+            <span class="icon" data-icon="settings" aria-hidden="true"></span>
+          </a>
+        </div>
+      </header>
+
+      <main class="main" id="main" tabindex="-1">
+        <div id="view" class="view"></div>
+      </main>
+    </div>
+  </div>
+
+  <div class="notifications-panel" id="notifications-panel" role="dialog" aria-label="Notifications" hidden></div>
+
+  <div class="modal-root" id="modal-root"></div>
+  <div class="toast-stack" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

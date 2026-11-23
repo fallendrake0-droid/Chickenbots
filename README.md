@@ -74,7 +74,7 @@ src/
   builder/builder.js        cooperative phased construction with real material transfers
   actions/                  survival, combat, mining, woodcutting, farming, sleep, exploration, inventory, home base
   commands/                 registry.js (validation/confirmation) + index.js (all commands)
-  dashboard/                Express API + 16-tab single-page dashboard
+  dashboard/                Express API + modular operations console (23 pages)
 scripts/                    lint, validation, schematic generation/statistics
 tests/                      team, excavation, schematics, builder, survival, controllers, autonomy
 ```
@@ -190,9 +190,10 @@ help [command]                 status                         diagnostics
 ai [status|off]                team [state|memory|locks|tasks|roles|leader|formation]
 bot <name|all> <status|goto x y z|come|eat|where>
 inventory [bot]                eat [bot]                       sleep [bot]
+survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
 mine [bot] [ore]               chop [bot]                      farm [bot]
 defend [bot]                   explore [bot] [steps]
-task <list|add|assign|info|cancel|retry> ...
+task <list|add|assign|priority|info|cancel|retry|objective> ...
 excavate preview <box|at|radius|quarry|trench|flatten|foundation> ...
 excavate start [previewId] confirm [authorized] [team]
 excavate status|pause|resume|stop|undo-preview|assign|team ...
@@ -216,14 +217,38 @@ node src/cli.js --simulate "build 0001_beginner_shelter 60 72 60 confirm run"
 
 ## Dashboard
 
-Sixteen tabs, server-rendered shell + live state feed (SSE with polling fallback), relative URLs only:
+A modular operations console served from `src/dashboard/public/` with 23 routed pages, grouped so
+that related tasks sit together rather than in one long tab strip:
 
-`OVERVIEW · TEAM CONTROL · SURVIVAL · COMBAT · INVENTORY · MINING · EXCAVATION · WOODCUTTING ·
-FARMING · SLEEP · EXPLORATION · BUILDER · SCHEMATICS · HOME BASE · TASK MANAGER · DIAGNOSTICS`
+* **Overview** – fleet summary, live vitals chart, activity feed and objectives.
+* **Activity** – live activity, notifications and logs.
+* **Fleet** – all bots, team board, profiles and connection management.
+* **Gameplay** – survival, combat, inventory, mining, excavation, woodcutting, farming,
+  exploration and sleep.
+* **Building** – builder, schematic library (filters, pagination, isometric preview) and projects.
+* **System** – task manager, logs/diagnostics and settings.
 
-The command console posts to `/api/command` and uses the same registry (dashboard source). Schematic
-downloads are served as `.schem` from `/api/schematics/:id/download.schem`. `/api/state` exposes the
-snapshot used by the UI and by external monitoring.
+The shell is loaded per route (`js/app.js` + `js/router.js`) and hydrated from `/api/state`, `/api/logs`,
+`/api/commands`, `/api/settings` and `/api/schematics`. A single SSE feed (`/api/events`) drives live
+updates; same-route updates morph the existing DOM instead of rebuilding the page, preserving focus,
+form values and open chart state. All URLs are relative, icons are inline SVG (no CDN), and the UI
+works without external network access. Command buttons post to `/api/command` and use the same
+registry as the CLI, including explicit confirmation for destructive operations. Schematic downloads
+are served as `.schem` from `/api/schematics/:id/download.schem`.
+
+Design system: `css/tokens.css` (colour, type, spacing), `css/layout.css` (shell and grids),
+`css/components.css` (buttons, cards, tables, modals), `css/pages.css` (page-specific composition) and
+`css/responsive.css`. Reduced-motion and compact-density preferences are honoured, focus states are
+visible, and tables are labelled. The dashboard exposes only what the backend actually reports:
+inventory slot positions, for example, are not in the adapter contract, so the UI shows real item
+totals plus armour/offhand pieces rather than inventing a hotbar layout.
+
+Keyboard and pointer affordances: `/` (outside a form field) or `Ctrl/Cmd K` opens the command
+palette, `Esc` closes the active overlay, and the sidebar has a labelled collapse/expand control whose
+choice persists. Every command button and form reports success or the backend's own error text through
+a toast; successful commands refresh state in the background so switches and counters reflect the
+confirmed result without a full page reload. Motion comes from short opacity/translate transitions only
+and is disabled by the reduced-motion preference.
 
 ---
 

@@ -23,13 +23,19 @@ class SleepController {
   }
 
   status() {
+    const position = this.bot.position || { x: 0, y: 0, z: 0 };
+    const now = Date.now();
+    const moved = this._statusCache ? Math.hypot(position.x - this._statusCache.center.x, position.z - this._statusCache.center.z) : Infinity;
+    if (!this._statusCache || moved > 12 || now - this._statusCache.at > 10000) {
+      this._statusCache = { center: { x: position.x, z: position.z }, at: now, beds: this.findBeds({ radius: 24, limit: 5 }) };
+    }
     return {
       bot: this.bot.name,
       time: timeOfDay(this.bot),
       night: isNight(timeOfDay(this.bot)),
       sleeping: Boolean(this.bot.isSleeping),
       reservation: this.reservation ? { bed: this.reservation.bed, key: this.reservation.key } : null,
-      nearbyBeds: this.findBeds({ radius: 24, limit: 5 }),
+      nearbyBeds: this._statusCache.beds,
       hasBedItem: Boolean(this.bot.hasBed && this.bot.hasBed()),
       stats: { ...this.stats }
     };

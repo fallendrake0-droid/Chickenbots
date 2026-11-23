@@ -1,0 +1,260 @@
+import { icon } from './icons.js';
+import { esc, pct, clamp, progressTone, initials } from './utils.js';
+import { runCommand } from './store.js';
+
+export function badge(label, tone = 'neutral', { dot = false, mono = false, title = '' } = {}) {
+  const toneClass = tone && tone !== 'neutral' ? ` badge--${tone}` : '';
+  const monoClass = mono ? ' badge--mono' : '';
+  const dotHtml = dot ? '<span class="badge-dot" aria-hidden="true"></span>' : '';
+  return `<span class="badge${toneClass}${monoClass}"${title ? ` title="${esc(title)}"` : ''}>${dotHtml}${esc(label)}</span>`;
+}
+
+export function statusDot(tone = 'muted', pulse = false) {
+  return `<span class="status-dot status-dot--${tone}${pulse ? ' status-dot--pulse' : ''}" aria-hidden="true"></span>`;
+}
+
+export function progress(value, max = 100, { tone = null, lg = false, sm = false, label = null } = {}) {
+  const percent = clamp(max ? (Number(value) / Number(max)) * 100 : Number(value), 0, 100);
+  const toneClass = tone ? ` progress-bar--${tone}` : '';
+  const sizeClass = lg ? ' progress--lg' : sm ? ' progress--sm' : '';
+  return `
+    <div class="progress-row">
+      <div class="progress${sizeClass}" role="progressbar" aria-valuenow="${Math.round(percent)}" aria-valuemin="0" aria-valuemax="100"${label ? ` aria-label="${esc(label)}"` : ''}>
+        <div class="progress-bar${toneClass}" style="width:${percent.toFixed(1)}%"></div>
+      </div>
+      <span class="progress-value">${pct(percent)}</span>
+    </div>`;
+}
+
+export function statCard({ label, value, iconName = 'activity', tone = 'neutral', context = '', progressValue = null, progressMax = 100 }) {
+  const iconClass = tone && tone !== 'neutral' ? ` stat-icon--${tone}` : '';
+  return `
+    <div class="card stat-card">
+      <div class="stat-top">
+        <span class="stat-label">${esc(label)}</span>
+        <span class="stat-icon${iconClass}">${icon(iconName)}</span>
+      </div>
+      <div class="stat-value">${value}</div>
+      ${context ? `<div class="stat-context">${context}</div>` : ''}
+      ${progressValue !== null ? `<div class="stat-progress">${progress(progressValue, progressMax, { sm: true, tone: progressTone((progressValue / progressMax) * 100) })}</div>` : ''}
+    </div>`;
+}
+
+export function pageHeader({ eyebrow, title, description = '', actions = '' }) {
+  return `
+    <header class="page-header">
+      <div class="page-header-main">
+        ${eyebrow ? `<div class="eyebrow">${esc(eyebrow)}</div>` : ''}
+        <h1 class="page-title">${esc(title)}</h1>
+        ${description ? `<p class="page-description">${esc(description)}</p>` : ''}
+      </div>
+      ${actions ? `<div class="page-actions">${actions}</div>` : ''}
+    </header>`;
+}
+
+export function sectionHead(title, { subtitle = '', actions = '', id = '' } = {}) {
+  return `
+    <div class="section-head">
+      <div>
+        <h2 class="section-title"[${id ? ` id="${esc(id)}"` : ''}]>${title}</h2>
+        ${subtitle ? `<div class="section-subtitle">${esc(subtitle)}</div>` : ''}
+      </div>
+      ${actions ? `<div class="section-actions">${actions}</div>` : ''}
+    </div>`;
+}
+
+export function emptyState(title, text = '', iconName = 'info', action = '') {
+  return `
+    <div class="empty-state">
+      <span class="empty-icon">${icon(iconName, 'icon--lg')}</span>
+      <strong>${esc(title)}</strong>
+      ${text ? `<p>${esc(text)}</p>` : ''}
+      ${action}
+    </div>`;
+}
+
+export function kvRows(rows) {
+  return `<div class="kv">${rows.map(([key, value, mono = false]) => `
+    <div class="kv-row"><span class="kv-key">${esc(key)}</span><span class="kv-value${mono ? ' mono' : ''}">${value === undefined || value === null || value === '' ? '—' : value}</span></div>
+  `).join('')}</div>`;
+}
+
+export function metaList(items) {
+  return `<div class="meta-list">${items.filter(Boolean).map((item) => `<span>${item}</span>`).join('')}</div>`;
+}
+
+export function botAvatar(name, size = '') {
+  return `<span class="avatar ${size}">${esc(initials(name))}</span>`;
+}
+
+export function toast({ type = 'info', title = 'Notice', message = '', duration = 5000 } = {}) {
+  const stack = document.getElementById('toasts');
+  if (!stack) return;
+  const tone = type === 'error' ? 'error' : type === 'warn' ? 'warn' : type === 'success' ? 'success' : 'info';
+  const iconName = tone === 'success' ? 'check-circle' : tone === 'error' ? 'x-circle' : tone === 'warn' ? 'alert' : 'info';
+  const element = document.createElement('div');
+  element.className = `toast toast--${tone}`;
+  element.setAttribute('role', tone === 'error' ? 'alert' : 'status');
+  element.innerHTML = `
+    <span class="toast-icon">${icon(iconName)}</span>
+    <div class="toast-content">
+      <div class="toast-title">${esc(title)}</div>
+      <div class="toast-message">${esc(message)}</div>
+    </div>
+    <button class="toast-close" type="button" aria-label="Dismiss notification">${icon('x', 'icon--sm')}</button>`;
+  const remove = () => {
+    element.style.opacity = '0';
+    element.style.transform = 'translateY(6px)';
+    setTimeout(() => element.remove(), 160);
+  };
+  element.querySelector('.toast-close').addEventListener('click', remove);
+  stack.appendChild(element);
+  if (duration > 0) setTimeout(remove, duration);
+  return element;
+}
+
+let activeModal = null;
+
+export function openModal({ title, description = '', body = '', footer = '', wide = false, onMount = null, onClose = null, label = 'Dialog' } = {}) {
+  closeModal();
+  const root = document.getElementById('modal-root');
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `
+    <section class="modal${wide ? ' modal--wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(label)}">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title">${esc(title)}</h2>
+          ${description ? `<p class="modal-description">${esc(description)}</p>` : ''}
+        </div>
+        <button class="modal-close" type="button" aria-label="Close dialog">${icon('x')}</button>
+      </div>
+      <div class="modal-body">${body}</div>
+      ${footer ? `<div class="modal-footer">${footer}</div>` : ''}
+    </section>`;
+  const previousFocus = document.activeElement;
+  root.appendChild(backdrop);
+  document.body.style.overflow = 'hidden';
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    backdrop.remove();
+    document.body.style.overflow = '';
+    if (previousFocus && previousFocus.focus) previousFocus.focus();
+    activeModal = null;
+    document.removeEventListener('keydown', onKeyDown);
+    if (onClose) onClose();
+  };
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); close(); }
+    if (event.key === 'Tab') {
+      const focusables = [...backdrop.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+        .filter((el) => !el.disabled && el.offsetParent !== null);
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+  };
+  document.addEventListener('keydown', onKeyDown);
+  backdrop.querySelector('.modal-close').addEventListener('click', close);
+  backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) close(); });
+  activeModal = { close, backdrop };
+  if (onMount) onMount(backdrop.querySelector('.modal'), close);
+  const focusTarget = backdrop.querySelector('[autofocus]');
+  if (focusTarget) setTimeout(() => focusTarget.focus(), 30);
+  return close;
+}
+
+export function closeModal() {
+  if (activeModal) activeModal.close();
+  const root = document.getElementById('modal-root');
+  if (root && !root.children.length) document.body.style.overflow = '';
+}
+
+export function isModalOpen() { return Boolean(activeModal); }
+
+export function confirmDialog({ title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', tone = 'danger', details = '' } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+      closeModal();
+    };
+    openModal({
+      title,
+      description: message,
+      label: title,
+      body: details ? `<div class="callout callout--${tone === 'danger' ? 'danger' : 'warn'}">${icon('alert')}<div>${details}</div></div>` : '',
+      footer: `
+        <button class="button" type="button" data-modal-cancel>${esc(cancelLabel)}</button>
+        <button class="button ${tone === 'danger' ? 'button--danger' : 'button--primary'}" type="button" data-modal-confirm>${esc(confirmLabel)}</button>`,
+      onMount: (modal) => {
+        modal.querySelector('[data-modal-confirm]').addEventListener('click', () => finish(true));
+        modal.querySelector('[data-modal-cancel]').addEventListener('click', () => finish(false));
+      },
+      onClose: () => { if (!settled) { settled = true; resolve(false); } }
+    });
+  });
+}
+
+export function setButtonLoading(button, loading) {
+  if (!button) return;
+  button.classList.toggle('is-loading', Boolean(loading));
+  button.disabled = Boolean(loading);
+}
+
+export function resultMessage(result) {
+  if (!result) return { type: 'error', title: 'No response', message: 'The service returned no result.' };
+  const payload = result.result || result;
+  if (payload.ok === false) {
+    return {
+      type: 'error',
+      title: 'Action failed',
+      message: payload.error || payload.code || 'The backend rejected the action.'
+    };
+  }
+  let message = payload.text || payload.message || '';
+  if (!message) {
+    const keys = ['bots', 'tasks', 'builds', 'designs', 'logs'];
+    for (const key of keys) {
+      if (Array.isArray(payload[key])) { message = `${payload[key].length} ${key}`; break; }
+    }
+  }
+  if (!message && payload.previewId) message = `Preview ${payload.previewId} created.`;
+  if (!message && payload.excavation) message = `Excavation ${payload.excavation.id || ''} started.`;
+  if (!message) message = 'The backend confirmed the command.';
+  return { type: 'success', title: 'Command accepted', message: String(message).split('\n')[0].slice(0, 220) };
+}
+
+export async function runCommandUI(line, { confirm = false, confirmTitle = 'Confirm action', confirmMessage = '', confirmLabel = 'Run command', danger = false, successTitle = null } = {}) {
+  if (danger && !confirm) {
+    const ok = await confirmDialog({
+      title: confirmTitle,
+      message: confirmMessage || `Run “${line}”? This action changes live team or world state.`,
+      confirmLabel,
+      tone: 'danger',
+      details: 'This command is sent to the live backend and cannot be undone from the dashboard.'
+    });
+    if (!ok) return null;
+    confirm = true;
+  }
+  try {
+    const result = await runCommand(line, { confirm });
+    const message = resultMessage(result);
+    toast({
+      type: message.type,
+      title: successTitle || message.title,
+      message: message.message,
+      duration: message.type === 'error' ? 8000 : 4500
+    });
+    return result;
+  } catch (err) {
+    toast({ type: 'error', title: 'Command failed', message: err.message || 'Unable to reach the backend.', duration: 8000 });
+    return null;
+  }
+}

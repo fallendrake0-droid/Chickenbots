@@ -1,0 +1,133 @@
+import { parseHash } from './utils.js';
+import overview from './pages/overview.js';
+import { botsPage, profilesPage, profilePage, teamPage, connectionsPage } from './pages/fleet.js';
+import {
+  survivalPage, combatPage, inventoryPage, miningPage, excavationPage,
+  woodcuttingPage, farmingPage, explorationPage, sleepPage
+} from './pages/gameplay.js';
+import { builderPage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
+import { activityPage, notificationsPage, tasksPage, logsPage, settingsPage } from './pages/system.js';
+import { icon } from './icons.js';
+import { emptyState, pageHeader } from './ui.js';
+import { esc } from './utils.js';
+
+export const NAV_GROUPS = [
+  {
+    label: 'General',
+    items: [
+      { path: 'overview', label: 'Overview', icon: 'layout-dashboard' },
+      { path: 'activity', label: 'Live Activity', icon: 'activity' },
+      { path: 'notifications', label: 'Notifications', icon: 'bell' }
+    ]
+  },
+  {
+    label: 'Fleet',
+    items: [
+      { path: 'bots', label: 'All Bots', icon: 'users' },
+      { path: 'team', label: 'Team Management', icon: 'crown' },
+      { path: 'profiles', label: 'Bot Profiles', icon: 'user' },
+      { path: 'connections', label: 'Connection Management', icon: 'wifi' }
+    ]
+  },
+  {
+    label: 'Gameplay',
+    items: [
+      { path: 'survival', label: 'Survival', icon: 'heart' },
+      { path: 'combat', label: 'Combat', icon: 'sword' },
+      { path: 'inventory', label: 'Inventory', icon: 'package' },
+      { path: 'mining', label: 'Mining', icon: 'pickaxe' },
+      { path: 'excavation', label: 'Excavation', icon: 'shovel' },
+      { path: 'woodcutting', label: 'Woodcutting', icon: 'axe' },
+      { path: 'farming', label: 'Farming', icon: 'sprout' },
+      { path: 'exploration', label: 'Exploration', icon: 'compass' },
+      { path: 'sleep', label: 'Sleep', icon: 'bed' }
+    ]
+  },
+  {
+    label: 'Construction',
+    items: [
+      { path: 'builder', label: 'Builder', icon: 'hammer' },
+      { path: 'schematics', label: 'Schematic Library', icon: 'book-open' },
+      { path: 'projects', label: 'Build Projects', icon: 'folder' },
+      { path: 'history', label: 'Project History', icon: 'history' }
+    ]
+  },
+  {
+    label: 'System',
+    items: [
+      { path: 'tasks', label: 'Task Manager', icon: 'clipboard' },
+      { path: 'logs', label: 'Logs & Diagnostics', icon: 'terminal' },
+      { path: 'settings', label: 'Settings', icon: 'settings' }
+    ]
+  }
+];
+
+export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items.map((item) => ({ ...item, group: group.label })));
+
+function notFound(routePath) {
+  return {
+    key: 'not-found',
+    label: 'Not found',
+    group: 'Chickenbots',
+    page: {
+      title: 'Not found',
+      render: () => `<div class="page">${pageHeader({ eyebrow: 'Chickenbots', title: 'Page not found', description: `No dashboard view matches “${routePath}”.` })}<div class="card">${emptyState('Nothing here', 'Use the navigation or the command palette to find a valid page.', 'compass', '<a class="button button--primary" href="#/">Return to overview</a>')}</div></div>`
+    }
+  };
+}
+
+export function resolveRoute(hash = location.hash) {
+  const { segments, query } = parseHash(hash);
+  const root = segments[0] || 'overview';
+  const rest = segments.slice(1);
+  const nav = NAV_ITEMS.find((item) => item.path === root);
+  const base = { key: root, group: nav ? nav.group : 'Chickenbots', query, params: rest };
+  if (!segments.length) return { ...base, page: overview, label: 'Overview', key: 'overview' };
+  switch (root) {
+    case 'overview': return { ...base, page: overview, label: 'Overview' };
+    case 'activity': return { ...base, page: activityPage, label: 'Live Activity' };
+    case 'notifications': return { ...base, page: notificationsPage, label: 'Notifications' };
+    case 'bots':
+      if (!rest.length) return { ...base, page: botsPage, label: 'All Bots' };
+      return { ...base, page: profilePage, label: `${rest[0]} profile`, title: rest[0] };
+    case 'profiles': return { ...base, page: profilesPage, label: 'Bot Profiles' };
+    case 'team': return { ...base, page: teamPage, label: 'Team Management' };
+    case 'connections': return { ...base, page: connectionsPage, label: 'Connection Management' };
+    case 'survival': return { ...base, page: survivalPage, label: 'Survival' };
+    case 'combat': return { ...base, page: combatPage, label: 'Combat' };
+    case 'inventory': return { ...base, page: inventoryPage, label: 'Inventory' };
+    case 'mining': return { ...base, page: miningPage, label: 'Mining' };
+    case 'excavation': return { ...base, page: excavationPage, label: 'Excavation' };
+    case 'woodcutting': return { ...base, page: woodcuttingPage, label: 'Woodcutting' };
+    case 'farming': return { ...base, page: farmingPage, label: 'Farming' };
+    case 'exploration': return { ...base, page: explorationPage, label: 'Exploration' };
+    case 'sleep': return { ...base, page: sleepPage, label: 'Sleep' };
+    case 'builder': return { ...base, page: builderPage, label: 'Builder' };
+    case 'schematics': return { ...base, page: schematicsPage, label: 'Schematic Library' };
+    case 'projects':
+      if (!rest.length) return { ...base, page: buildProjectsPage, label: 'Build Projects' };
+      return { ...base, page: projectDetailPage, label: `Build ${rest[0]}`, params: rest };
+    case 'history': return { ...base, page: projectHistoryPage, label: 'Project History' };
+    case 'tasks': return { ...base, page: tasksPage, label: 'Task Manager' };
+    case 'logs': return { ...base, page: logsPage, label: 'Logs & Diagnostics' };
+    case 'settings': return { ...base, page: settingsPage, label: 'Settings' };
+    default: return { ...notFound(segments.join('/')), params: rest, query };
+  }
+}
+
+export function renderNav(activePath) {
+  return NAV_GROUPS.map((group) => `
+    <div class="nav-group" data-nav-group="${esc(group.label)}">
+      <button class="nav-group-label" type="button" data-nav-group-toggle="${esc(group.label)}" aria-expanded="true"><span>${esc(group.label)}</span>${icon('chevron-down', 'nav-group-chevron')}</button>
+      <div class="nav-group-items">
+        ${group.items.map((item) => `<a class="nav-item${activePath === item.path ? ' is-active' : ''}" href="#/${item.path}" data-nav="${item.path}" data-tooltip="${esc(item.label)}"${activePath === item.path ? ' aria-current="page"' : ''}>
+          <span class="nav-icon">${icon(item.icon)}</span>
+          <span class="nav-item-label">${esc(item.label)}</span>
+        </a>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+export function navMeta(path) {
+  return NAV_ITEMS.find((item) => item.path === path) || { label: 'Chickenbots', group: 'Chickenbots', icon: 'compass' };
+}

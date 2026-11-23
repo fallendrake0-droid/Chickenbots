@@ -223,6 +223,57 @@ class TeamRuntime {
     return this.commands.execute(line, options);
   }
 
+  /** Reconnect one bot without disturbing the other four. */
+  async reconnectBot(name) {
+    const bot = this.bots.get(name);
+    if (!bot) return { ok: false, error: 'unknown bot' };
+    try {
+      if (typeof bot.disconnect === 'function') await bot.disconnect('dashboard reconnect');
+      else { bot.connected = false; bot.spawned = false; bot.authenticated = false; }
+      delete this.connectionErrors[name];
+      if (typeof bot.connect === 'function') {
+        const result = await bot.connect();
+        if (!result.ok) this.connectionErrors[name] = result.error || 'connection failed';
+      } else {
+        bot.connected = true;
+        bot.spawned = true;
+        bot.authenticated = true;
+      }
+      this.logger.info(`[${name}] reconnect requested from dashboard`);
+      return { ok: Boolean(bot.connected && bot.spawned && bot.authenticated !== false), bot: this.botState(name) };
+    } catch (err) {
+      this.connectionErrors[name] = err.message;
+      return { ok: false, error: err.message, bot: this.botState(name) };
+    }
+  }
+
+  /** Disconnect one bot; the rest of the team keeps running. */
+  async disconnectBot(name, reason = 'dashboard') {
+    const bot = this.bots.get(name);
+    if (!bot) return { ok: false, error: 'unknown bot' };
+    try {
+      if (typeof bot.disconnect === 'function') await bot.disconnect(reason);
+      else { bot.connected = false; bot.spawned = false; bot.authenticated = false; }
+      this.logger.warn(`[${name}] disconnected from dashboard`);
+      return { ok: true, bot: this.botState(name) };
+    } catch (err) {
+      return { ok: false, error: err.message, bot: this.botState(name) };
+    }
+  }
+
+  botState(name) {
+    const bot = this.bots.get(name);
+    if (!bot) return null;
+    return {
+      name: bot.name,
+      connected: Boolean(bot.connected),
+      spawned: Boolean(bot.spawned),
+      authenticated: bot.authenticated !== false,
+      ready: Boolean(bot.ready),
+      error: this.connectionErrors[name] || bot.lastError || null
+    };
+  }
+
   pause() {
     this.paused = true;
     return { ok: true, paused: true, tick: this.ticks };

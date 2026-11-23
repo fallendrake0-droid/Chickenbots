@@ -1,6 +1,7 @@
 'use strict';
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 };
+const logStore = require('./logStore');
 
 class Logger {
   constructor(scope = 'chickenbots', level = process.env.LOG_LEVEL || 'info') {
@@ -29,6 +30,7 @@ class Logger {
   _log(level, msg, meta) {
     if (LEVELS[level] < this.level) return;
     const entry = { ts: Date.now(), level, scope: this.scope, msg: String(msg), meta: meta === undefined ? null : meta };
+    logStore.record(entry);
     this.history.push(entry);
     if (this.history.length > this.maxHistory) this.history.shift();
     if (this._parentHistory) {

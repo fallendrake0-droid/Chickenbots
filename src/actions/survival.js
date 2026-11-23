@@ -34,6 +34,9 @@ class SurvivalController {
     this.thresholds = thresholds;
     this.lastAction = null;
     this.lastActionAt = 0;
+    // Operator-controlled routines. Environmental clutch handling is always on
+    // because disabling it would let a bot stand in lava.
+    this.features = { eat: true, healing: true, armour: true, tools: true, crafting: true, shield: true };
     this.stats = { eaten: 0, crafted: 0, armourEquipped: 0, clutches: 0, emergencyHeals: 0 };
   }
 
@@ -55,8 +58,18 @@ class SurvivalController {
       inWater: bot.inWater,
       onFire: bot.onFire,
       lastAction: this.lastAction,
+      features: { ...this.features },
       stats: { ...this.stats }
     };
+  }
+
+  setFeature(name, enabled) {
+    if (!Object.prototype.hasOwnProperty.call(this.features, name)) {
+      return { ok: false, error: `unknown survival routine '${name}'`, available: Object.keys(this.features) };
+    }
+    this.features[name] = Boolean(enabled);
+    this.logger.info(`[${this.bot.name}] survival routine ${name} ${this.features[name] ? 'enabled' : 'disabled'}`);
+    return { ok: true, bot: this.bot.name, feature: name, enabled: this.features[name], features: { ...this.features } };
   }
 
   async tick() {
@@ -69,19 +82,23 @@ class SurvivalController {
       if (clutch) actions.push(clutch);
     }
     const need = needsFood(bot, this.thresholds);
-    if (need) {
+    if (this.features.eat && need) {
       const eat = await this.eat(need === 'critical');
       if (eat) actions.push(eat);
     }
-    if (bot.health <= this.thresholds.criticalHealth) {
+    if (this.features.healing && bot.health <= this.thresholds.criticalHealth) {
       const heal = await this.emergencyHeal();
       if (heal) actions.push(heal);
     }
-    const armour = await this.equipArmour();
-    if (armour.length) actions.push(...armour);
-    const tool = await this.ensureTool();
-    if (tool) actions.push(tool);
-    if (bot.health <= this.thresholds.fleeHealth && bot.countItem('shield')) {
+    if (this.features.armour) {
+      const armour = await this.equipArmour();
+      if (armour.length) actions.push(...armour);
+    }
+    if (this.features.tools) {
+      const tool = await this.ensureTool();
+      if (tool) actions.push(tool);
+    }
+    if (this.features.shield && bot.health <= this.thresholds.fleeHealth && bot.countItem('shield')) {
       const shield = await bot.useShield(true);
       if (shield.ok) actions.push({ action: 'shield', ...shield });
     }
@@ -148,6 +165,7 @@ class SurvivalController {
         return Object.entries(r.materials).every(([name, count]) => bot.countItem(name) >= count);
       });
       if (!recipe) continue;
+      if (!this.features.crafting) return null;
       const result = await bot.craft(recipe.tool, 1);
       if (result.ok) {
         this.stats.crafted++;

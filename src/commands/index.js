@@ -235,6 +235,31 @@ function registerAll(services, registry) {
   });
 
   registry.register({
+    name: 'survival', category: 'survival', summary: 'Inspect or toggle automatic survival routines', usage: 'survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]',
+    execute: async (args) => {
+      const target = String(args[0] || '').toLowerCase();
+      const feature = String(args[1] || '').toLowerCase();
+      const value = String(args[2] || '').toLowerCase();
+      const features = ['eat', 'healing', 'armour', 'tools', 'crafting', 'shield'];
+      if (!feature) {
+        const list = target && target !== 'all'
+          ? [actionsFor(services, pickBot(services, target).name).survival]
+          : [...(services.actions ? services.actions.list() : [])].map((a) => a.survival);
+        return { ok: true, features, routines: list.map((survival) => ({ bot: survival.status().bot, features: { ...survival.features } })) };
+      }
+      if (!features.includes(feature)) throw new CommandError(`unknown survival routine '${feature}'; available: ${features.join(', ')}`);
+      if (!['on', 'off'].includes(value)) throw new CommandError('usage: survival [bot|all] <routine> on|off');
+      const enabled = value === 'on';
+      const list = !target || target === 'all'
+        ? [...(services.actions ? services.actions.list() : [])].map((a) => a.survival)
+        : [actionsFor(services, pickBot(services, target).name).survival];
+      if (!list.length) throw new CommandError('action layer unavailable');
+      const results = list.map((survival) => survival.setFeature(feature, enabled));
+      return { ok: results.every((r) => r.ok), feature, enabled, results };
+    }
+  });
+
+  registry.register({
     name: 'eat', category: 'survival', summary: 'Eat the best available food', usage: 'eat [bot]',
     execute: async (args) => {
       const bot = pickBot(services, args[0]);
@@ -306,7 +331,7 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'task', category: 'task', summary: 'Task manager: list, add, assign, cancel, retry', usage: 'task <list|add|assign|cancel|retry|info> ...',
+    name: 'task', category: 'task', summary: 'Task manager: list, add, assign, cancel, retry, objectives', usage: 'task <list|add|assign|priority|cancel|retry|info|objective> ...',
     execute: async (args) => {
       const sub = (args[0] || 'list').toLowerCase();
       if (sub === 'list') {
@@ -337,6 +362,16 @@ function registerAll(services, registry) {
         const result = services.taskBoard.cancel(args[1], 'cancelled by operator');
         return { ok: result.ok !== false, ...result };
       }
+      if (sub === 'priority') {
+        const task = services.taskBoard.getTask(args[1]);
+        if (!task) return { ok: false, error: 'unknown task' };
+        const priority = Number(args[2]);
+        if (!Number.isFinite(priority) || priority < 0 || priority > 100) {
+          throw new CommandError('priority must be a number between 0 and 100');
+        }
+        task.priority = Math.round(priority);
+        return { ok: true, task };
+      }
       if (sub === 'retry') {
         const task = services.taskBoard.getTask(args[1]);
         if (!task) return { ok: false, error: 'unknown task' };
@@ -344,6 +379,12 @@ function registerAll(services, registry) {
         task.claimedBy = null;
         task.lastError = null;
         return { ok: true, task };
+      }
+      if (sub === 'objective') {
+        const title = args.slice(1).join(' ').trim();
+        if (!title) throw new CommandError('objective title is required');
+        const objective = services.taskBoard.createObjective({ title, description: 'Created from the dashboard task board.', priority: 50 });
+        return { ok: true, objective };
       }
       return { ok: false, error: `unknown task subcommand '${sub}'` };
     }

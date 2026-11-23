@@ -16,13 +16,35 @@ function timeOfDay(bot) {
   return 0;
 }
 
+const SURFACE_BLOCKS = /(_log|_leaves|_sapling|_propagule|wheat|carrots|potatoes|beetroots|melon|pumpkin|farmland|chest|barrel|_bed|oak_door|torch)$/;
+
 /** Find blocks by name through the world when supported, else bounded scan. */
 function findBlocks(bot, names, { near = bot.position, radius = 24, limit = 50, yFrom = null, yTo = null } = {}) {
   const wanted = new Set(Array.isArray(names) ? names : [names]);
   const out = [];
   const world = bot.world;
-  if (world && typeof world.findBlocks === 'function') {
-    const found = world.findBlocks([...wanted], near, radius);
+  // Surface decoration never lives far from the surface; constraining the
+  // vertical window keeps repeated scans of large volumes affordable.
+  if (yFrom === null && yTo === null && [...wanted].every((name) => SURFACE_BLOCKS.test(name))) {
+    yFrom = Math.max(-64, Math.floor(near.y) - 12);
+    yTo = Math.min(200, Math.floor(near.y) + 12);
+  }
+  if (world && typeof world.blockNameAt === 'function' && yFrom !== null && yTo !== null) {
+    for (let y = yFrom; y <= yTo; y++) {
+      for (let z = Math.floor(near.z) - radius; z <= Math.floor(near.z) + radius; z++) {
+        for (let x = Math.floor(near.x) - radius; x <= Math.floor(near.x) + radius; x++) {
+          const name = world.blockNameAt(x, y, z);
+          if (name && wanted.has(name)) {
+            out.push({ x, y, z, name });
+            if (out.length >= limit) return out;
+          }
+        }
+      }
+    }
+    return out;
+  }
+  if (world && typeof world.findBlocks === 'function' && yFrom === null && yTo === null) {
+    const found = world.findBlocks([...wanted], near, radius, limit);
     return found.slice(0, limit);
   }
   const minY = yFrom !== null ? yFrom : Math.max(-64, Math.floor(near.y) - radius);

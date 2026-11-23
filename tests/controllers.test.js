@@ -148,6 +148,16 @@ test('task manager commands create, assign and cancel real tasks', async () => {
     assert.equal(assigned.result.assignedTo, '101010');
     const info = await runtime.executeCommand(`task info ${taskId}`, { source: 'dashboard' });
     assert.equal(info.result.task.claimedBy, '101010');
+    const priority = await runtime.executeCommand(`task priority ${taskId} 80`, { source: 'dashboard' });
+    assert.equal(priority.result.ok, true);
+    assert.equal(priority.result.task.priority, 80);
+    const badPriority = await runtime.executeCommand(`task priority ${taskId} 500`, { source: 'dashboard' });
+    assert.equal(badPriority.result.ok, false);
+    const objective = await runtime.executeCommand('task objective Secure the perimeter', { source: 'dashboard' });
+    assert.equal(objective.result.ok, true);
+    assert.equal(objective.result.objective.title, 'Secure the perimeter');
+    const listedObjectives = await runtime.executeCommand('task objective', { source: 'dashboard' });
+    assert.equal(listedObjectives.result.ok, false);
     const cancelled = await runtime.executeCommand(`task cancel ${taskId}`, { source: 'dashboard' });
     assert.equal(cancelled.result.ok, true);
     const invalid = await runtime.executeCommand('task add EXPLODE_EVERYTHING', { source: 'dashboard' });
@@ -157,7 +167,7 @@ test('task manager commands create, assign and cancel real tasks', async () => {
   }
 });
 
-test('dashboard serves all 16 tabs, state, commands and schematic downloads', async () => {
+test('dashboard serves the operations console, state, commands and schematic downloads', async () => {
   const runtime = await simulation();
   const dash = createDashboard(runtime.services, { port: 0, host: '127.0.0.1' });
   try {
@@ -165,11 +175,23 @@ test('dashboard serves all 16 tabs, state, commands and schematic downloads', as
     const port = started.port;
     const index = await httpGet(port, '/');
     assert.equal(index.status, 200);
-    assert.ok(index.body.includes('CHICKENBOTS'));
-    const appJs = await httpGet(port, '/app.js');
-    for (const label of ['OVERVIEW', 'TEAM CONTROL', 'SURVIVAL', 'COMBAT', 'INVENTORY', 'MINING', 'EXCAVATION', 'WOODCUTTING', 'FARMING', 'SLEEP', 'EXPLORATION', 'BUILDER', 'SCHEMATICS', 'HOME BASE', 'TASK MANAGER', 'DIAGNOSTICS']) {
-      assert.ok(appJs.body.includes(label), `missing tab ${label}`);
+    assert.ok(index.body.includes('Chickenbots'));
+    assert.ok(index.body.includes('js/app.js'));
+    assert.ok(index.body.includes('css/tokens.css'));
+    const router = await httpGet(port, '/js/router.js');
+    assert.equal(router.status, 200);
+    for (const label of ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Exploration', 'Sleep', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings']) {
+      assert.ok(router.body.includes(label), `missing page ${label}`);
     }
+    const tokens = await httpGet(port, '/css/tokens.css');
+    assert.equal(tokens.status, 200);
+    assert.ok(tokens.body.includes('--accent'));
+    const logs = await httpGet(port, '/api/logs?limit=5');
+    assert.equal(JSON.parse(logs.body).ok, true);
+    const settings = await httpGet(port, '/api/settings');
+    assert.equal(JSON.parse(settings.body).ok, true);
+    const botState = await httpGet(port, '/api/bot/______/state', 'POST', {});
+    assert.equal(JSON.parse(botState.body).ok, true);
     const state = await httpGet(port, '/api/state');
     const parsed = JSON.parse(state.body);
     assert.equal(parsed.ok, true);

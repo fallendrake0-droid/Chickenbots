@@ -23,9 +23,13 @@ function main() {
 
   // 1. Every JavaScript file must parse.
   for (const file of files) {
-    const res = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+    const rel = path.relative(ROOT, file);
+    // Browser modules use ES module syntax even though the package is CommonJS.
+    const res = rel.startsWith('src/dashboard/public/js/')
+      ? spawnSync(process.execPath, ['--input-type=module', '--check'], { encoding: 'utf8', input: fs.readFileSync(file, 'utf8') })
+      : spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
     if (res.status !== 0) {
-      process.stderr.write(`SYNTAX ${path.relative(ROOT, file)}\n${res.stderr}\n`);
+      process.stderr.write(`SYNTAX ${rel}\n${res.stderr}\n`);
       failed = true;
     }
   }

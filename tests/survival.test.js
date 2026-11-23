@@ -54,6 +54,26 @@ test('survival eats real food, heals and equips armour', async () => {
   assert.equal(status.armour > 0, true);
 });
 
+test('survival routines are real per-bot toggles and safety stays enforced', async () => {
+  const { bot } = flatBot('010101', { bread: 4 });
+  bot.food = 5;
+  const survival = new SurvivalController({ bot });
+  assert.equal(survival.status().features.eat, true);
+  const disabled = survival.setFeature('eat', false);
+  assert.equal(disabled.ok, true);
+  assert.equal(survival.status().features.eat, false);
+  const skipped = await survival.tick();
+  assert.ok(!skipped.actions.some((action) => action.action === 'eat'));
+  assert.equal(bot.food, 5);
+  const invalid = survival.setFeature('teleport', true);
+  assert.equal(invalid.ok, false);
+  assert.ok(invalid.available.includes('eat'));
+  survival.setFeature('eat', true);
+  const enabled = await survival.tick();
+  assert.ok(enabled.actions.some((action) => action.action === 'eat'));
+  assert.ok(bot.food > 5);
+});
+
 test('survival refuses to pretend it ate without food and crafts a tool when able', async () => {
   const { bot } = flatBot('101010', { cobblestone: 6, stick: 4 });
   bot.food = 4;

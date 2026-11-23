@@ -72,6 +72,10 @@ class MockWorld {
     this.size = size;
     this.seaLevel = seaLevel;
     this.overrides = new Map();
+    // Terrain lookups dominate repeated scans; cache the generated base block
+    // name per coordinate. Overrides are consulted first so edits stay live.
+    this._baseCache = new Map();
+    this._scanCache = new Map();
     this.entities = [];
     this.time = 1000; // morning
     this.dayLength = dayLength;
@@ -195,14 +199,21 @@ class MockWorld {
     if (y < -62) return 'bedrock';
     if (y <= -58) return 'bedrock';
     const surface = this.surfaceY(pos.x, pos.z);
+    // Fast paths: nothing decorates the world more than eight blocks above or
+    // below the surface except lava pockets and caves. Skipping the tree/hut
+    // scans for those volumes keeps repeated action scans affordable.
+    if (y > surface + 8) return 'air';
+    const deep = y < surface - 8;
     const lava = this._lavaPocket(pos);
     if (lava) return lava;
-    const lake = this._lakeBlock(pos);
-    if (lake) return lake;
-    const tree = this._treeBlock(pos);
-    if (tree) return tree;
-    const hut = this._hutBlock(pos);
-    if (hut) return hut;
+    if (!deep) {
+      const lake = this._lakeBlock(pos);
+      if (lake) return lake;
+      const tree = this._treeBlock(pos);
+      if (tree) return tree;
+      const hut = this._hutBlock(pos);
+      if (hut) return hut;
+    }
     if (y > surface) return 'air';
     if (this._cave(pos.x, y, pos.z)) return 'air';
     if (y === surface) {
@@ -227,20 +238,30 @@ class MockWorld {
     return 'stone';
   }
 
+  /** Name-only lookup used by volume scans; avoids allocating block objects. */
+  blockNameAt(x, y, z) {
+    if (Math.abs(x) > this.size || Math.abs(z) > this.size || y < -64 || y > 320) return null;
+    const k = `${x},${y},${z}`;
+    const override = this.overrides.get(k);
+    if (override !== undefined) return override;
+    let name = this._baseCache.get(k);
+    if (name === undefined) {
+      name = this.baseBlockAt({ x, y, z });
+      if (this._baseCache.size > 1000000) this._baseCache.clear();
+      this._baseCache.set(k, name);
+    }
+    return name;
+  }
+
   getBlock(pos) {
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return null;
     const x = Math.floor(pos.x);
     const y = Math.floor(pos.y);
     const z = Math.floor(pos.z);
-    if (Math.abs(x) > this.size || Math.abs(z) > this.size || y < -64 || y > 320) return null;
-    const k = key({ x, y, z });
-    if (this.overrides.has(k)) {
-      const v = this.overrides.get(k);
-      return v === null ? null : { name: v, position: { x, y, z }, solid: v !== 'air', boundingBox: v === 'air' ? 'empty' : 'block' };
-    }
-    const name = this.baseBlockAt({ x, y, z });
+    const name = this.blockNameAt(x, y, z);
+    if (name === null) return null;
     if (name === 'air') return { name: 'air', position: { x, y, z }, solid: false, boundingBox: 'empty' };
-    return { name, position: { x, y, z }, solid: true, boundingBox: 'block' };
+    return { name, position: { x, y, z }, solid: name !== 'water' && name !== 'lava', boundingBox: 'block' };
   }
 
   setBlock(pos, name) {
@@ -297,18 +318,32 @@ class MockWorld {
 
   setTime(time) { this.time = ((time % this.dayLength) + this.dayLength) % this.dayLength; return this.time; }
 
-  findBlocks(name, near = { x: 0, y: 64, z: 0 }, radius = 24) {
-    const out = [];
+  findBlocks(name, near = { x: 0, y: 64, z: 0 }, radius = 24, limit = Infinity) {
     const names = Array.isArray(name) ? new Set(name) : new Set([name]);
-    for (let y = Math.max(-64, near.y - radius); y <= Math.min(200, near.y + radius); y++) {
-      for (let z = near.z - radius; z <= near.z + radius; z++) {
-        for (let x = near.x - radius; x <= near.x + radius; x++) {
-          const block = this.getBlock({ x, y, z });
-          if (block && names.has(block.name)) out.push({ x, y, z, name: block.name });
+    const nx = Math.round(near.x / 2) * 2;
+    const ny = Math.round(near.y / 2) * 2;
+    const nz = Math.round(near.z / 2) * 2;
+    const cacheKey = `${[...names].sort().join(',')}|${nx},${ny},${nz}|${radius}`;
+    const edits = this.edits.dug + this.edits.placed;
+    const cached = this._scanCache.get(cacheKey);
+    if (cached && cached.edits === edits && Date.now() - cached.at < 1200) return cached.out.slice();
+    const out = [];
+    const yFrom = Math.max(-64, ny - radius);
+    const yTo = Math.min(200, ny + radius);
+    for (let y = yFrom; y <= yTo; y++) {
+      for (let z = nz - radius; z <= nz + radius; z++) {
+        for (let x = nx - radius; x <= nx + radius; x++) {
+          const found = this.blockNameAt(x, y, z);
+          if (found && names.has(found)) {
+            out.push({ x, y, z, name: found });
+            if (out.length >= limit) return out;
+          }
         }
       }
     }
-    return out;
+    if (this._scanCache.size > 240) this._scanCache.clear();
+    this._scanCache.set(cacheKey, { at: Date.now(), edits, out });
+    return out.slice();
   }
 
   stats() {

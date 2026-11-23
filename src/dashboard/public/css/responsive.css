@@ -1,0 +1,87 @@
+/* Responsive behaviour */
+@media (max-width: 1320px) {
+  :root { --content-max: 1280px; }
+  .grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid--5 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1080px) {
+  .sidebar { transform: translateX(-100%); width: var(--sidebar-width); box-shadow: var(--shadow-lg); }
+  body.sidebar-open .sidebar { transform: translateX(0); }
+  body.sidebar-collapsed .sidebar { width: var(--sidebar-width); }
+  body.sidebar-collapsed .brand { padding: 18px 18px 16px; justify-content: flex-start; }
+  body.sidebar-collapsed .brand-text,
+  body.sidebar-collapsed .nav-group-label,
+  body.sidebar-collapsed .nav-item-label,
+  body.sidebar-collapsed .nav-badge,
+  body.sidebar-collapsed .sidebar-status,
+  body.sidebar-collapsed .sidebar-collapse-label { display: initial; }
+  body.sidebar-collapsed .nav { padding: var(--space-4) var(--space-3) var(--space-6); }
+  body.sidebar-collapsed .nav-item { justify-content: flex-start; padding: 0 10px; }
+  body.sidebar-collapsed .sidebar-collapse { justify-content: flex-start; }
+  .workspace, body.sidebar-collapsed .workspace { margin-left: 0; }
+  .topbar-menu { display: inline-grid !important; }
+  .sidebar-collapse { display: none; }
+  .command-trigger { min-width: 0; width: 36px; justify-content: center; padding: 0; }
+  .command-trigger-label, .command-trigger kbd { display: none; }
+  .main { padding: var(--space-6) var(--space-5) var(--space-9); }
+  .grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-hero { padding: var(--space-4); }
+  .task-board { grid-template-columns: repeat(5, minmax(210px, 1fr)); }
+}
+
+@media (max-width: 780px) {
+  .topbar { padding: 0 var(--space-4); height: 58px; }
+  :root { --topbar-height: 58px; }
+  .server-chip { display: none; }
+  .fleet-chip { height: 28px; font-size: 10px; }
+  .main { padding: var(--space-5) var(--space-4) var(--space-8); }
+  .grid--2, .grid--3, .grid--4, .grid--5, .grid--stats { grid-template-columns: 1fr; }
+  .grid--bots { grid-template-columns: 1fr; }
+  .grid--main-side, .split, .settings-grid { grid-template-columns: 1fr; }
+  .page-header { align-items: flex-start; }
+  .page-actions { width: 100%; }
+  .page-title { font-size: var(--text-xl); }
+  .mini-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .field-row, .field-row--3 { grid-template-columns: 1fr; }
+  .overview-hero { align-items: flex-start; }
+  .hero-actions { width: 100%; }
+  .task-board { display: flex; flex-direction: column; }
+  .task-column { min-height: 0; }
+  .task-column-body { max-height: 280px; }
+  .toast-stack { right: 12px; left: 12px; bottom: 12px; width: auto; }
+  .modal-backdrop { padding: 0; align-items: flex-end; }
+  .modal { width: 100%; max-height: 92vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .modal--wide { width: 100%; }
+  .notifications-panel { top: calc(var(--topbar-height) + 6px); right: 8px; left: 8px; width: auto; }
+  .command-palette { padding-top: 7vh; }
+  .command-trigger { display: none; }
+  .inventory-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
+  .bot-vitals { grid-template-columns: 1fr 1fr; }
+  .table th, .table td { padding-left: 9px; padding-right: 9px; }
+  .page-header { gap: var(--space-3); }
+  .section-head { align-items: flex-start; }
+  .schematic-preview { height: 110px; }
+  .profile-head { padding: var(--space-4); }
+  .profile-actions { width: 100%; }
+}
+
+@media (max-width: 480px) {
+  .breadcrumbs .crumb-parent { display: none; }
+  .fleet-chip { display: none; }
+  .stat-value { font-size: 22px; }
+  .overview-hero h1 { font-size: var(--text-lg); }
+  .bot-card-foot { flex-wrap: wrap; }
+  .mini-stats { grid-template-columns: 1fr 1fr; }
+  .inventory-grid { grid-template-columns: 1fr 1fr; }
+  .item-tile { padding: 6px; }
+  .item-tile-icon { width: 24px; height: 24px; }
+  .topbar-right { gap: 0; }
+  .page-actions .button { flex: 1; }
+}
+
+@media print {
+  .sidebar, .topbar, .toast-stack, .modal-root, .command-palette, .notifications-panel { display: none !important; }
+  .workspace { margin-left: 0; }
+  body { background: #fff; color: #000; }
+}

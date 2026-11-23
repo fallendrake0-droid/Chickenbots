@@ -36,10 +36,17 @@ class FarmingController {
   }
 
   status() {
+    const position = this.bot.position || { x: 0, y: 0, z: 0 };
+    const now = Date.now();
+    const moved = this._statusCache ? Math.hypot(position.x - this._statusCache.center.x, position.z - this._statusCache.center.z) : Infinity;
+    if (!this._statusCache || moved > 12 || now - this._statusCache.at > 10000) {
+      this._statusCache = { center: { x: position.x, z: position.z }, at: now, crops: this.scanCrops({ radius: 20 }) };
+    }
+    const crops = this._statusCache.crops;
     return {
       bot: this.bot.name,
-      crops: this.scanCrops().slice(0, 12),
-      cropCount: this.cropCount(),
+      crops: crops.slice(0, 12),
+      cropCount: crops.length,
       seeds: Object.entries(CROPS).map(([crop, def]) => ({ crop, seed: def.seed, count: this.bot.countItem(def.seed) })).filter((s) => s.count > 0),
       animals: this.countAnimals(),
       farms: this.farmPlots.slice(-5),
@@ -69,7 +76,13 @@ class FarmingController {
     if (move && move.ok === false) return { ok: false, error: move.error };
     const dig = await this.bot.digBlock(pos);
     if (!dig.ok) return { ok: false, error: dig.error };
+    this._statusCache = null;
     this.stats.harvested++;
+    const known = this.farmPlots.find((plot) => plot.position.x === pos.x && plot.position.y === pos.y && plot.position.z === pos.z);
+    const plot = { crop: block.name, position: { ...pos }, at: Date.now() };
+    if (known) Object.assign(known, plot);
+    else this.farmPlots.push(plot);
+    if (this.farmPlots.length > 20) this.farmPlots.shift();
     if (typeof this.bot.collectDrops === 'function') await this.bot.collectDrops(6);
     const replant = await this.replant(pos, def.seed);
     if (this.memory) {
@@ -85,7 +98,10 @@ class FarmingController {
     const move = await this.bot.goTo(pos, { range: 4 });
     if (move && move.ok === false) return { ok: false, error: move.error };
     const placed = await this.bot.placeBlock(pos, seed);
-    if (placed.ok) this.stats.replanted++;
+    if (placed.ok) {
+      this.stats.replanted++;
+      this._statusCache = null;
+    }
     return placed;
   }
 
