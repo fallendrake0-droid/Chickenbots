@@ -43,6 +43,7 @@ class RealBot extends BotAdapter {
     this.registerPassword = registerPassword;
     this.connectTimeoutMs = connectTimeoutMs;
     this.authEnabled = authEnabled !== false;
+    this.hasRegistered = false;
     this.authDelayMs = authDelayMs;
     this.authTimeoutMs = authTimeoutMs;
     this._mineflayer = mineflayer;
@@ -284,14 +285,20 @@ class RealBot extends BotAdapter {
     if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
 
     let registered = false;
-    if (this.registerPassword) {
+    // Register once per bot process, on the first join. Reconnects use /login:
+    // repeatedly sending /register only earns "already registered" errors.
+    if (this.registerPassword && !this.hasRegistered) {
+      this.logger.info(`[${this.name}] first join: sending /register (password hidden)`);
       const command = config.server.registerCommand.replace(/\{password\}/g, this.registerPassword);
       const result = await this._sendAuthCommand(command, 'register');
       if (!result.ok) return result;
+      this.hasRegistered = true;
       registered = !result.alreadyRegistered;
       if (result.alreadyRegistered && !this.loginPassword) {
         return { ok: false, error: 'account is already registered; set MC_LOGIN_PASSWORD', kind: 'register' };
       }
+    } else if (this.registerPassword && this.hasRegistered && !this.loginPassword) {
+      return { ok: false, error: 'account is already registered; set MC_LOGIN_PASSWORD for reconnects', kind: 'login' };
     }
     if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
     if (this.loginPassword) {

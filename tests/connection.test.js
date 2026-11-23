@@ -119,3 +119,16 @@ test('password auth can be disabled for a server without a plugin', () => {
   const real = new RealBot({ name: '_______', authEnabled: false, loginPassword: 'secret', registerPassword: 'secret' });
   assert.equal(real.passwordRequired, false);
 });
+
+test('registration is sent on the first join and only login is used afterwards', async () => {
+  const { real, commands } = authHarness({ registerPassword: 'secret', loginPassword: 'secret' });
+  const first = await real._handleLoginCommands();
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.deepEqual(commands, ['/register secret secret', '/login secret']);
+
+  commands.length = 0;
+  real.authenticated = false;
+  const second = await real._handleLoginCommands();
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.deepEqual(commands, ['/login secret']);
+});

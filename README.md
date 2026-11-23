@@ -461,9 +461,10 @@ commissioning.
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
   Bots join one at a time with jitter, and throttled joins use a 30-second floor before retrying.
-  When `MC_LOGIN_PASSWORD` or `MC_REGISTER_PASSWORD` is set (the default is `chickenbot12345`), movement is frozen and autonomy stays
-  gated until the server confirms authentication in chat; a failed or unconfirmed password disconnects
-  the bot instead of letting it move.
+  When `MC_LOGIN_PASSWORD` or `MC_REGISTER_PASSWORD` is set (the default is `chickenbot12345`), the first
+  join sends `/register` and later reconnects use `/login`. Movement is frozen and autonomy stays gated
+  until the server confirms authentication in chat; a failed or unconfirmed password disconnects the bot
+  instead of letting it move.
   A server-side `Invalid move player packet` kick usually means the protocol version does not match;
   set `MC_VERSION` to the server's exact version instead of `auto`.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
