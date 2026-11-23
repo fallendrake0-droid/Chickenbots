@@ -1216,7 +1216,7 @@ function registerCombat(registry, services) {
         if (typeof bot.layoutHotbar !== 'function') {
           const { itemSlot } = require('../combat/equipment');
           const layout = Object.keys(bot.inventory || {}).filter((name) => bot.countItem(name) > 0).map((name) => ({ name, slot: itemSlot(name) })).filter((row) => String(row.slot).startsWith('hotbar'));
-          return { ok: false, bot: bot.name, error: 'this adapter cannot reorder the hotbar; conceptual layout only', layout };
+          return { ok: true, bot: bot.name, applied: false, note: 'this adapter cannot reorder the hotbar; conceptual layout only', layout };
         }
         return { ok: true, bot: bot.name, ...(await bot.layoutHotbar()) };
       }
