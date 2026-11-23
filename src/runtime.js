@@ -345,7 +345,7 @@ class TeamRuntime {
     // otherwise a bot that fails after the initial retry budget is never restored.
     if (!this.simulate && this.shouldConnect) {
       this.supervisorTicks++;
-      if (this.supervisorTicks % 20 === 0 && !this.supervisorBusy) {
+      if (this.supervisorTicks % 2 === 0 && !this.supervisorBusy) {
         this.supervisorBusy = true;
         this._recoverDisconnected()
           .catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`))

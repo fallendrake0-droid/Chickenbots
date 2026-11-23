@@ -93,7 +93,7 @@ const config = {
     // server and negotiates, which is the safe default.
     auth: env('MC_AUTH', 'offline'),
     connectTimeoutMs: envInt('MC_CONNECT_TIMEOUT_MS', 45000),
-    keepAliveMs: envInt('MC_KEEPALIVE_MS', 10000),
+    keepAliveMs: envInt('MC_KEEPALIVE_MS', 120000),
     // Aternos and vanilla proxies throttle rapid joins. Open one socket at a
     // time, with jitter, instead of starting all five bots simultaneously.
     connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 5000),

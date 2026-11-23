@@ -356,6 +356,10 @@ class RealBot extends BotAdapter {
       this._failSpawnWaiters(this.lastError);
     });
     if (bot._client && typeof bot._client.on === 'function') {
+      bot._client.on('keep_alive', () => {
+        if (this.bot !== bot) return;
+        this.logger.debug(`[${this.name}] TRACE keep_alive received; replying`);
+      });
       bot._client.on('position', (packet) => {
         if (this.bot !== bot) return;
         this.lastServerPosition = {

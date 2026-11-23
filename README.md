@@ -297,6 +297,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
+| `MC_KEEPALIVE_MS` | `120000` | client-side keepalive watchdog; raise this if Aternos lag causes `client timed out` drops |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `0.0.0.0` | bind address (sandbox preview needs this) |
