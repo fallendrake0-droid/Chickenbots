@@ -253,6 +253,9 @@ function render(options = {}) {
   if (!force && !routeChange && isTypingInsideView()) return;
   const route = resolveRoute();
   const sameRoute = currentRoute && currentRoute.key === route.key && JSON.stringify(currentRoute.params) === JSON.stringify(route.params);
+  if (currentRoute && !sameRoute && currentRoute.page && typeof currentRoute.page.unmount === 'function') {
+    try { currentRoute.page.unmount(); } catch (err) { console.error('unmount failed', err); }
+  }
   if (!routeChange && !force && sameRoute && Date.now() - lastLiveRender < 350) return;
   lastLiveRender = Date.now();
   const scrollY = window.scrollY;

@@ -8,11 +8,27 @@ const { config } = require('../config');
 const { statusSnapshot } = require('../runtimeState');
 const { toSpongeSchematic, toJSON } = require('../schematics/format');
 const logStore = require('../logStore');
+const { worldSnapshot } = require('./worldView');
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
 /**
- * Dashboard server. Binds 0.0.0.0:3000 by default so the sandbox preview can
- * reach it; all client URLs are relative. Commands go through the same
- * validated registry as the terminal (chat is never an execution source).
+ * The dashboard can issue commands, so a non-loopback bind without a token is
+ * only allowed when the operator explicitly accepts the risk. Returning a
+ * message instead of hiding the decision keeps startup errors actionable.
+ */
+function dashboardBindProblem({ host, token, allowInsecure } = {}) {
+  if (token) return null;
+  if (LOOPBACK_HOSTS.has(String(host || '').toLowerCase())) return null;
+  if (allowInsecure === true) return null;
+  return `refusing to expose the unauthenticated control plane on ${host}; bind 127.0.0.1, set DASHBOARD_TOKEN, or set DASHBOARD_ALLOW_INSECURE=true for a trusted local preview`;
+}
+
+/**
+ * Dashboard server. Binds loopback by default because it can issue commands;
+ * a non-loopback bind needs a token or an explicit allow-insecure opt-in. All
+ * client URLs are relative. Commands go through the same validated registry as
+ * the terminal (chat is never an execution source).
  */
 function createDashboard(services, { port = config.dashboard.port, host = config.dashboard.host } = {}) {
   const app = express();
@@ -197,9 +213,10 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       ok: true,
       settings: {
         server: { host: config.server.host, port: config.server.port, version: config.server.version, auth: config.server.auth, joinIntervalMs: config.server.joinIntervalMs, joinJitterMs: config.server.joinJitterMs, rejoinDelayMs: config.server.rejoinDelayMs },
-        dashboard: { host: config.dashboard.host, port: config.dashboard.port },
-        security: { tokenRequired: Boolean(accessToken), passwordConfigured: Boolean(config.server.loginPassword || config.server.registerPassword) },
+        dashboard: { host: config.dashboard.host, port: config.dashboard.port, allowInsecure: config.dashboard.allowInsecure === true },
+        security: { tokenRequired: Boolean(accessToken), passwordConfigured: Boolean(config.server.loginPassword || config.server.registerPassword), allowInsecure: config.dashboard.allowInsecure === true },
         roster: config.team.names,
+        pve: config.autonomy.pve,
         pvp: config.autonomy.pvp,
         ai: { enabled: config.autonomy.ai.enabled, provider: config.autonomy.ai.provider || null },
         autonomy: { tickMs: config.autonomy.tickMs, enabled: services.runtime ? services.runtime.state().running : false, paused: services.runtime ? services.runtime.state().paused : false },
@@ -225,6 +242,23 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       invalidate();
       res.json(result);
     } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.get('/api/world', (req, res) => {
+    try {
+      const result = worldSnapshot(services, {
+        bot: req.query.bot,
+        x: req.query.x,
+        y: req.query.y,
+        z: req.query.z,
+        radius: req.query.radius,
+        height: req.query.height
+      });
+      res.json(result);
+    } catch (err) {
+      services.logger?.warn(`world view failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message });
     }
   });
@@ -346,8 +380,9 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     return res.status(status).json({ ok: false, error: message });
   });
 
-  if (!accessToken && !['127.0.0.1', '::1', 'localhost'].includes(String(host).toLowerCase())) {
-    services.logger?.warn(`dashboard is bound to ${host}:${port} without DASHBOARD_TOKEN; anyone who can reach this port can issue commands`);
+  const bindProblem = dashboardBindProblem({ host, token: accessToken, allowInsecure: config.dashboard.allowInsecure });
+  if (!accessToken && !LOOPBACK_HOSTS.has(String(host).toLowerCase()) && config.dashboard.allowInsecure === true) {
+    services.logger?.warn(`dashboard is bound to ${host}:${port} without DASHBOARD_TOKEN because DASHBOARD_ALLOW_INSECURE=true; anyone who can reach this port can issue commands`);
   }
 
   const server = http.createServer(app);
@@ -358,6 +393,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     invalidate,
     start() {
       return new Promise((resolve, reject) => {
+        if (bindProblem) return reject(new Error(bindProblem));
         server.once('error', reject);
         server.listen(port, host, () => {
           const address = server.address();
@@ -413,4 +449,4 @@ function topDownPreview(schematic) {
   return { width, length, height: schematic.dimensions.height, stride, cells: sampled };
 }
 
-module.exports = { createDashboard };
+module.exports = { createDashboard, dashboardBindProblem, worldSnapshot };

@@ -55,6 +55,13 @@ export const api = {
     return request(`/api/logs?${query.toString()}`, { timeoutMs: 10000 });
   },
   settings: () => request('/api/settings'),
+  world: ({ bot = null, radius = 20, height = null } = {}) => {
+    const query = new URLSearchParams();
+    if (bot) query.set('bot', bot);
+    if (radius) query.set('radius', String(radius));
+    if (height) query.set('height', String(height));
+    return request(`/api/world?${query.toString()}`, { timeoutMs: 20000 });
+  },
   schematics: (params = {}) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {

@@ -90,8 +90,13 @@ export function openCreateDialog() {
           <label class="field-label" for="task-label">Label</label>
           <input class="input" id="task-label" type="text" maxlength="120" placeholder="Optional description">
         </div>
+        <div class="field field--wide">
+          <label class="field-label" for="task-params">Parameters (optional JSON)</label>
+          <input class="input mono" id="task-params" type="text" maxlength="480" placeholder='{"block":"stone","limit":8}' aria-describedby="task-params-help">
+          <span class="field-help" id="task-params-help">Examples: STORE_ITEMS {"containers":2}; TRANSFER_ITEMS {"item":"bread","to":"00110000","count":8}; MINE_BLOCK {"block":"iron_ore"}. Invalid JSON is rejected.</span>
+        </div>
       </div>
-      <p class="tiny muted" style="margin:10px 0 0">Priority defaults to 50. You can reprioritise from the task board afterwards.</p>`,
+      <p class="tiny muted" style="margin:10px 0 0">Priority defaults to 50. You can reprioritise from the task board afterwards. The task is only completed after the controller verifies a real world change.</p>`,
     footer: `<button class="button" type="button" data-cancel>Cancel</button><button class="button button--primary" type="button" data-confirm>${'Create task'}</button>`,
     onMount: (modal, closeDialog) => {
       modal.querySelector('[data-cancel]').addEventListener('click', closeDialog);
@@ -99,9 +104,21 @@ export function openCreateDialog() {
         const button = event.currentTarget;
         const type = modal.querySelector('#task-type').value;
         const label = modal.querySelector('#task-label').value.trim();
+        const rawParams = modal.querySelector('#task-params').value.trim();
+        if (rawParams) {
+          let parsed;
+          try { parsed = JSON.parse(rawParams); } catch (_) {
+            toast({ type: 'error', title: 'Invalid parameters', message: 'Parameters must be a JSON object.' });
+            return;
+          }
+          if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+            toast({ type: 'error', title: 'Invalid parameters', message: 'Parameters must be a JSON object.' });
+            return;
+          }
+        }
         setButtonLoading(button, true);
         try {
-          const result = await runCommand(`task add ${type}${label ? ` ${label}` : ''}`);
+          const result = await runCommand(`task add ${type}${label ? ` ${label}` : ''}${rawParams ? ` --params ${rawParams}` : ''}`);
           const message = resultMessage(result);
           toast({ type: message.type, title: message.title, message: message.message });
           closeDialog();

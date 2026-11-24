@@ -1,5 +1,6 @@
 import { parseHash } from './utils.js';
 import overview from './pages/overview.js';
+import { worldPage } from './pages/world.js';
 import { botsPage, profilesPage, profilePage, teamPage, connectionsPage } from './pages/fleet.js';
 import {
   survivalPage, inventoryPage, miningPage, excavationPage,
@@ -21,6 +22,7 @@ export const NAV_GROUPS = [
     label: 'General',
     items: [
       { path: 'overview', label: 'Overview', icon: 'layout-dashboard' },
+      { path: 'world', label: 'Live World', icon: 'cube' },
       { path: 'activity', label: 'Live Activity', icon: 'activity' },
       { path: 'notifications', label: 'Notifications', icon: 'bell' }
     ]
@@ -110,6 +112,7 @@ export function resolveRoute(hash = location.hash) {
   if (!segments.length) return { ...base, page: overview, label: 'Overview', key: 'overview' };
   switch (root) {
     case 'overview': return { ...base, page: overview, label: 'Overview' };
+    case 'world': return { ...base, page: worldPage, label: 'Live World' };
     case 'activity': return { ...base, page: activityPage, label: 'Live Activity' };
     case 'notifications': return { ...base, page: notificationsPage, label: 'Notifications' };
     case 'bots':

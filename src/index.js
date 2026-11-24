@@ -9,7 +9,7 @@ const { Logger } = require('./logger');
 const { printStartupBanner } = require('./branding');
 
 function parseArgs(argv) {
-  const args = { simulate: config.sim.enabled, dashboard: true, port: config.dashboard.port, host: config.dashboard.host, connect: true };
+  const args = { simulate: config.sim.enabled, dashboard: true, port: config.dashboard.port, host: config.dashboard.host, connect: true, allowInsecure: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--simulate' || arg === '--mock' || arg === '--sim') args.simulate = true;
@@ -18,6 +18,7 @@ function parseArgs(argv) {
     else if (arg === '--no-connect') args.connect = false;
     else if (arg === '--port') args.port = Number(argv[++i]);
     else if (arg === '--host') args.host = argv[++i];
+    else if (arg === '--allow-insecure') args.allowInsecure = true;
     else if (arg === '--help' || arg === '-h') args.help = true;
   }
   return args;
@@ -68,6 +69,7 @@ Options:
   --no-connect      Start the runtime without connecting bots (diagnostics)
   --port <port>     Dashboard port (default ${config.dashboard.port})
   --host <host>     Dashboard bind address (default ${config.dashboard.host})
+  --allow-insecure  Allow an unauthenticated non-loopback bind (trusted preview only)
   -h, --help        Show this help
 
 Default server: ${config.server.host}:${config.server.port} (version ${config.server.version})
@@ -79,7 +81,14 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { usage(); return 0; }
   printStartupBanner();
+  if (args.allowInsecure) config.dashboard.allowInsecure = true;
   const logger = new Logger({ level: config.logging.level });
+  const loopback = ['127.0.0.1', '::1', 'localhost'].includes(String(args.host).toLowerCase());
+  if (args.dashboard && !loopback && !config.dashboard.token && !config.dashboard.allowInsecure) {
+    process.stderr.write(`\nRefusing to expose the dashboard control plane on ${args.host} without authentication.\n`);
+    process.stderr.write('Bind 127.0.0.1, set DASHBOARD_TOKEN, or pass --allow-insecure for a trusted local preview.\n\n');
+    return 2;
+  }
   const validation = validateConfig(config, {
     requireCredentials: !args.simulate && args.connect,
     simulate: args.simulate
@@ -118,7 +127,9 @@ async function main() {
   const started = await runtime.start();
   if (started.dashboard) {
     process.stdout.write(`\n  Dashboard: http://127.0.0.1:${started.dashboard.port}  (bound ${started.dashboard.host}:${started.dashboard.port})\n`);
-    process.stdout.write('  Live preview uses the sandbox proxy; the server accepts the forwarded host.\n\n');
+    process.stdout.write('  Live preview uses the sandbox proxy; the server accepts the forwarded host.\n');
+    if (!config.dashboard.token) process.stdout.write(`  Control plane auth: ${config.dashboard.allowInsecure ? 'explicitly disabled for this trusted preview' : 'loopback only'}.\n`);
+    process.stdout.write('\n');
   }
   if (args.simulate) {
     const state = runtime.state();

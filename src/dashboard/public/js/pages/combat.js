@@ -353,7 +353,7 @@ export const combatTargetsPage = {
     const team = teamStatus();
     const arenas = policy.arenas || [];
     return `<div class="page">
-      ${pageHeader({ eyebrow: 'Combat operations', title: 'PvP & targets', description: 'PvP is off by default. A player must be explicitly authorised here before any bot may attack; teammates are always excluded.', actions: `${commandButton('PvP on', 'pvp on', 'target', { primary: true })}${commandButton('PvP off', 'pvp off', 'lock', { danger: true })}` })}
+      ${pageHeader({ eyebrow: 'Combat operations', title: 'PvP & targets', description: 'PvP is enabled as a feature, but no player is auto-targeted. A player must be explicitly authorised here before any bot may attack; teammates and protected players are always excluded.', actions: `${commandButton('PvP on', 'pvp on', 'target', { primary: true })}${commandButton('PvP off', 'pvp off', 'lock', { danger: true })}` })}
       <div class="card card--pad">
         <div class="card-title">Explicit target list</div>
         <p class="muted">Only names in this list can be attacked. The policy still refuses teammates, protected players, unauthorised players and any server with PvP disabled.</p>

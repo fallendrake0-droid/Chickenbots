@@ -84,9 +84,10 @@ async function main() {
     const { config } = requireLocal('src/config.js');
     assert(config.server.host === 'cr3xlol.aternos.me', `unexpected host ${config.server.host}`);
     assert(Number(config.server.port) === 55742, `unexpected port ${config.server.port}`);
-    assert(config.autonomy.pvp === false, 'PvP must stay disabled by default');
+    assert(config.autonomy.pve === true, 'PvE must be enabled by default');
+    assert(config.autonomy.pvp === true, 'PvP feature must be enabled by default; PvpPolicy still requires explicit targets');
     assert(config.autonomy.ai.enabled === false, 'AI hook must stay disabled');
-    return 'cr3xlol.aternos.me:55742, PvP off, AI off';
+    return 'cr3xlol.aternos.me:55742, PvE on, explicit-target PvP, AI off';
   });
 
   check('V5 construction modules are present', () => {
@@ -112,6 +113,18 @@ async function main() {
     return `${modules.length} modules, ${families.length} command families`;
   });
 
+  check('live world viewer and bounded snapshot API are present', () => {
+    const router = read('src/dashboard/public/js/router.js');
+    read('src/dashboard/public/js/pages/world.js');
+    read('src/dashboard/public/js/viewer3d.js');
+    read('src/dashboard/worldView.js');
+    assert(router.includes("'world'"), 'Live World route is not registered');
+    assert(router.includes('Live World'), 'Live World navigation entry is missing');
+    const server = read('src/dashboard/server.js');
+    assert(server.includes('/api/world'), '/api/world endpoint is missing');
+    return 'route + viewer + snapshot producer';
+  });
+
   check('dashboard combat operations surface is routable', () => {
     const router = read('src/dashboard/public/js/router.js');
     const pages = read('src/dashboard/public/js/pages/combat.js');
@@ -121,7 +134,7 @@ async function main() {
       assert(pages.includes(`export const ${page}`), `combat page export ${page} is missing`);
     }
     assert(router.includes('Combat Operations'), 'Combat Operations navigation group is missing');
-    assert(pages.includes('PvP is off by default'), 'PvP safety copy is missing');
+    assert(pages.includes('no player is auto-targeted'), 'explicit PvP safety copy is missing');
     return `${routes.length} routes`;
   });
 

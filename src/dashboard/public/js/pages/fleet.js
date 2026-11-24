@@ -207,12 +207,38 @@ function profileSummary(bot, actions, team, name) {
           <div class="card-header"><div class="card-title">${icon('alert')} Alerts</div>${badge(`${alerts.length}`, alerts.length ? 'warn' : 'ok')}</div>
           <div class="card-body card-body--tight">${alerts.length ? alertsBlock(alerts, { limit: 8 }) : `<div class="list-item">${icon('check-circle')}<div class="list-main"><div class="list-title">No alerts</div><div class="list-sub">This bot is within all monitored thresholds.</div></div></div>`}</div>
         </section>
+        ${deathPanel(name)}
         <section class="card">
           <div class="card-header"><div class="card-title">${icon('zap')} Effects</div></div>
           <div class="card-body">${(bot.effects || []).length ? `<div class="chips">${bot.effects.map((effect) => `<span class="chip">${esc(typeof effect === 'string' ? effect : effect.name || effect.id)} ${effect.duration ? `· ${Math.round(effect.duration / 1000)}s` : ''}</span>`).join('')}</div>` : '<div class="muted small">No active status effects.</div>'}</div>
         </section>
       </aside>
     </div>`;
+}
+
+function deathPanel(name) {
+  const recovery = ((state.snapshot && state.snapshot.recovery) || []).find((entry) => entry.bot === name);
+  if (!recovery) {
+    return `<section class="card"><div class="card-header"><div class="card-title">${icon('alert')} Death diagnostics</div></div><div class="card-body"><div class="muted small">The recovery monitor has not reported for this bot yet.</div></div></section>`;
+  }
+  const last = recovery.lastDeath || null;
+  const spawn = recovery.spawnSafety;
+  return `<section class="card">
+    <div class="card-header"><div class="card-title">${icon('alert')} Death diagnostics</div>${badge(recovery.state, recovery.state === 'ACTIVE' ? 'ok' : recovery.deathLoop ? 'danger' : 'warn')}</div>
+    <div class="card-body">
+      ${kvRows([
+        ['Recovery state', esc(recovery.reason || recovery.state)],
+        ['Deaths (2m / 10m)', `${num(recovery.deathsRecent)} / ${num(recovery.deathsLong)}`],
+        ['Death loop', recovery.deathLoop ? badge('Detected', 'danger') : badge('No', 'ok')],
+        ['Last cause', esc(last ? last.cause : '—')],
+        ['Last position', esc(last && last.position ? positionText(last.position) : '—'), true],
+        ['Last health / food', last ? `${last.healthBefore ?? '—'} / ${last.food ?? '—'}` : '—'],
+        ['Death message', esc(last && last.deathMessage ? last.deathMessage : '—')],
+        ['Spawn safety', spawn ? (spawn.safe ? badge('Safe', 'ok') : badge(`Unsafe — ${spawn.reasons.join(', ')}`, 'danger')) : 'not assessed']
+      ], { htmlValues: true })}
+      ${recovery.deaths && recovery.deaths.length ? `<div class="divider"></div><div class="tiny muted">Recent deaths</div><div class="death-list">${recovery.deaths.slice(-3).reverse().map((death) => `<div class="death-row"><span class="mono tiny">${esc(new Date(death.at).toLocaleTimeString())}</span><span>${esc(death.cause)}</span><span class="mono tiny">${death.position ? esc(positionText(death.position)) : ''}</span></div>`).join('')}</div>` : ''}
+    </div>
+  </section>`;
 }
 
 function miniStat(label, value, ratio, tone, iconName) {

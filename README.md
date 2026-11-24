@@ -11,7 +11,7 @@ runtime; the optional AI hook exists as a disabled flag.
 ```
 roster (fixed):  ________   10101000   01010100   11001100   00110000
 server:          cr3xlol.aternos.me:55742   (MC_VERSION=auto, ViaVersion/ViaBackwards friendly)
-dashboard:       http://127.0.0.1:3000      (binds 0.0.0.0 for sandbox previews)
+dashboard:       http://127.0.0.1:3000      (loopback by default; preview opts into 0.0.0.0)
 ```
 
 > Honest scope note: the entire team, survival, excavation, construction, builder, command and dashboard stack is
@@ -35,8 +35,14 @@ npm test                      # full test suite
 npm run validate              # secret scan + lint + tests + full 1120-design validation + consistency
 ```
 
-Dashboard (live or simulated): <http://127.0.0.1:3000>. In the Arena sandbox the same server is
-reachable through the preview proxy because it binds `0.0.0.0:3000`.
+Dashboard (live or simulated): <http://127.0.0.1:3000>. The default bind is loopback because the
+dashboard can issue commands. For the Arena sandbox preview (which proxies a non-loopback port), start
+it explicitly with `--allow-insecure` (or set `DASHBOARD_ALLOW_INSECURE=true`) and preferably a token:
+
+```bash
+node src/index.js --simulate --host 0.0.0.0 --port 3000 --allow-insecure
+# or: DASHBOARD_TOKEN=<16+ chars> node src/index.js --simulate --host 0.0.0.0 --port 3000
+```
 
 Useful scripts:
 
@@ -95,7 +101,7 @@ src/
   builder/builder.js        cooperative phased construction with real material transfers
   actions/                  survival, combat, mining, woodcutting, farming, fishing, sleep, exploration, inventory, home base
   commands/                 registry.js (validation/confirmation) + index.js (all commands)
-  dashboard/                Express API + modular operations console (37 routed pages)
+  dashboard/                Express API + modular operations console (38 routed pages)
 scripts/                    lint, validation, schematic generation/statistics
 tests/                      team, excavation, construction, schematics, builder, survival, controllers, autonomy
 ```
@@ -104,6 +110,11 @@ tests/                      team, excavation, construction, schematics, builder,
 
 * Shared memory with attributable observations (reporter, timestamp, position, dimension,
   confidence, expiry). Consumers re-verify before acting.
+* Tasks created from the dashboard or CLI enter the same board, receive a unique timestamped ID,
+  are claimed by exactly one bot, heartbeated while an action runs, and are reconciled every
+  coordinator tick. A cancelled, completed or expired task cannot leave a bot permanently assigned
+  to dead work; a task with no verified progress for `TASK_STALL_MS` is released for re-planning.
+  Completion still requires a verified world change.
 * Objective manager and task board with dependencies, claims with TTL, heartbeats, retries,
   cancellation, spatial region reservations and lock deadlock detection/resolution.
 * Resource ledger with per-bot inventories, verified storage counts, reservations and real
@@ -118,10 +129,17 @@ tests/                      team, excavation, construction, schematics, builder,
 
 * Eat before starving, prioritise healing, wear armour, craft replacement tools, shield up when hurt.
 * Lava/fire clutches (water bucket), fall clutches, flee when outmatched, respawn handling.
-* PvP is **disabled by default**. Teammates and ordinary players are never valid auto-targets;
-  only hostile mobs are attacked automatically. PvP requires an explicit target list, can be limited
-  to an arena, and still refuses teammates, protected players, unauthorised names and servers with
-  PvP disabled. No packet exploits, reach hacks or fabricated hits are used.
+* PvE is **enabled by default** (`PVE_ENABLED=true`): hostile mobs are attacked automatically.
+* PvP is **enabled as a feature by default** (`PvP_ENABLED=true`), but it is not autonomous player
+  aggression. Teammates and ordinary players are never valid auto-targets; a player must be named by
+  an operator (`target add`, `duel`, or an authorised arena), and the policy still refuses teammates,
+  protected players, unauthorised names and servers with `SERVER_PVP_ENABLED=false`. No packet
+  exploits, reach hacks or fabricated hits are used.
+* Death diagnostics record the real position, last attacker/death message, health/food at death and
+  nearby threats. A rolling death-loop detector (`3 deaths/2 min` or `5/10 min`) puts the bot into a
+  recovery state: it stops claiming work, heals/equips, retreats toward home, releases its task for
+  re-planning and only resumes after a quiet safe-hold period. An unsafe spawn (hostiles within
+  range, critical health or hunger) starts the same recovery instead of feeding the loop.
 * Mining scans for every Overworld ore, enforces pickaxe tiers, refuses lava-adjacent digs,
   liquid ceilings and unsupported floors, lights tunnels, records ore discoveries.
 * Woodcutting chops trunks top-down, clears attached leaves, collects saplings and replants on the
@@ -298,18 +316,24 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
+| `MC_LOGIN_TIMEOUT_MS` | `30000` | protocol-login stage timeout; separate from spawn and AuthMe so failures are diagnosable |
+| `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
 | `MC_KEEPALIVE_MS` | `120000` | client-side keepalive watchdog; raise this if Aternos lag causes `client timed out` drops |
 | `MC_STALE_AFTER_MS` | `90000` | a connected bot with no inbound packet for this long is reported as `No packets`, never `Online` |
 | `MC_REJOIN_DELAY_MS` | `30000` | hold-down before the first rejoin after a real session ends; stops the Aternos "Connection throttled" loop without slowing initial joins |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
-| `DASHBOARD_HOST` | `0.0.0.0` | bind address (sandbox preview needs this) |
+| `DASHBOARD_HOST` | `127.0.0.1` | bind address; loopback by default because the dashboard can issue commands |
 | `DASHBOARD_LOCAL` | `false` | force `127.0.0.1` regardless of `DASHBOARD_HOST` |
+| `DASHBOARD_ALLOW_INSECURE` | `false` | explicitly allow an unauthenticated non-loopback bind (trusted preview only; the CLI flag is `--allow-insecure`) |
 | `DASHBOARD_TOKEN` | *(empty)* | optional 16+ character control-plane password (HTTP Basic password or Bearer token); set it before exposing the dashboard beyond loopback |
 | `LOG_LEVEL` | `info` | `info` prints lifecycle and errors; `debug` adds lifecycle detail |
 | `MC_TRACE_PACKETS` | `false` | opt-in per-packet movement/keepalive tracing. Leave off during normal live runs: a flooded terminal can block the event loop and drop the socket |
 | `AUTONOMY_ENABLED` | `true` | autonomy request; still gated on connection+auth+spawn |
-| `PvP_ENABLED` | `false` | PvP stays off unless explicitly enabled |
+| `TASK_STALL_MS` | `90000` | a task with no verified progress this long is released for re-planning |
+| `TASK_STALL_CYCLES` | `3` | minimum no-progress action cycles before release |
+| `PVE_ENABLED` | `true` | autonomous hostile-mob defence; on by default |
+| `PvP_ENABLED` | `true` | PvP feature enabled by default, but players are only attacked when explicitly authorised on the target list |
 | `SERVER_PVP_ENABLED` | `true` | set `false` when the Minecraft server itself has `pvp=false`; all PvP is then refused |
 | `EXCAVATE_MAX_BLOCKS` | `250000` | refusal limit for a single excavation |
 | `AI_PROVIDER`, `AI_ENDPOINT`, `AI_API_KEY` | *(empty)* | unused; AI hook disabled |
@@ -351,7 +375,7 @@ guard x y z [bot] | guard stop             duel <player> confirm
 team combat [status|on|off|retreat|regroup|rescue|heal|attack <player>]
 find <village|mineshaft|temple|ruin|forest|cave|diamonds|emeralds|iron|...> [bot]
 return home [bot|all]
-task <list|add|assign|priority|info|cancel|retry|objective> ...
+task <list|add TYPE [label] [--params JSON|key=value...]|assign|priority|info|cancel|retry|objective> ...
 excavate preview <box|at|radius|quarry|trench|flatten|foundation> ...
 excavate start [previewId] confirm [authorized] [team]
 excavate status|pause|resume|stop|undo-preview|assign|team ...
@@ -392,16 +416,22 @@ node src/cli.js --simulate "follow 10101000 4"
 node src/cli.js --simulate "gear progression 10101000"
 node src/cli.js --simulate "team combat heal"
 node src/cli.js --simulate "team combat retreat"
+node src/cli.js --simulate 'task add MINE_BLOCK iron --params {"block":"iron_ore","limit":8}'
+node src/cli.js --simulate "task add STORE_ITEMS deposit item=bread count=8"
+node src/cli.js --simulate "task list"
 ```
 
 ---
 
 ## Dashboard
 
-A modular operations console served from `src/dashboard/public/` with 37 routed pages, grouped so
+A modular operations console served from `src/dashboard/public/` with 38 routed pages, grouped so
 that related tasks sit together rather than in one long tab strip:
 
 * **Overview** – fleet summary, live vitals chart, activity feed and objectives.
+* **Live World** – a bounded 3D view rendered from real block data (`/api/world`): exposed surface
+  heightfield, chunk accounting, live bots/entities, orbit/zoom/pan, click-to-select and follow,
+  FPS/frame/triangle/draw-call instrumentation and a 2D fallback when WebGL is unavailable.
 * **Activity** – live activity, notifications and logs.
 * **Fleet** – all bots, team board, profiles and connection management.
 * **Gameplay** – survival, inventory, mining, excavation, woodcutting, farming, fishing,
@@ -421,7 +451,12 @@ updates; same-route updates morph the existing DOM instead of rebuilding the pag
 form values and open chart state. All URLs are relative, icons are inline SVG (no CDN), and the UI
 works without external network access. Command buttons post to `/api/command` and use the same
 registry as the CLI, including explicit confirmation for destructive operations. Schematic downloads
-are served as `.schem` from `/api/schematics/:id/download.schem`.
+are served as `.schem` from `/api/schematics/:id/download.schem`. The world viewer fetches
+`/api/world?bot=<name>&radius=4..32&height=8..64`; the server scans one surfaced block per column and
+returns a compact palette plus real bots/entities, so caves and interiors are not invented or
+transmitted. Responses are clamped, limited to 65x65 columns and 80 entities, cached for 1.5 s, and
+carry their own generation time and scan duration. A missing bot/position returns `NO_BOT` or
+`NO_POSITION` instead of placeholder terrain.
 
 Connection state is computed once on the server (`src/bot/status.js`) and attached to every bot as
 `online`, `status` and `statusLabel`; the overview, fleet, team and diagnostics views render that
@@ -519,9 +554,10 @@ commissioning.
   also gets a 40-event trace dump. Passwords are
   never printed; auth commands, echoed `/register`/`/login` chat, configured secret values and
   password/token-shaped metadata are redacted centrally before they reach the terminal, log store or
-  dashboard. A control-plane token is optional for the sandbox demo but should always be set when the
-  dashboard is reachable from an untrusted network; without it the server logs a warning and applies
-  same-origin, rate-limit, CSP and no-store protections only.
+  dashboard. The dashboard binds loopback by default. A non-loopback bind without
+  `DASHBOARD_TOKEN` is refused unless `DASHBOARD_ALLOW_INSECURE=true` / `--allow-insecure` explicitly
+  opts in for a trusted preview; same-origin, rate-limit, CSP and no-store protections apply in every
+  mode.
 * Building large designs (tens of thousands of blocks) is intentionally gated by material checks and
   real placement; a Grandmaster design is a multi-session project, not instant.
 * The construction pipeline is validated against `MockWorld`. Live operation still depends on the

@@ -128,12 +128,12 @@ export const tasksPage = {
           <div class="table-wrap"><table class="table">
             <thead><tr><th>Task</th><th>Type</th><th>Status</th><th>Owner</th><th>Priority</th><th>Progress</th><th>Attempts</th><th>Last error</th><th>Actions</th></tr></thead>
             <tbody>${filtered.length ? filtered.map((task) => `<tr>
-              <td><div class="list-title">${esc(task.label || task.type)}</div><div class="mono tiny">${esc(task.id)}</div></td>
+              <td><div class="list-title">${esc(task.label || task.type)}</div><div class="mono tiny">${esc(task.id)}</div>${task.claimExpiresAt && ['CLAIMED', 'ACTIVE'].includes(task.status) ? `<div class="tiny muted">claim until ${esc(new Date(task.claimExpiresAt).toLocaleTimeString())}</div>` : ''}${task.stallCycles ? `<div class="tiny text-danger">${num(task.stallCycles)} stalled cycle(s)</div>` : ''}</td>
               <td class="tiny">${esc(task.type)}</td>
               <td>${badge(task.status, task.status === 'COMPLETED' ? 'ok' : task.status === 'FAILED' ? 'danger' : task.status === 'ACTIVE' ? 'accent' : task.status === 'BLOCKED' ? 'warn' : 'neutral', { dot: true })}</td>
               <td class="tiny">${task.claimedBy ? `<a class="link" href="#/bots/${encodeURIComponent(task.claimedBy)}/tasks">${esc(task.claimedBy)}</a>` : '<span class="muted">unclaimed</span>'}</td>
               <td class="mono">${num(task.priority)}</td>
-              <td style="min-width:110px">${task.units && task.units.target ? progress((task.units.current / task.units.target) * 100, 100, { sm: true, tone: 'accent' }) : '<span class="muted tiny">—</span>'}</td>
+              <td style="min-width:110px">${task.units && task.units.target ? progress((task.units.current / task.units.target) * 100, 100, { sm: true, tone: 'accent' }) : '<span class="muted tiny">—</span>'}${task.progressNote ? `<div class="tiny muted">${esc(task.progressNote)}</div>` : ''}</td>
               <td class="mono">${num(task.attempts)}</td>
               <td class="tiny ${task.lastError ? 'text-danger' : 'muted'}">${esc(task.lastError || '—')}</td>
               <td><div class="row gap-1">
@@ -369,6 +369,11 @@ export const settingsPage = {
     }
     const runtime = (state.snapshot && state.snapshot.diagnostics && state.snapshot.diagnostics.runtime) || {};
     const data = ledger();
+    const survival = (state.snapshot && state.snapshot.survival) || [];
+    const combat = (state.snapshot && state.snapshot.combat) || [];
+    const pveEnabled = combat.length ? combat.every((entry) => entry.pveEnabled !== false) : settings.pve !== false;
+    const pvpEnabled = settings.pvp === true;
+    const routineEnabled = (feature) => survival.length ? survival.every((entry) => !entry.features || entry.features[feature] !== false) : true;
     return `
       <div class="page">
         ${pageHeader({
@@ -406,11 +411,15 @@ export const settingsPage = {
                 ['Enabled', settings.autonomy.enabled ? badge('Yes', 'ok') : badge('No', 'danger')],
                 ['Paused', settings.autonomy.paused ? badge('Yes', 'warn') : 'No'],
                 ['AI planner', settings.ai.enabled ? badge(`Enabled (${settings.ai.provider || 'provider'})`, 'info') : badge('Disabled', 'neutral')],
-                ['PVP', settings.pvp ? badge('Enabled', 'warning') : badge('Disabled', 'neutral')]
+                ['PvE (hostile mobs)', pveEnabled ? badge('Enabled', 'ok') : badge('Disabled', 'danger'), true],
+                ['PvP (explicit targets)', pvpEnabled ? badge('Enabled — no auto-targeting', 'warning') : badge('Disabled', 'neutral'), true],
+                ['Recovery gate', (state.snapshot && state.snapshot.recovery || []).filter((entry) => entry.state !== 'ACTIVE').length ? badge(`${(state.snapshot.recovery || []).filter((entry) => entry.state !== 'ACTIVE').length} bot(s) held`, 'warn') : badge('Clear', 'ok'), true]
               ], { htmlValues: true })}
               <div class="row gap-2" style="margin-top:12px">
                 <button class="button" type="button" data-command="pause">${icon('pause')} Pause</button>
                 <button class="button" type="button" data-command="resume">${icon('play')} Resume</button>
+                <button class="button" type="button" data-command="pve ${pveEnabled ? 'off' : 'on'}">${icon('sword')} PvE ${pveEnabled ? 'off' : 'on'}</button>
+                <button class="button" type="button" data-command="pvp ${pvpEnabled ? 'off' : 'on'}">${icon('target')} PvP ${pvpEnabled ? 'off' : 'on'}</button>
               </div>
               <div class="callout callout--info" style="margin-top:10px">${icon('info')}<div>Pause and resume are real runtime actions; they stop and restart autonomous ticks without disconnecting bots.</div></div>
             </div>
@@ -431,6 +440,18 @@ export const settingsPage = {
             </div>
           </section>
         </div>
+        <section class="card" style="margin-top:16px">
+          <div class="card-header"><div class="card-title">${icon('sliders')} Safe automation</div><span class="tiny muted">Runtime values from the action controllers</span></div>
+          <div class="card-body">
+            <div class="grid grid--3 automation-grid">
+              ${[
+                ['eat', 'Eat before starving'], ['healing', 'Emergency healing'], ['armour', 'Equip armour'],
+                ['tools', 'Keep tools ready'], ['crafting', 'Craft missing basics'], ['shield', 'Raise shield when low']
+              ].map(([feature, label]) => `<div class="setting-row"><div><div class="setting-label">${label}</div><div class="setting-desc mono">auto ${feature} · ${routineEnabled(feature) ? 'enabled' : 'disabled'}</div></div><button class="button button--sm" type="button" data-command="auto ${feature} ${routineEnabled(feature) ? 'off' : 'on'}">${routineEnabled(feature) ? 'Disable' : 'Enable'}</button></div>`).join('')}
+            </div>
+            <div class="callout callout--info" style="margin-top:12px">${icon('info')}<div>PvE and safe survival automation are on by default. PvP is enabled as a feature, but <span class="mono">PvpPolicy</span> only attacks players on the explicit target list; teammates, protected players and unauthorised positions are always refused.</div></div>
+          </div>
+        </section>
         <div class="grid grid--2" style="margin-top:16px">
           <section class="card">
             <div class="card-header"><div class="card-title">${icon('monitor')} Browser preferences</div></div>
