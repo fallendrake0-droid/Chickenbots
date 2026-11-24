@@ -820,6 +820,7 @@ class TeamRuntime {
     const bot = this.bots.get(name);
     if (!bot) return { ok: false, error: 'unknown bot' };
     this.intentionalDisconnects.add(name);
+    this.retryMeta.delete(name);
     try {
       if (typeof bot.disconnect === 'function') await bot.disconnect(reason);
       else { bot.connected = false; bot.spawned = false; bot.authenticated = false; }

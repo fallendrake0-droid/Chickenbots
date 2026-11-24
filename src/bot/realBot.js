@@ -124,6 +124,7 @@ class RealBot extends BotAdapter {
     this._lastTickEndAt = 0;
     this._lastInboundPacketAt = 0;
     this._lastValidState = null;
+    this._cleanupGeneration = null;
     this._transportDead = false;
     this._keepAlive = { received: 0, replies: 0, lastReceivedAt: 0, lastReplyAt: 0, maxGapMs: 0, warnings: 0, lastWarningAt: 0 };
     this.lastDisconnect = null;
@@ -609,10 +610,10 @@ class RealBot extends BotAdapter {
     this._lastTickEndAt = 0;
     this._lastInboundPacketAt = 0;
     this._lastValidState = null;
+    this._cleanupGeneration = null;
     this.lastInboundPacket = null;
     this.lastClientPacket = null;
     this._transportDead = false;
-    this._cleanupGeneration = 0;
     this._serverTickingState = null;
     this._tcpConnected = false;
     this._tcpAt = 0;
@@ -1180,7 +1181,9 @@ class RealBot extends BotAdapter {
         // bot never died. Treating that as a respawn printed "respawned" right
         // after "ready" and rewrote the session clock. A real death produces a
         // `death` event first, so only honour the packet when one was seen.
-        const deathSinceSpawn = Boolean(this.lastDeath && this.lastDeath.at >= this.spawnAt);
+        // spawnAt resets every session, so a death from an earlier session can
+        // never make a join-time respawn look real.
+        const deathSinceSpawn = Boolean(this.spawnAt > 0 && this.lastDeath && this.lastDeath.at >= this.spawnAt);
         // This also happens while the password exchange is still pending; that
         // is still a join-time respawn, not a death, and must not print
         // "respawned" before the bot is even authenticated.

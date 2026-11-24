@@ -393,6 +393,32 @@ test('a join-time respawn packet while auth is pending is not called a respawn',
   await pending.catch(() => null);
 });
 
+test('a death from the previous session cannot turn a join respawn into a real one', async () => {
+  const { real, fake } = newReal();
+  const first = real.connect({ timeoutMs: 500 });
+  await new Promise((resolve) => setImmediate(resolve));
+  let bot = fake();
+  bot._client.emit('connect');
+  bot.emit('login');
+  bot.emit('spawn');
+  assert.equal((await first).ok, true);
+  bot.emit('death');
+  assert.ok(real.lastDeath, 'the first session records a death');
+  await real.disconnect('test session one');
+
+  const second = real.connect({ timeoutMs: 500 });
+  await new Promise((resolve) => setImmediate(resolve));
+  bot = fake();
+  bot._client.emit('connect');
+  bot.emit('login');
+  bot.emit('spawn');
+  assert.equal((await second).ok, true);
+  bot._client.emit('respawn');
+  assert.notEqual(real.connection.state, STATES.RESPAWNING, 'a stale death must not turn this respawn into a real respawn');
+  assert.ok(real.connection.snapshot().timeline.some((entry) => entry.event === 'respawn_ignored'));
+  await real.disconnect('test complete');
+});
+
 test('a disconnect snapshot keeps the last valid ready state after cleanup', async () => {
   const { real, fake } = newReal();
   const pending = real.connect({ timeoutMs: 500 });
