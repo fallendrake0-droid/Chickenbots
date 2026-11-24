@@ -22,10 +22,16 @@ function statusSnapshot(services) {
       return {
         ...summary,
         ...status,
-        connected: status.online || summary.connected === true,
-        spawned: status.online || summary.spawned === true,
-        authenticated: status.online || summary.authenticated === true,
-        ready: status.online || summary.ready === true
+        // One verdict, computed in src/bot/status.js. A spawned bot stays
+        // online even when it is not gameplay-ready; conversely an auth-pending
+        // session is online but never `ready`.
+        connected: status.transportConnected,
+        spawned: status.spawned,
+        serverPlayerListed: status.serverPlayerListed,
+        authenticated: status.authenticated,
+        authPending: status.authPending,
+        ready: status.gameplayReady,
+        gameplayReady: status.gameplayReady
       };
     } catch (err) {
       // A broken disconnected adapter must not blank the whole dashboard and
@@ -63,6 +69,7 @@ function statusSnapshot(services) {
   const byBot = {};
   for (const status of actionStatus) byBot[status.bot] = status;
   const online = summaries.filter((s) => s.online === true).length;
+  const ready = summaries.filter((s) => s.gameplayReady === true).length;
   return {
     generatedAt: new Date().toISOString(),
     mode: services.mode || (config.sim.enabled ? 'simulation' : 'live'),
@@ -70,6 +77,7 @@ function statusSnapshot(services) {
     bots: summaries,
     overview: {
       online,
+      ready,
       total: summaries.length,
       leader,
       autonomy: runtime,
@@ -177,7 +185,11 @@ function statusSnapshot(services) {
           versionError: runtime ? runtime.serverVersionError : null,
           joinIntervalMs: config.server.joinIntervalMs,
           joinJitterMs: config.server.joinJitterMs,
-          rejoinDelayMs: config.server.rejoinDelayMs
+          connectStaggerMs: config.server.connectStaggerMs,
+          connectJitterMs: config.server.connectJitterMs,
+          rejoinDelayMs: config.server.rejoinDelayMs,
+          authMode: config.server.authMode,
+          authCommandsEnabled: config.server.authCommandsEnabled
         },
         dashboard: { host: config.dashboard.host, port: config.dashboard.port, allowInsecure: config.dashboard.allowInsecure, tokenRequired: Boolean(config.dashboard.token) },
         pve: config.autonomy.pve,
@@ -192,8 +204,12 @@ function statusSnapshot(services) {
         statusDetail: s.statusDetail,
         connected: s.connected,
         spawned: s.spawned,
+        serverPlayerListed: s.serverPlayerListed,
         authenticated: s.authenticated,
+        authPending: s.authPending,
+        authRequiredManual: s.authRequiredManual,
         ready: s.ready === true,
+        gameplayReady: s.gameplayReady === true,
         health: s.health,
         food: s.food,
         position: s.position,

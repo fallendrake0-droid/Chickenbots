@@ -42,7 +42,7 @@ test('kick reasons are flattened into readable chat text', () => {
 });
 
 function authHarness({ loginPassword = 'secret', registerPassword = null, registerOnFirstJoin = false, reply = null } = {}) {
-  const real = new RealBot({ name: '________', loginPassword, registerPassword, registerOnFirstJoin, authDelayMs: 0, authTimeoutMs: 500 });
+  const real = new RealBot({ name: '________', loginPassword, registerPassword, registerOnFirstJoin, authCommandsEnabled: true, authDelayMs: 0, authTimeoutMs: 500 });
   const commands = [];
   const fake = {
     entity: {},
@@ -166,7 +166,7 @@ test('status scans are skipped until a live bot is ready', () => {
 });
 
 test('password auth can be disabled for a server without a plugin', () => {
-  const real = new RealBot({ name: '________', authEnabled: false, loginPassword: 'secret', registerPassword: 'secret' });
+  const real = new RealBot({ authCommandsEnabled: true,  name: '________', authEnabled: false, loginPassword: 'secret', registerPassword: 'secret' });
   assert.equal(real.passwordRequired, false);
 });
 
@@ -209,7 +209,7 @@ test('position packets are suppressed until password auth is released', () => {
     _client: { write(name) { writes.push(name); return true; } },
     quit() {}
   };
-  const real = new RealBot({ name: '________', loginPassword: 'secret', registerPassword: null, authEnabled: true });
+  const real = new RealBot({ authCommandsEnabled: true,  name: '________', loginPassword: 'secret', registerPassword: null, authEnabled: true });
   real.bot = fake;
   real.connected = true;
   real.spawned = true;
@@ -255,13 +255,13 @@ test('join throttles and spawn stalls share an exponential fleet cooldown', () =
 });
 
 test('a post-login respawn does not wipe a confirmed password session', () => {
-  const real = new RealBot({ name: '________', loginPassword: 'secret' });
+  const real = new RealBot({ authCommandsEnabled: true,  name: '________', loginPassword: 'secret' });
   real.passwordRequired = true;
   real.authConfirmed = true;
   assert.equal(real._applySpawnAuth(), true);
   assert.equal(real.authenticated, true);
 
-  const fresh = new RealBot({ name: '10101000', loginPassword: 'secret' });
+  const fresh = new RealBot({ authCommandsEnabled: true,  name: '10101000', loginPassword: 'secret' });
   fresh.passwordRequired = true;
   fresh.authConfirmed = false;
   assert.equal(fresh._applySpawnAuth(), false);

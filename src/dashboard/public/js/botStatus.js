@@ -6,13 +6,15 @@
  */
 const STATUS_META = {
   online: { label: 'Online', tone: 'ok', dot: 'ok', online: true },
+  online_not_ready: { label: 'Online — starting', tone: 'warn', dot: 'warn', online: true },
+  auth_required_manual: { label: 'Online — auth required', tone: 'warn', dot: 'warn', online: true },
   joining: { label: 'Joining', tone: 'warn', dot: 'warn', online: false },
   reconnecting: { label: 'Reconnecting', tone: 'warn', dot: 'warn', online: false },
-  authenticating: { label: 'Authenticating', tone: 'warn', dot: 'warn', online: false },
-  auth_failed: { label: 'Auth failed', tone: 'danger', dot: 'danger', online: false },
-  dead: { label: 'Dead', tone: 'danger', dot: 'danger', online: false },
-  stale: { label: 'No packets', tone: 'danger', dot: 'danger', online: false },
-  initialising: { label: 'Starting', tone: 'warn', dot: 'warn', online: false },
+  authenticating: { label: 'Authenticating', tone: 'warn', dot: 'warn', online: true },
+  auth_failed: { label: 'Online — auth failed', tone: 'danger', dot: 'danger', online: true },
+  dead: { label: 'Dead — online', tone: 'danger', dot: 'danger', online: true },
+  stale: { label: 'No packets', tone: 'danger', dot: 'danger', online: true },
+  initialising: { label: 'Online — starting', tone: 'warn', dot: 'warn', online: true },
   offline: { label: 'Offline', tone: 'danger', dot: 'danger', online: false },
   unknown: { label: 'Unknown', tone: 'neutral', dot: 'muted', online: false }
 };
@@ -26,15 +28,15 @@ export function botStatus(bot) {
   if (meta) {
     // The status key is the verdict. Never combine it with a second, possibly
     // inconsistent `online` boolean from an older payload.
-    return { ...meta, key: bot.status, label: bot.statusLabel || meta.label, online: bot.status === 'online', detail: bot.statusDetail || '' };
+    return { ...meta, key: bot.status, label: bot.statusLabel || meta.label, online: typeof bot.online === 'boolean' ? bot.online : meta.online, detail: bot.statusDetail || '' };
   }
   return deriveStatus(bot);
 }
 
 export function botOnline(bot) {
   if (!bot) return false;
-  if (STATUS_META[bot.status]) return bot.status === 'online';
   if (typeof bot.online === 'boolean') return bot.online;
+  if (STATUS_META[bot.status]) return STATUS_META[bot.status].online;
   return botStatus(bot).online;
 }
 
@@ -47,12 +49,13 @@ function deriveStatus(bot) {
     if (Number.isFinite(bot.health) && bot.health <= 0) return withDetail(STATUS_META.dead, 'dead', 'Spawned but dead; waiting to respawn');
     return withDetail(STATUS_META.online, 'online', 'Connected, authenticated and spawned');
   }
+  if (bot.authRequiredManual || bot.authPending) return withDetail(STATUS_META.auth_required_manual, 'auth_required_manual', bot.lastError || 'Manual authentication required; gameplay is blocked');
   if (bot.authenticated === false) {
     const key = AUTH_ERROR_RE.test(String(bot.lastError || '')) ? 'auth_failed' : 'authenticating';
     return withDetail(STATUS_META[key], key, bot.lastError || 'Waiting for password authentication');
   }
   if (Number.isFinite(bot.health) && bot.health <= 0) return withDetail(STATUS_META.dead, 'dead', 'Spawned but dead; waiting to respawn');
-  if (bot.ready === false) return withDetail(STATUS_META.initialising, 'initialising', 'Spawned but the entity is not ready yet');
+  if (bot.ready === false || bot.gameplayReady === false) return withDetail(STATUS_META.online_not_ready, 'online_not_ready', 'Spawned and online; the entity is not ready yet');
   return withDetail(STATUS_META.online, 'online', 'Connected, authenticated and spawned');
 }
 

@@ -31,11 +31,11 @@ test('configuration preserves the ten usernames, server defaults and safety swit
   assert.equal(config.server.host, 'EmpiSMP.aternos.me');
   assert.equal(config.server.port, 32990);
   assert.equal(config.server.version, 'auto');
-  assert.equal(config.server.joinIntervalMs, 0);
-  assert.equal(config.server.joinJitterMs, 0);
-  assert.equal(config.server.connectStaggerMs, 0);
-  assert.equal(config.server.connectJitterMs, 0);
-  assert.equal(config.server.rejoinDelayMs, 0);
+  assert.ok(config.server.joinIntervalMs > 0, 'joins must be spaced, never a ten-bot burst');
+  assert.ok(config.server.joinJitterMs > 0);
+  assert.ok(config.server.connectStaggerMs > 0);
+  assert.ok(config.server.connectJitterMs > 0);
+  assert.ok(config.server.rejoinDelayMs > 0);
   assert.equal(config.dashboard.port, 3000);
   assert.equal(config.dashboard.host, '127.0.0.1');
   assert.equal(config.dashboard.allowInsecure, false);

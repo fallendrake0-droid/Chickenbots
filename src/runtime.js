@@ -115,9 +115,10 @@ class TeamRuntime {
 
   get allBotsReady() {
     if (this.bots.size !== BOT_NAMES.length) return false;
-    // Same verdict the dashboard renders: a fresh, spawned, authenticated
-    // session. No separate flag arithmetic that can disagree with the UI.
-    return [...this.bots.values()].every((bot) => connectionStatus(bot).online);
+    // Same verdict the dashboard renders: spawned, authenticated and free of
+    // pending manual auth. `online` alone is intentionally not enough — an
+    // online-but-not-ready bot must not arm gameplay autonomy.
+    return [...this.bots.values()].every((bot) => connectionStatus(bot).gameplayReady);
   }
 
   /**
@@ -127,7 +128,7 @@ class TeamRuntime {
   get autonomyAllowed() {
     if (this.allBotsReady) return true;
     if (!this.autonomyArmed) return false;
-    return [...this.bots.values()].some((bot) => connectionStatus(bot).online);
+    return [...this.bots.values()].some((bot) => connectionStatus(bot).gameplayReady);
   }
 
   async init() {
@@ -536,20 +537,30 @@ class TeamRuntime {
     for (const bot of this.bots.values()) {
       try {
         if (typeof bot._syncInventory === 'function') bot._syncInventory();
+        const status = connectionStatus(bot);
         const fallback = {
           name: bot.name,
-          connected: bot.connected !== false,
-          spawned: bot.spawned !== false,
-          authenticated: bot.authenticated !== false,
-          ready: Boolean(bot.ready),
+          connected: status.transportConnected,
+          spawned: status.spawned,
+          serverPlayerListed: status.serverPlayerListed,
+          authenticated: status.authenticated,
+          authPending: status.authPending,
+          ready: status.gameplayReady,
           health: bot.health,
           food: bot.food,
           position: bot.position,
           inventory: bot.inventory || {}
         };
-        const summary = { ...fallback, ...(typeof bot.summary === 'function' ? bot.summary() : {}) };
-        const status = connectionStatus(bot);
-        this.coordinator.updateBot(bot.name, { ...summary, online: status.online, status: status.status, statusLabel: status.statusLabel });
+        const summary = { ...fallback, ...(typeof bot.summary === 'function' ? bot.summary() : {}), ...status };
+        this.coordinator.updateBot(bot.name, {
+          ...summary,
+          online: status.online,
+          ready: status.gameplayReady,
+          gameplayReady: status.gameplayReady,
+          authPending: status.authPending,
+          status: status.status,
+          statusLabel: status.statusLabel
+        });
         this.ledger.updateBotInventory(bot.name, summary.inventory);
         if (!status.online) {
           if (!this.disconnectedNotified.has(bot.name)) {
@@ -838,10 +849,14 @@ class TeamRuntime {
     const status = connectionStatus(bot);
     return {
       name: bot.name,
-      connected: Boolean(bot.connected),
-      spawned: Boolean(bot.spawned),
-      authenticated: status.online || bot.authenticated !== false,
-      ready: Boolean(bot.ready),
+      connected: status.transportConnected,
+      spawned: status.spawned,
+      serverPlayerListed: status.serverPlayerListed,
+      authenticated: status.authenticated,
+      authPending: status.authPending,
+      authRequiredManual: status.authRequiredManual,
+      ready: status.gameplayReady,
+      gameplayReady: status.gameplayReady,
       online: status.online,
       status: status.status,
       statusLabel: status.statusLabel,
@@ -889,7 +904,12 @@ class TeamRuntime {
         const status = connectionStatus(bot);
         const connection = bot.connection && typeof bot.connection.snapshot === 'function' ? bot.connection.snapshot() : null;
         return {
-          name: bot.name, connected: bot.connected, spawned: bot.spawned, authenticated: bot.authenticated, ready: bot.ready,
+          name: bot.name,
+          connected: status.transportConnected, spawned: status.spawned,
+          serverPlayerListed: status.serverPlayerListed,
+          authenticated: status.authenticated, authPending: status.authPending,
+          authRequiredManual: status.authRequiredManual,
+          ready: status.gameplayReady, gameplayReady: status.gameplayReady,
           online: status.online, status: status.status, statusLabel: status.statusLabel, statusDetail: status.statusDetail,
           health: bot.health, deaths: bot.deaths || 0, lastSpawn: bot.lastSpawn || null,
           stageTimings: bot.stageTimings || null,

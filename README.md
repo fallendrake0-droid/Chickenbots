@@ -33,7 +33,7 @@ npm start                     # live: connects all ten bots
 npm start -- --simulate       # deterministic local simulation (no network)
 npm run cli -- --simulate     # interactive command shell
 npm test                      # full test suite
-npm run validate              # secret scan + lint + tests + full 1120-design validation + consistency
+npm run validate              # secret scan + lint + tests + full 10,000-design validation + consistency
 ```
 
 Dashboard (live or simulated): <http://127.0.0.1:3000>. The default bind is loopback because the
@@ -289,12 +289,15 @@ exercise real placement and failure paths.
 
 ### Schematic library
 
-* **1120 designs** (minimum required 1100), all unique, generated from deterministic seeds.
-* Tiers/difficulty: Beginner 1–100, Novice 101–200, Apprentice 201–350, Intermediate 351–500,
-  Advanced 501–650, Expert 651–800, Master 801–950, Grandmaster 951–1120.
+* **10,000 designs** (the requested V6 target; the first 1,120 are the original core slice), all
+  unique, generated from deterministic seeds. Where a small tier's structural space rejects a
+  duplicate, the slot is refilled by a genuinely generated apprentice design — never a rename.
+* Tiers/difficulty: Beginner 1–962, Novice 963–3809, Apprentice 3810–6924, Intermediate 6925–8228,
+  Advanced 8229–8910, Expert 8911–9415, Master 9416–9742, Grandmaster 9743–10000. Supplemented
+  apprentice refills carry number 10001+, so every id/name remains unique.
 * 78 categories across 8 structural archetypes (house, fortress, temple, modern, infrastructure,
   garden, underground, fantasy) and 12+ material styles.
-* 8,626,743 blocks total, 7,702 average, 78,900 largest; footprint caps 400 per axis / 80,000 blocks.
+* 27,821,660 blocks total, 2,782 average, 79,436 largest; footprint caps 400 per axis / 80,000 blocks.
 * Identity is a material-class, rotation/mirror-invariant `geometryHash`; palette-only recolours keep
   the same geometry hash and are rejected by `specHash`. Both are checked across the entire library.
 * Every design has a palette validated against `minecraft-data` 1.21.4, phases, foundation/supports,
@@ -326,13 +329,14 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
-| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `0` / `0` | artificial gap between login sockets; `0` starts the team immediately. A real server throttle still opens a bounded fleet-wide pause. |
-| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `0` / `0` | gap before queuing each bot's initial connection task; `0` means immediate |
+| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `2000` / `750` | positive, jittered gap between login sockets. A ten-bot burst is not the default; a real server throttle still opens a bounded fleet-wide pause. |
+| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `1500` / `750` | gap before queuing each bot's initial connection task |
+| `FLEET_CONCURRENCY` | `4` | maximum bots executing one fleet command at the same time; every bot still gets its own structured result |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | fleet-wide pause after a throttle or a socket that never reaches spawn. One outage episode records **one** strike no matter how many bots fail in it; a genuinely separate outage (after a bot became ready) escalates the bounded, jittered pause up to the maximum |
-| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
-| `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
-| `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
-| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and total confirmation window for password auth; the command is re-sent inside that window so one lost chat write does not become a false timeout |
+| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | parsed for compatibility only. Automatic `/register` and `/login` are disabled by operator directive and no module sends them. No credential is built in and none is required. |
+| `MC_AUTH_ENABLED` | `false` | hard-disabled. No environment value can re-enable automatic auth; a stale `true` is ignored. |
+| `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | ignored while auth is disabled |
+| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | retained for the isolated auth parser tests only; no live connection enters this path |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so ten bots do not retry together |
 | `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
@@ -342,8 +346,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_CONFIGURATION_TIMEOUT_MS` | `15000` | configuration-exchange budget once the server sends `start_configuration` |
 | `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
 | `MC_KEEPALIVE_MS` | `120000` | client-side watchdog threshold. The library still sends the reply itself; this is a diagnostic, not the reconnect strategy |
-| `MC_STALE_AFTER_MS` | `90000` | a connected bot with no inbound packet for this long is reported as `No packets`, never `Online` |
-| `MC_REJOIN_DELAY_MS` | `0` | hold-down before the first rejoin after a real session ends; the reconnect supervisor and throttle queue still apply |
+| `MC_STALE_AFTER_MS` | `90000` | a spawned bot with no inbound packet this long is reported as `No packets`; it stays **online** (the server still lists it) but is not gameplay-ready |
+| `MC_REJOIN_DELAY_MS` | `5000` | hold-down before the first rejoin after a real session ends; the reconnect supervisor and throttle queue still apply |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `127.0.0.1` | bind address; loopback by default because the dashboard can issue commands |
@@ -387,8 +391,10 @@ bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore]|chop [
 inventory [bot]                eat [bot]                       sleep [bot|all|auto on|off]
 survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
 auto <eat|healing|armour|tools|crafting|shield|weapon|totem|potions|food> [on|off] [bot|all]
-mine [bot] [ore|stone|stop]     chop [bot] [species|stop]       farm [bot] [plant [crop] [count]|maintain|status|crop|animals|stop]
-fish [bot|all] [casts]          fish stop [bot|all]
+mine [bot|all] [ore|stone|stop]  chop [bot|all] [species|stop]   farm [bot|all] [plant [crop] [count]|maintain|status|crop|animals|stop]
+fish [bot|all] [casts]          fish stop [bot|all]            eat [bot|all]
+batch <bot|all> <action> [args] then <action> [args] ...   # sequential, per-bot results
+bot all <action>                # one command tasks every gameplay-ready bot
 defend [bot|stop]              explore [bot] [steps] | explore stop [bot|all]
 combat [status|on|off|start|stop|mode|guard|duel|rescue]   pve [on|off|status]   pvp [on|off|status]
 target [add|remove|protect|unprotect|clear|list] <player>                   arena on [radius]|off
@@ -398,7 +404,7 @@ guard x y z [bot] | guard stop             duel <player> confirm
 team combat [status|on|off|retreat|regroup|rescue|heal|attack <player>]
 find <village|mineshaft|temple|ruin|forest|cave|diamonds|emeralds|iron|...> [bot]
 return home [bot|all]
-task <list|add TYPE [label] [--params JSON|key=value...]|assign|priority|info|cancel|retry|objective> ...
+task <list|add TYPE [label] [--params JSON|key=value...]|assign|priority|info|cancel|retry|objective|fleet TYPE [params]> ...
 excavate preview <box|at|radius|quarry|trench|flatten|foundation> ...
 excavate start [previewId] confirm [authorized] [team]
 excavate status|pause|resume|stop|undo-preview|assign|team ...
@@ -483,10 +489,13 @@ carry their own generation time and scan duration. A missing bot/position return
 `NO_POSITION` instead of placeholder terrain.
 
 Connection state is computed once on the server (`src/bot/status.js`) and attached to every bot as
-`online`, `status` and `statusLabel`; the overview, fleet, team and diagnostics views render that
-verdict instead of re-deriving it. A bot is only `Online` when its socket is open, it has
-authenticated and spawned, it is alive, and it received a packet within `MC_STALE_AFTER_MS`. Other
-states (`Joining`, `Authenticating`, `Auth failed`, `Dead`, `No packets`, `Offline`) are shown
+`online`, `ready`/`gameplayReady`, `transportConnected`, `serverPlayerListed`, `spawned`,
+`authenticated`, `authPending`, `status` and `statusLabel`; the overview, fleet, team, CLI and
+diagnostics views render that verdict instead of re-deriving it. **Online and ready are separate.**
+A spawned bot the server still lists is online even while it is starting, dead, out of packets or
+blocked by manual auth. Only `gameplayReady` (online + spawned + no pending auth + live entity)
+unlocks commands and autonomy. Other states (`Joining`, `Online — starting`,
+`Online — auth required`, `Online — auth failed`, `Dead — online`, `No packets`, `Offline`) are shown
 explicitly. `/api/state` always builds a fresh snapshot and the SSE feed publishes once per second,
 so a kicked bot cannot remain green on screen.
 
@@ -524,8 +533,11 @@ The suite asserts real behaviour, not just return codes: blocks disappear from t
 drop items, saplings are replanted, crops are harvested and reseeded, builds are rescanned, tasks are
 only completed with `verified: true`, and destructive commands without confirmation fail.
 
-Known environment constraints: `npm run schematics:validate` regenerates all 1120 designs and takes
-roughly two minutes; the full validation pass is therefore not part of the default `npm test`.
+Known environment constraints: `npm run schematics:validate` regenerates all 10,000 designs and takes
+roughly six to twenty minutes depending on the machine; the full validation pass is therefore not
+part of the default `npm test`. `npm run validate` reuses a saved full report only when that report
+is newer than the manifest and covers the same number of designs; a regenerated or edited manifest
+forces the real full pass.
 
 
 ## Building system: exact placement, custom schematics and honest limits
@@ -563,12 +575,11 @@ properties before it can become `VERIFIED`.
 
 ### Verified library size (honest)
 
-`data/schematics/manifest.json` contains **1,120 unique generated designs**
-(1,120 unique geometry hashes, 8,688,787 blocks). Each of the 1,120 blueprints
-was reconstructed and audited through `BuildEngine.validateBlueprint()` and its
-dependency planner: **0 invalid blocks, 0 support/dependency cycles, 0 failures**.
-The configured long-term target remains 10,000; the project has **not** reached
-that target and the runtime reports the real count (base + custom) at all times.
+`data/schematics/manifest.json` contains **10,000 unique generated designs**
+(10,000 unique geometry hashes, 27,821,660 blocks). Each blueprint is
+reconstructed and audited through `BuildEngine.validateBlueprint()` and its
+dependency planner, including its palette, phases, foundation/supports and
+materials. The runtime reports the real count (base + custom) at all times.
 
 ```bash
 npm run buildings:audit                 # full blueprint audit (≈8–9 minutes)
@@ -598,7 +609,7 @@ commissioning.
 
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all ten bots are ready.
-  Bots start immediately; `MC_JOIN_INTERVAL_MS` defaults to **0**. If Paper/Aternos applies a
+  Bots are spaced by `MC_CONNECT_STAGGER_MS` and `MC_JOIN_INTERVAL_MS` (positive by default, with jitter). If Paper/Aternos applies a
   per-IP join throttle, that throttle or a socket that never reaches spawn pauses **every** join. All failures in the same
   outage are one strike, so four bots timing out do not turn a 90s pause into 10 minutes; a bot that
   becomes ready closes the episode and clears the pause, and only a separate later outage escalates
@@ -607,17 +618,19 @@ commissioning.
   first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
   `settings.connection-throttle: 0` in `bukkit.yml` if the burst is being rejected; otherwise the
   runtime's bounded backoff handles it. A bot that drops re-enters the same queue after
-  `MC_REJOIN_DELAY_MS` (0 by default), and the reconnect supervisor keeps running even while
+  `MC_REJOIN_DELAY_MS` (5s by default), and the reconnect supervisor keeps running even while
   autonomy is paused. Connected bots send a real swing animation every 30s so a writable session is
   visible to idle plugins. Chickenbots does **not** fabricate movement or jump to defeat AFK checks; the
   real 20 tps client tick loop is the fix for a client that looks frozen.
-  When `MC_LOGIN_PASSWORD` is set (there is no built-in default; put it in an untracked `.env`),
-  every join sends only `/login` because the accounts already exist. If the server answers `You are not registered.`, Chickenbots
-  creates that account once (`/register`) and retries `/login`. Set
-  `MC_AUTH_REGISTER_ON_FIRST_JOIN=true` to register before the first login attempt instead. Movement is frozen and autonomy stays gated until the
-  server confirms authentication in chat; all position/look/flying packets are held so Paper or AuthMe
-  cannot kick the bot for moving before login. A failed or unconfirmed password disconnects the bot
-  instead of letting it move. An operator/staff kick or a ban pauses automatic retries for that bot;
+  Automatic `/login` and `/register` are **disabled**. The live 26.1 server answered `/login` with
+  `Unknown or incomplete command`, so the password exchange was not merely failing — the server had
+  no such command. No module sends either command during startup, spawn or reconnect, there are no
+  auth retries, and a spawned session is never torn down by an auth timeout. `MC_LOGIN_PASSWORD` is
+  not required. If the server itself prints a login/register demand, the session stays connected,
+  reports `AUTH_REQUIRED_MANUAL`, shows `Online — auth required`, and blocks gameplay until an
+  operator resolves it. Online presence and gameplay readiness are now separate fields everywhere
+  (CLI, dashboard, coordinator): a spawned bot is online even while starting, dead or auth-blocked.
+  An operator/staff kick or a ban pauses automatic retries for that bot;
   reconnect explicitly from the dashboard after reviewing the reason. Generic network/protocol kicks
   still use bounded, jittered backoff, and the runtime never deliberately spams reconnects. Bans and
   whitelist/operator kicks still pause retries: automatically evading moderation would turn a
@@ -648,10 +661,9 @@ commissioning.
   charged as ten bot connection attempts or retry backoff.
   The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy
   advertises a newer status name than the protocol it answered with, the protocol mapping wins.
-  `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail and auth timing. During the
-  password exchange every server chat line is also printed once as `AUTH CHAT (source)` (bounded) so
-  an unexpected prompt or rejection is visible without debug logging; the auth command is re-sent
-  inside `MC_AUTH_TIMEOUT_MS` instead of waiting once. Per-packet movement, keepalive and position
+  `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail. Server chat is logged
+  (bounded) so an unexpected manual-auth prompt is visible without debug logging. No auth command is
+  sent or re-sent. Per-packet movement, keepalive and position
   traces stay off even then unless `MC_TRACE_PACKETS=true`: writing
   that volume to a terminal can block the event loop and cost the socket its keepalive. A kicked bot
   gets a pre-cleanup disconnect snapshot with the session generation, stage, timings, keep-alive and

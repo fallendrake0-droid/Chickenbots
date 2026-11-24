@@ -9,7 +9,7 @@ function main() {
   const started = Date.now();
   const manifest = generateLibrary({
     onProgress: ({ done, total, accepted, rejected }) => {
-      if (done % 100 === 0 || done === total) process.stdout.write(`  ${done}/${total} generated (${accepted} accepted, ${rejected} retried)\n`);
+      if (done % 25 === 0 || done === total) process.stdout.write(`  ${done}/${total} generated (${accepted} accepted, ${rejected} retried)\n`);
     }
   });
   const file = saveManifest(manifest);

@@ -26,6 +26,7 @@ function arg(name, fallback = null) {
 }
 
 const limit = arg('limit') ? Math.max(1, Number(arg('limit'))) : Infinity;
+const offset = arg('offset') ? Math.max(0, Number(arg('offset'))) : 0;
 const jsonPath = arg('json');
 const library = new SchematicLibrary();
 if (!library.loaded) {
@@ -36,7 +37,7 @@ const registry = new BlockRegistry({ version: config.building?.minecraftVersion 
 const world = { getBlock: () => ({ name: 'air', properties: {} }) };
 const custom = library.customStore ? library.customStore.statsSummary() : null;
 const all = library.list({ limit: Number.MAX_SAFE_INTEGER, excludeCustom: false });
-const designs = Number.isFinite(limit) ? all.slice(0, limit) : all;
+const designs = Number.isFinite(limit) ? all.slice(offset, offset + limit) : all.slice(offset);
 const started = Date.now();
 const failures = [];
 let blocks = 0;

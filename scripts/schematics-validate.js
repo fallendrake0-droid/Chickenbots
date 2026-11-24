@@ -21,7 +21,7 @@ function main() {
     regenerate,
     sampleSize,
     onProgress: ({ done, total }) => {
-      if (done % 100 === 0 || done === total) process.stdout.write(`  validated ${done}/${total}\n`);
+      if (done % 50 === 0 || done === total) process.stdout.write(`  validated ${done}/${total}\n`);
     }
   });
   const text = formatValidationReport(report);

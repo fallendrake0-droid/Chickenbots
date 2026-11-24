@@ -129,36 +129,45 @@ const config = {
     // long, so the dashboard never reports a dead socket as online. The vanilla
     // server sends keep-alives every ~15-20s, so 90s is safely above normal.
     staleAfterMs: envInt('MC_STALE_AFTER_MS', 90000),
-    // Rejoin immediately after a real session ends. The per-bot retry backoff
-    // and fleet throttle scheduler still protect against a server that rejects
-    // a rapid return.
-    rejoinDelayMs: envInt('MC_REJOIN_DELAY_MS', 0),
-    // No artificial spacing between initial connection tasks. The join queue
-    // still serialises slot acquisition and honours a real server throttle.
-    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 0),
-    connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 0),
-    // Paper/Bukkit can apply a per-IP connection throttle. The default is 0 so
-    // the team starts immediately; if the server throttles the burst, the
-    // strike scheduler still opens a bounded fleet-wide pause.
-    joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 0),
-    joinJitterMs: envInt('MC_JOIN_JITTER_MS', 0),
-    // Registration / login (Aternos + AuthMe style plugins). There is no
-    // built-in password and no default credential: live connections refuse to
-    // start with auth enabled unless a password is supplied through the
-    // environment or .env. Set MC_AUTH_ENABLED=false for a server without a
-    // password plugin.
-    authEnabled: envBool('MC_AUTH_ENABLED', true),
+    // Hold a rejoin briefly after a real session ends. Ten simultaneous
+    // reconnects were the fastest way to trip a per-IP throttle and to block
+    // the event loop with ten chunk bursts.
+    rejoinDelayMs: envInt('MC_REJOIN_DELAY_MS', 5000),
+    // Conservative, positive spacing between initial connection tasks. The
+    // operator can tune these, but zero is never the default: a burst of ten
+    // logins made the server drop sessions and starved the tick loop.
+    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 1500),
+    connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 750),
+    // Paper/Bukkit can apply a per-IP connection throttle. Positive spacing
+    // plus jitter keeps the fleet under it without serialising every join
+    // behind a fully completed handshake.
+    joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 2000),
+    joinJitterMs: envInt('MC_JOIN_JITTER_MS', 750),
+    // Automatic password auth is disabled until further notice. The live
+    // server has no /login command at all: sending one produced
+    // "Unknown or incomplete command" and every spawned bot was torn down by
+    // the auth timeout even though the server had already accepted it. The
+    // hard lock below is deliberately not environment-controlled, so a stale
+    // MC_AUTH_ENABLED=true in an old .env cannot quietly re-enable it.
+    authEnabled: false,
+    authCommandsEnabled: false,
+    authMode: 'disabled',
+    // Credentials are parsed only so a stale .env does not crash startup. No
+    // module may send these commands while authCommandsEnabled is false, and
+    // MC_LOGIN_PASSWORD is never required.
     registerPassword: env('MC_REGISTER_PASSWORD', ''),
     loginPassword: env('MC_LOGIN_PASSWORD', ''),
     loginCommand: env('MC_LOGIN_COMMAND', '/login {password}'),
     registerCommand: env('MC_REGISTER_COMMAND', '/register {password} {password}'),
-    // Accounts already exist on the server, so normal operation is login-only.
-    // Set MC_AUTH_REGISTER_ON_FIRST_JOIN=true only for a brand-new account.
-    registerOnFirstJoin: envBool('MC_AUTH_REGISTER_ON_FIRST_JOIN', false),
-    // AuthMe-style plugins confirm in chat; stay unready and frozen until that
-    // confirmation arrives so no bot can move before authenticating.
+    registerOnFirstJoin: false,
+    // If the server itself prints a login/register demand, the bot records
+    // AUTH_REQUIRED_MANUAL and blocks gameplay. It still does not send a
+    // command and does not disconnect a healthy spawned session.
     authDelayMs: envInt('MC_AUTH_DELAY_MS', 300),
     authTimeoutMs: envInt('MC_AUTH_TIMEOUT_MS', 12000),
+    // A request to authenticate manually is informational; it never causes a
+    // reconnect loop or a teardown.
+    authManualPromptRe: /(?:please\s+(?:log\s?in|register)|you\s+(?:must|need\s+to)\s+(?:log\s?in|register|authenticate)|not\s+(?:logged\s+in|authenticated)|login\s+required|register\s+required|authenticate\s+to\s+play)/i,
     reconnect: {
       maxAttempts: envInt('MC_RECONNECT_MAX', 0), // 0 = unlimited
       baseDelayMs: envInt('MC_RECONNECT_BASE_MS', 5000),
@@ -167,6 +176,13 @@ const config = {
       throttleMaxDelayMs: envInt('MC_THROTTLE_MAX_DELAY_MS', 600000),
       jitterMs: envInt('MC_RECONNECT_JITTER_MS', 4000)
     }
+  },
+  commands: {
+    // Fleet fan-out is bounded: ten bots mining at once saturates the host and
+    // the server's chunk pipeline. Four at a time still completes a fleet task
+    // quickly, with per-bot results so a partial failure is visible.
+    fleetConcurrency: envInt('FLEET_CONCURRENCY', 4),
+    fleetTaskLimit: envInt('FLEET_TASK_LIMIT', 0) // 0 = every roster member
   },
   dashboard: {
     // The control plane is a command surface. Loopback is the default so a
@@ -278,17 +294,21 @@ const config = {
     maxProjects: envInt('CONSTRUCTION_MAX_PROJECTS', 12)
   },
   schematics: {
-    minimumCount: 1100,
-    targetCount: 1120,
+    // The operator-requested V6 catalogue is 10,000 distinct, validated
+    // structures. The old 1,120-design library remains the first slice; the
+    // generator appends catalogue variants across every tier, so the original
+    // high-tier designs are not replaced by small filler.
+    minimumCount: 10000,
+    targetCount: 10000,
     tiers: [
-      { tier: 'beginner', label: 'Beginner', from: 1, to: 100, difficulty: 1 },
-      { tier: 'novice', label: 'Novice', from: 101, to: 200, difficulty: 2 },
-      { tier: 'apprentice', label: 'Apprentice', from: 201, to: 350, difficulty: 3 },
-      { tier: 'intermediate', label: 'Intermediate', from: 351, to: 500, difficulty: 4 },
-      { tier: 'advanced', label: 'Advanced', from: 501, to: 650, difficulty: 6 },
-      { tier: 'expert', label: 'Expert', from: 651, to: 800, difficulty: 7 },
-      { tier: 'master', label: 'Master', from: 801, to: 950, difficulty: 9 },
-      { tier: 'grandmaster', label: 'Grandmaster', from: 951, to: 1120, difficulty: 10 }
+      { tier: 'beginner', label: 'Beginner', from: 1, to: 962, difficulty: 1 },
+      { tier: 'novice', label: 'Novice', from: 963, to: 3809, difficulty: 2 },
+      { tier: 'apprentice', label: 'Apprentice', from: 3810, to: 6924, difficulty: 3 },
+      { tier: 'intermediate', label: 'Intermediate', from: 6925, to: 8228, difficulty: 4 },
+      { tier: 'advanced', label: 'Advanced', from: 8229, to: 8910, difficulty: 6 },
+      { tier: 'expert', label: 'Expert', from: 8911, to: 9415, difficulty: 7 },
+      { tier: 'master', label: 'Master', from: 9416, to: 9742, difficulty: 9 },
+      { tier: 'grandmaster', label: 'Grandmaster', from: 9743, to: 10000, difficulty: 10 }
     ]
   },
   sim: {
@@ -308,9 +328,8 @@ const config = {
  * Env parsing is deliberately forgiving (a typo falls back to a default), so
  * this is the single place that turns a bad value into a clear startup error
  * instead of a mysterious socket/behaviour failure later. Pass
- * `requireCredentials: true` for a live, connecting run: password auth enabled
- * with no password is a configuration error, not a bot that silently tries to
- * move unauthenticated.
+ * `requireCredentials` is retained for callers, but automatic password auth is
+ * disabled, so a live run without credentials is valid rather than an error.
  */
 function validateConfig(candidate = config, { requireCredentials = false, simulate = false } = {}) {
   const errors = [];
@@ -362,11 +381,15 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('server.serverStartDelayMs', server.serverStartDelayMs, 1000, 3600000);
   integer('server.versionRetryDelayMs', server.versionRetryDelayMs, 1000, 3600000);
   boolean('server.authEnabled', server.authEnabled);
+  boolean('server.authCommandsEnabled', server.authCommandsEnabled);
   boolean('server.registerOnFirstJoin', server.registerOnFirstJoin);
   integer('server.authDelayMs', server.authDelayMs, 0, 60000);
   integer('server.authTimeoutMs', server.authTimeoutMs, 1000, 300000);
   text('server.loginCommand', server.loginCommand, 255);
   text('server.registerCommand', server.registerCommand, 255);
+  if (server.authEnabled || server.authCommandsEnabled) {
+    fail('server.authCommandsEnabled', 'automatic /login and /register are disabled by operator directive; no configuration may enable them');
+  }
   integer('server.reconnect.maxAttempts', reconnect.maxAttempts, 0, 10000);
   integer('server.reconnect.baseDelayMs', reconnect.baseDelayMs, 0, 3600000);
   integer('server.reconnect.maxDelayMs', reconnect.maxDelayMs, 1, 3600000);
@@ -419,18 +442,14 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
     fail('logging.level', `must be debug, info, warn, error or silent (got ${candidate.logging.level})`);
   }
 
-  const authEnabled = server.authEnabled !== false;
-  const hasPassword = Boolean(server.loginPassword || server.registerPassword);
-  if (authEnabled && !hasPassword) {
-    if (requireCredentials && !simulate) {
-      fail('server.loginPassword', 'is empty while password auth is enabled; set MC_LOGIN_PASSWORD (or MC_AUTH_ENABLED=false for a server without AuthMe)');
-    } else {
-      warn('server.loginPassword', 'is empty; a live connecting run would refuse to start until it is set');
-    }
+  // Password auth is deliberately disabled: a server without AuthMe must not
+  // be blocked by a credential check, and a server with it must surface a
+  // manual-auth state rather than having a bot guess a command.
+  if (server.loginPassword || server.registerPassword) {
+    warn('server.loginPassword', 'credentials are present but automatic /login and /register are disabled; they will not be sent');
   }
-  if (authEnabled && hasPassword) {
-    const password = String(server.loginPassword || server.registerPassword);
-    if (password.length < 12) warn('server.loginPassword', 'is shorter than 12 characters; use a strong server password');
+  if (requireCredentials && simulate) {
+    warn('server.loginPassword', 'ignored: automatic password auth is disabled');
   }
 
   return { ok: errors.length === 0, errors, warnings };

@@ -10,6 +10,7 @@ const { validateLibrary, formatValidationReport } = require('../schematics/valid
 const { toSpongeSchematic, toLegacySchematic, toJSON } = require('../schematics/format');
 const { exportSchematic } = require('../building/schematicIO');
 const { statusSnapshot } = require('../runtimeState');
+const { connectionStatus } = require('../bot/status');
 const { botWorldView } = require('../construction/constants');
 
 const TASK_TYPES = new Set([
@@ -226,6 +227,198 @@ async function buildDesign(services, design, { origin = null, confirm = false, r
   };
 }
 
+
+const FLEET_WORDS = new Set(['all', 'fleet', 'team', '*']);
+
+function isFleetTarget(value) {
+  return FLEET_WORDS.has(String(value || '').toLowerCase());
+}
+
+/**
+ * Run one real action per bot with bounded parallelism. Every row is produced
+ * by actually calling that bot's action controller; a bot that is not
+ * gameplay-ready is reported as skipped instead of being allowed to throw a
+ * misleading success into the fleet result.
+ */
+async function runFleetActions(services, target, run, { concurrency = config.commands.fleetConcurrency } = {}) {
+  const list = targetActions(services, target);
+  const results = new Array(list.length);
+  let cursor = 0;
+  const workers = Math.max(1, Math.min(Number(concurrency) || 1, list.length));
+  const worker = async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= list.length) return;
+      const actions = list[index];
+      const bot = actions.bot;
+      const status = connectionStatus(bot);
+      if (!status.gameplayReady) {
+        results[index] = {
+          bot: bot.name, ok: false, skipped: true, code: 'BOT_NOT_READY',
+          status: status.status, statusLabel: status.statusLabel,
+          error: `not gameplay-ready (${status.statusLabel}): ${status.statusDetail}`
+        };
+        continue;
+      }
+      try {
+        const result = await run(actions);
+        results[index] = { bot: bot.name, ...(result || {}) };
+        if (results[index].ok === undefined) results[index].ok = false;
+      } catch (err) {
+        results[index] = { bot: bot.name, ok: false, error: err.message };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workers }, worker));
+  const completed = results.filter((result) => result.ok).length;
+  return {
+    target: 'all',
+    bots: results.length,
+    completed,
+    failed: results.filter((result) => !result.ok && !result.skipped).length,
+    skipped: results.filter((result) => result.skipped).length,
+    partial: completed > 0 && completed < results.length,
+    ok: results.length > 0 && results.every((result) => result.ok),
+    results
+  };
+}
+
+function fleetStatus(services) {
+  const results = [...services.bots.values()].map((bot) => {
+    const status = connectionStatus(bot);
+    return { bot: bot.name, ...status };
+  });
+  return {
+    ok: true,
+    // `bots` stays the array for older callers; `count` is the explicit total.
+    bots: results,
+    count: results.length,
+    online: results.filter((row) => row.online).length,
+    ready: results.filter((row) => row.gameplayReady).length,
+    results
+  };
+}
+
+async function runBotAction(services, bot, args, context = {}) {
+  const action = (args[1] || 'status').toLowerCase();
+  const actions = actionsFor(services, bot.name);
+  const leader = services.coordinator ? services.bots.get(services.coordinator.leader) : null;
+  if (action === 'status') return { ok: true, bot: { ...(bot.summary ? bot.summary() : { name: bot.name }), ...connectionStatus(bot) } };
+  // Gameplay is gated on one authoritative verdict. A spawned-but-not-ready or
+  // AUTH_REQUIRED_MANUAL session may report its own status, but it may not be
+  // told to chop, mine, move or fight.
+  const health = connectionStatus(bot);
+  if (!['where', 'combat'].includes(action) && !health.gameplayReady) {
+    return {
+      ok: false, code: 'BOT_NOT_READY', status: health.status,
+      statusLabel: health.statusLabel, authPending: health.authPending,
+      error: `${bot.name} is not gameplay-ready (${health.statusLabel}): ${health.statusDetail}`
+    };
+  }
+  if (action === 'where') return { ok: true, bot: bot.name, position: { ...bot.position }, dimension: bot.dimension };
+  if (action === 'goto') {
+    const pos = parseOrigin(args, 2);
+    const result = await bot.goTo(pos, { range: 2, timeoutMs: 30000 });
+    return { ok: result.ok !== false, ...result, position: { ...bot.position } };
+  }
+  if (action === 'come' || action === 'follow') {
+    const destination = leader && leader !== bot ? leader.position : bot.position;
+    const result = await bot.goTo(destination, { range: 2, timeoutMs: 30000 });
+    return { ok: result.ok !== false, ...result, position: { ...bot.position }, followed: leader ? leader.name : null };
+  }
+  if (action === 'return') {
+    const result = await bot.goTo(services.runtime ? services.runtime.home : actions.home, { range: 3, timeoutMs: 30000 });
+    return { ok: result.ok !== false, ...result, position: { ...bot.position } };
+  }
+  if (action === 'eat') return actions.survival.eat();
+  if (action === 'mine') {
+    const ore = normalizeOre(args[2]);
+    if (!ore) { const result = await actions.mining.mineNearby({ radius: 24, limit: 8 }); return { ok: Boolean(result.ok), ...result, status: actions.mining.status() }; }
+    if (MINE_BLOCK_TARGETS.has(ore)) {
+      const result = await actions.mining.mineBlocks({ block: ore, radius: 24, limit: 8 });
+      return { ok: Boolean(result.ok), ...result };
+    }
+    // A surface scan is not proof that ore is unreachable. Use the deep path:
+    // it searches the local cube, then sinks safe shafts/branches toward the
+    // requested ore. Success is only reported for an ore that was actually
+    // removed; digging an access shaft is reported as work, not as the quota.
+    const only = /_ore$/.test(ore) ? ore : `${ore}_ore`;
+    const result = await actions.mining.mineOresDeep({
+      radius: Math.max(48, config.mining.maxSearchRadius),
+      limit: 4,
+      maxDepth: 12,
+      minY: config.mining.minY === undefined ? -59 : config.mining.minY,
+      only
+    });
+    return {
+      ok: result.mined > 0,
+      ...result,
+      mined: result.mined || 0,
+      verified: result.mined > 0,
+      error: result.mined > 0 ? undefined : `no ${args[2]} ore was reached and removed`
+    };
+  }
+  if (action === 'chop') {
+    const types = args.slice(2).join(' ') || null;
+    const result = await actions.woodcutting.tick({ maxTrees: 2, types });
+    // woodcutting.tick reports ok:true for "idle, no tree in range". A command
+    // must not turn that into a claimed success: only removed logs count.
+    const chopped = (result.results || []).reduce((sum, entry) => sum + (entry.chopped || 0), 0);
+    const verified = chopped > 0;
+    return {
+      ...result,
+      ok: verified,
+      chopped,
+      verified,
+      error: verified ? undefined : (result.reason || 'no tree was chopped and verified')
+    };
+  }
+  if (action === 'farm') {
+    const words = args.slice(2).map((word) => String(word).toLowerCase());
+    const crop = words.join(' ') || null;
+    if (words[0] === 'plant') {
+      const result = await actions.farming.plantCrops({
+        crop: words[1] || 'wheat',
+        count: words[2] === undefined ? 16 : intArg(words[2], 'count', { min: 1, max: 256 })
+      });
+      return { ok: result.ok !== false, ...result };
+    }
+    if (words[0] === 'maintain') {
+      const result = await actions.farming.maintain();
+      return { ok: result.ok !== false, ...result };
+    }
+    if (words[0] === 'status') return { ok: true, ...actions.farming.status() };
+    const result = crop && /animal|breed/i.test(crop) ? await actions.farming.feedAnimals() : await actions.farming.harvestAll({ crop });
+    return { ok: result.ok !== false, ...result };
+  }
+  if (action === 'fish') {
+    const result = await actions.fishing.tick({ casts: Math.min(3, Number(args[2]) || 1) });
+    return { ok: result.ok !== false, ...result };
+  }
+  if (action === 'defend') {
+    const result = await actions.combat.defend({ maxAttacks: 10 });
+    return { ok: result.ok !== false, ...result };
+  }
+  if (action === 'combat') return { ok: true, bot: bot.name, combat: actions.combat.status() };
+  if (action === 'guard') {
+    const position = args.length >= 5 ? parseOrigin(args, 2) : null;
+    return { ok: true, bot: bot.name, ...(await actions.combat.guard(position)) };
+  }
+  if (action === 'duel') {
+    if (!args[2]) throw new CommandError('usage: bot <name> duel <authorised-player> confirm');
+    if (!context.confirmed) return { ok: false, error: 'duel requires explicit confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+    return { ok: true, bot: bot.name, ...(await actions.combat.duel(args[2])) };
+  }
+  if (action === 'explore') {
+    if (String(args[2] || '').toLowerCase() === 'stop') return actions.exploration.stop();
+    const steps = args[2] ? intArg(args[2], 'steps', { min: 1, max: 20 }) : 2;
+    const result = await actions.exploration.explore({ steps });
+    return { ok: result.ok !== false, ...result };
+  }
+  if (action === 'sleep') return actions.sleep.tick();
+  return { ok: false, error: `unknown bot action '${action}'` };
+}
+
 function registerAll(services, registry) {
   registry.register({
     name: 'help', category: 'core', summary: 'List commands or show detailed help', usage: 'help [command]',
@@ -235,10 +428,19 @@ function registerAll(services, registry) {
   registry.register({
     name: 'status', aliases: ['state'], category: 'core', summary: 'Full team, task, ledger and connection snapshot', usage: 'status',
     execute: async () => {
-      const bots = [...services.bots.values()].map((b) => (b.summary ? b.summary() : { name: b.name }));
+      const bots = [...services.bots.values()].map((b) => ({
+        ...(b.summary ? b.summary() : { name: b.name }),
+        ...connectionStatus(b)
+      }));
       const library = services.library && services.library.loaded ? services.library.stats() : null;
       return {
         ok: true,
+        summary: {
+          total: bots.length,
+          online: bots.filter((bot) => bot.online === true).length,
+          ready: bots.filter((bot) => bot.gameplayReady === true || bot.ready === true).length,
+          authRequiredManual: bots.filter((bot) => bot.authPending === true || bot.authRequiredManual === true).length
+        },
         bots,
         team: services.coordinator ? services.coordinator.getState() : null,
         tasks: services.taskBoard ? services.taskBoard.stats() : null,
@@ -398,89 +600,14 @@ function registerAll(services, registry) {
     name: 'bot', category: 'team', summary: 'Per-bot status, movement and action controls', usage: 'bot <name|all> <status|goto x y z|come|follow|eat|mine [ore]|chop [type]|farm [crop]|fish|defend|combat|guard [x y z]|duel <player>|explore|sleep|return home|where>',
     execute: async (args, context = {}) => {
       const target = String(args[0] || '').toLowerCase();
-      if (target === 'all') return { ok: true, bots: [...services.bots.values()].map((b) => (b.summary ? b.summary() : { name: b.name })) };
-      const bot = pickBot(services, args[0]);
-      const action = (args[1] || 'status').toLowerCase();
-      const actions = actionsFor(services, bot.name);
-      const leader = services.coordinator ? services.bots.get(services.coordinator.leader) : null;
-      if (action === 'status') return { ok: true, bot: bot.summary ? bot.summary() : { name: bot.name } };
-      if (action === 'where') return { ok: true, bot: bot.name, position: { ...bot.position }, dimension: bot.dimension };
-      if (action === 'goto') {
-        const pos = parseOrigin(args, 2);
-        const result = await bot.goTo(pos, { range: 2, timeoutMs: 30000 });
-        return { ok: result.ok !== false, ...result, position: { ...bot.position } };
+      const action = String(args[1] || 'status').toLowerCase();
+      if (isFleetTarget(target)) {
+        if (action === 'status') return fleetStatus(services);
+        return runFleetActions(services, 'all', (actions) => runBotAction(
+          services, actions.bot, [actions.bot.name, ...args.slice(1)], context
+        ));
       }
-      if (action === 'come' || action === 'follow') {
-        const destination = leader && leader !== bot ? leader.position : bot.position;
-        const result = await bot.goTo(destination, { range: 2, timeoutMs: 30000 });
-        return { ok: result.ok !== false, ...result, position: { ...bot.position }, followed: leader ? leader.name : null };
-      }
-      if (action === 'return') {
-        const result = await bot.goTo(services.runtime ? services.runtime.home : actions.home, { range: 3, timeoutMs: 30000 });
-        return { ok: result.ok !== false, ...result, position: { ...bot.position } };
-      }
-      if (action === 'eat') return actions.survival.eat();
-      if (action === 'mine') {
-        const ore = normalizeOre(args[2]);
-        if (!ore) { const result = await actions.mining.mineNearby({ radius: 24, limit: 8 }); return { ok: Boolean(result.ok), ...result, status: actions.mining.status() }; }
-        if (MINE_BLOCK_TARGETS.has(ore)) {
-          const result = await actions.mining.mineBlocks({ block: ore, radius: 24, limit: 8 });
-          return { ok: Boolean(result.ok), ...result };
-        }
-        const found = actions.mining.findOres({ radius: Math.max(48, config.mining.maxSearchRadius), limit: 200 }).find((entry) => entry.name.includes(ore));
-        if (!found) return { ok: false, error: `no ${args[2]} found nearby` };
-        const result = await actions.mining.mineOre(found);
-        return { ok: Boolean(result.ok), ...result };
-      }
-      if (action === 'chop') {
-        const types = args.slice(2).join(' ') || null;
-        const result = await actions.woodcutting.tick({ maxTrees: 2, types });
-        return { ok: result.ok !== false, ...result };
-      }
-      if (action === 'farm') {
-        const words = args.slice(2).map((word) => String(word).toLowerCase());
-        const crop = words.join(' ') || null;
-        if (words[0] === 'plant') {
-          const result = await actions.farming.plantCrops({
-            crop: words[1] || 'wheat',
-            count: words[2] === undefined ? 16 : intArg(words[2], 'count', { min: 1, max: 256 })
-          });
-          return { ok: result.ok !== false, ...result };
-        }
-        if (words[0] === 'maintain') {
-          const result = await actions.farming.maintain();
-          return { ok: result.ok !== false, ...result };
-        }
-        if (words[0] === 'status') return { ok: true, ...actions.farming.status() };
-        const result = crop && /animal|breed/i.test(crop) ? await actions.farming.feedAnimals() : await actions.farming.harvestAll({ crop });
-        return { ok: result.ok !== false, ...result };
-      }
-      if (action === 'fish') {
-        const result = await actions.fishing.tick({ casts: Math.min(3, Number(args[2]) || 1) });
-        return { ok: result.ok !== false, ...result };
-      }
-      if (action === 'defend') {
-        const result = await actions.combat.defend({ maxAttacks: 10 });
-        return { ok: result.ok !== false, ...result };
-      }
-      if (action === 'combat') return { ok: true, bot: bot.name, combat: actions.combat.status() };
-      if (action === 'guard') {
-        const position = args.length >= 5 ? parseOrigin(args, 2) : null;
-        return { ok: true, bot: bot.name, ...(await actions.combat.guard(position)) };
-      }
-      if (action === 'duel') {
-        if (!args[2]) throw new CommandError('usage: bot <name> duel <authorised-player> confirm');
-        if (!context.confirmed) return { ok: false, error: 'duel requires explicit confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
-        return { ok: true, bot: bot.name, ...(await actions.combat.duel(args[2])) };
-      }
-      if (action === 'explore') {
-        if (String(args[2] || '').toLowerCase() === 'stop') return actions.exploration.stop();
-        const steps = args[2] ? intArg(args[2], 'steps', { min: 1, max: 20 }) : 2;
-        const result = await actions.exploration.explore({ steps });
-        return { ok: result.ok !== false, ...result };
-      }
-      if (action === 'sleep') return actions.sleep.tick();
-      return { ok: false, error: `unknown bot action '${action}'` };
+      return runBotAction(services, pickBot(services, args[0]), args, context);
     }
   });
 
@@ -540,94 +667,92 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'eat', category: 'survival', summary: 'Eat the best available food', usage: 'eat [bot]',
+    name: 'eat', category: 'survival', summary: 'Eat the best available food, for one bot or the whole fleet', usage: 'eat [bot|all]',
     execute: async (args) => {
+      if (isFleetTarget(args[0])) {
+        return runFleetActions(services, 'all', (actions) => actions.survival.eat());
+      }
       const bot = pickBot(services, args[0]);
-      const result = await actionsFor(services, bot.name).survival.eat();
-      return { ok: result.ok !== false, ...result };
+      return runBotAction(services, bot, [bot.name, 'eat'], {});
     }
   });
 
   registry.register({
-    name: 'mine', category: 'mining', summary: 'Mine ores or stone with safety checks; stop cancels active mining', usage: 'mine [bot] [ore|stone|stop]',
+    name: 'mine', category: 'mining', summary: 'Mine ores or stone with safety checks; one bot, or the whole fleet with all', usage: 'mine [bot|all] [ore|stone|stop]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
       if (first === 'stop') {
         const results = allActions(services).map((actions) => actions.mining.stop());
         return { ok: true, stopped: true, results };
       }
+      if (isFleetTarget(first)) {
+        const requested = String(args[1] || '').toLowerCase();
+        if (requested === 'stop') {
+          return { ok: true, stopped: true, results: allActions(services).map((actions) => actions.mining.stop()) };
+        }
+        return runFleetActions(services, 'all', (actions) => runBotAction(
+          services, actions.bot, [actions.bot.name, 'mine', ...args.slice(1)], {}
+        ));
+      }
       const named = isBotName(services, args[0]) ? args[0] : null;
       const requested = String(named ? args[1] || '' : args[0] || '').toLowerCase();
       const bot = pickBot(services, named);
-      const actions = actionsFor(services, bot.name);
-      if (requested === 'stop') return { ok: true, ...actions.mining.stop() };
-      if (requested && MINE_BLOCK_TARGETS.has(requested)) {
-        const result = await actions.mining.mineBlocks({ block: requested, radius: 24, limit: 8 });
-        return { ok: Boolean(result.ok), ...result, status: actions.mining.status() };
-      }
-      if (requested) {
-        const oreKey = normalizeOre(requested);
-        const ore = actions.mining.findOres({ radius: Math.max(48, config.mining.maxSearchRadius), limit: 200 })
-          .find((entry) => entry.name.includes(oreKey));
-        if (!ore) return { ok: false, error: `no ${requested} found nearby` };
-        const result = await actions.mining.mineOre(ore);
-        return { ok: Boolean(result.ok), ...result, status: actions.mining.status() };
-      }
-      const result = await actions.mining.mineNearby({ radius: 24, limit: 8 });
-      return { ok: Boolean(result.ok), ...result, status: actions.mining.status() };
+      return runBotAction(services, bot, [bot.name, 'mine', ...(requested ? [requested] : [])], {});
     }
   });
 
   registry.register({
-    name: 'chop', aliases: ['wood'], category: 'woodcutting', summary: 'Chop and replant trees, optionally one species; stop cancels', usage: 'chop [bot] [wood|oak|birch|spruce|jungle|acacia|dark_oak|cherry|mangrove|pale_oak|stop]',
+    name: 'chop', aliases: ['wood'], category: 'woodcutting', summary: 'Chop and replant trees, optionally one species; stop cancels', usage: 'chop [bot|all] [wood|oak|birch|spruce|jungle|acacia|dark_oak|cherry|mangrove|pale_oak|stop]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
       if (first === 'stop') {
         const results = allActions(services).map((actions) => actions.woodcutting.stop());
         return { ok: true, stopped: true, results };
       }
+      if (isFleetTarget(first)) {
+        const requested = args.slice(1).join(' ').trim().toLowerCase();
+        if (requested === 'stop') {
+          return { ok: true, stopped: true, results: allActions(services).map((actions) => actions.woodcutting.stop()) };
+        }
+        return runFleetActions(services, 'all', (actions) => runBotAction(
+          services, actions.bot, [actions.bot.name, 'chop', ...args.slice(1)], {}
+        ));
+      }
       const named = isBotName(services, args[0]) ? args[0] : null;
       const rest = named ? args.slice(1) : args;
       const requested = rest.join(' ').trim().toLowerCase();
       if (requested === 'stop') return { ok: true, ...actionsFor(services, pickBot(services, named).name).woodcutting.stop() };
       const bot = pickBot(services, named);
-      const result = await actionsFor(services, bot.name).woodcutting.tick({ maxTrees: 2, types: requested && requested !== 'wood' ? requested : null });
-      return { ok: result.ok !== false, ...result };
+      return runBotAction(services, bot, [bot.name, 'chop', ...(rest.length ? rest : [])], {});
     }
   });
 
   registry.register({
-    name: 'farm', category: 'farming', summary: 'Harvest mature crops, establish or maintain a tilled/watered farm, feed animals', usage: 'farm [bot] [harvest|wheat|carrots|potatoes|beetroot|pumpkin|melon|plant [crop] [count]|maintain|status|animals|stop]',
+    name: 'farm', category: 'farming', summary: 'Harvest mature crops, establish or maintain a tilled/watered farm, feed animals', usage: 'farm [bot|all] [harvest|wheat|carrots|potatoes|beetroot|pumpkin|melon|plant [crop] [count]|maintain|status|animals|stop]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
       if (first === 'stop') {
         const results = allActions(services).map((actions) => actions.farming.stop());
         return { ok: true, stopped: true, results };
       }
+      if (isFleetTarget(first)) {
+        const requested = args.slice(1).join(' ').trim().toLowerCase();
+        if (requested === 'stop') {
+          return { ok: true, stopped: true, results: allActions(services).map((actions) => actions.farming.stop()) };
+        }
+        if (requested === 'status') {
+          return { ok: true, bots: allActions(services).map((actions) => ({ bot: actions.bot.name, ...actions.farming.status() })) };
+        }
+        return runFleetActions(services, 'all', (actions) => runBotAction(
+          services, actions.bot, [actions.bot.name, 'farm', ...args.slice(1)], {}
+        ));
+      }
       const named = isBotName(services, args[0]) ? args[0] : null;
       const rest = named ? args.slice(1) : args;
       const requested = rest.join(' ').trim().toLowerCase();
       if (requested === 'stop') return { ok: true, ...actionsFor(services, pickBot(services, named).name).farming.stop() };
       const bot = pickBot(services, named);
-      const actions = actionsFor(services, bot.name);
-      if (/^animals?$|^breed$/.test(requested)) {
-        const result = await actions.farming.feedAnimals();
-        return { ok: result.ok !== false, ...result };
-      }
-      if (requested === 'status') return { ok: true, ...actions.farming.status() };
-      const words = rest.map((word) => String(word).toLowerCase());
-      if (words[0] === 'plant') {
-        const crop = words[1] || 'wheat';
-        const count = words[2] === undefined ? 16 : intArg(words[2], 'count', { min: 1, max: 256 });
-        const result = await actions.farming.plantCrops({ crop, count });
-        return { ok: result.ok !== false, ...result };
-      }
-      if (words[0] === 'maintain') {
-        const result = await actions.farming.maintain();
-        return { ok: result.ok !== false, ...result };
-      }
-      const result = await actions.farming.harvestAll({ crop: requested || null });
-      return { ok: result.ok !== false, ...result };
+      return runBotAction(services, bot, [bot.name, 'farm', ...(rest.length ? rest : [])], {});
     }
   });
 
@@ -641,17 +766,16 @@ function registerAll(services, registry) {
         const results = targets.map((actions) => actions.fishing.stop());
         return { ok: true, stopped: results };
       }
-      if (first === 'all' || first === 'fleet') {
+      if (isFleetTarget(first)) {
         const casts = args[1] === undefined ? 1 : intArg(args[1], 'casts', { min: 1, max: 3 });
-        const results = await Promise.all(allActions(services).map(async (actions) => ({ bot: actions.bot.name, ...(await actions.fishing.tick({ casts })) })));
-        return { ok: results.some((result) => result.caught > 0), results };
+        const fleet = await runFleetActions(services, 'all', (actions) => actions.fishing.tick({ casts }));
+        return { ...fleet, ok: fleet.completed > 0 && fleet.results.every((result) => result.ok), caught: fleet.results.reduce((sum, result) => sum + (result.caught || 0), 0) };
       }
       const named = isBotName(services, args[0]) ? args[0] : null;
       const bot = pickBot(services, named);
       const rawCasts = named ? args[1] : args[0];
       const casts = rawCasts === undefined ? 1 : intArg(rawCasts, 'casts', { min: 1, max: 3 });
-      const result = await actionsFor(services, bot.name).fishing.tick({ casts });
-      return { ok: result.ok !== false, ...result };
+      return runBotAction(services, bot, [bot.name, 'fish', String(casts)], {});
     }
   });
 
@@ -676,6 +800,8 @@ function registerAll(services, registry) {
         if (!['on', 'off'].includes(value)) return { ok: true, bot: bot.name, auto: actions.sleep.auto };
         return actions.sleep.setAuto(value === 'on');
       }
+      const health = connectionStatus(bot);
+      if (!health.gameplayReady) return { ok: false, code: 'BOT_NOT_READY', status: health.status, error: `${bot.name} is not gameplay-ready (${health.statusLabel})` };
       const result = await actions.sleep.sleep();
       return { ok: result.ok !== false, ...result };
     }
@@ -690,8 +816,7 @@ function registerAll(services, registry) {
         return { ok: true, stopped: targets.map((actions) => actions.combat.stop()) };
       }
       const bot = pickBot(services, args[0]);
-      const result = await actionsFor(services, bot.name).combat.defend({ maxAttacks: 10 });
-      return { ok: result.ok !== false, ...result };
+      return runBotAction(services, bot, [bot.name, 'defend'], {});
     }
   });
 
@@ -708,8 +833,7 @@ function registerAll(services, registry) {
       const bot = pickBot(services, named);
       const rawSteps = named ? args[1] : args[0];
       const steps = rawSteps === undefined ? 4 : intArg(rawSteps, 'steps', { min: 1, max: 20 });
-      const result = await actionsFor(services, bot.name).exploration.explore({ steps });
-      return { ok: result.ok !== false, ...result };
+      return runBotAction(services, bot, [bot.name, 'explore', String(steps)], {});
     }
   });
 
@@ -744,12 +868,12 @@ function registerAll(services, registry) {
       if (String(args[0] || 'home').toLowerCase() !== 'home') throw new CommandError('usage: return home [bot|all]');
       if (!services.runtime) return { ok: false, error: 'no runtime home' };
       const target = args[1] || 'all';
-      const list = targetActions(services, target);
-      const results = await Promise.all(list.map(async (actions) => {
-        const result = await actions.bot.goTo(services.runtime.home, { range: 3, timeoutMs: 30000 });
-        return { bot: actions.bot.name, ok: result.ok !== false, position: { ...actions.bot.position }, error: result.error };
-      }));
-      return { ok: results.every((result) => result.ok), home: services.runtime.home, results };
+      const home = services.runtime.home;
+      const fleet = await runFleetActions(services, target, async (actions) => {
+        const result = await actions.bot.goTo(home, { range: 3, timeoutMs: 30000 });
+        return { ok: result.ok !== false, position: { ...actions.bot.position }, error: result.error };
+      });
+      return { ...fleet, home };
     }
   });
 
@@ -835,6 +959,40 @@ function registerAll(services, registry) {
         }
         return { ok: true, task };
       }
+      if (sub === 'fleet' || sub === 'assignall') {
+        const type = String(args[1] || '').toUpperCase();
+        if (!TASK_TYPES.has(type)) throw new CommandError(`invalid task type '${type}'`);
+        const parsed = parseTaskParams(args.slice(2));
+        validateTaskParams(type, parsed.params);
+        const objective = services.taskBoard.createObjective({
+          title: `Fleet ${type}${parsed.label ? `: ${parsed.label}` : ''}`,
+          description: 'One command, one task per roster member.',
+          priority: 50,
+          assignedBots: BOT_NAMES.slice(),
+          metadata: { source: 'task fleet', params: parsed.params }
+        });
+        const assigned = [];
+        for (const name of BOT_NAMES) {
+          const created = services.taskBoard.addTask({
+            type, label: `${parsed.label || type} (${name})`, priority: 50,
+            params: { ...parsed.params },
+            objectiveId: objective.id,
+            sourceCommand: context && context.line ? context.line : null,
+            createdBy: context && context.operator ? context.operator : null
+          });
+          if (!created.ok) { assigned.push({ bot: name, ok: false, error: created.error }); continue; }
+          const claim = services.coordinator
+            ? services.coordinator.assignTask(name, created.task.id)
+            : services.taskBoard.claim(created.task.id, name, { force: true });
+          assigned.push({ bot: name, ok: claim.ok !== false, taskId: created.task.id, error: claim.error });
+        }
+        return {
+          ok: assigned.every((entry) => entry.ok),
+          objectiveId: objective.id, type, params: parsed.params,
+          tasks: assigned.filter((entry) => entry.taskId).length,
+          assigned
+        };
+      }
       if (sub === 'objective') {
         const title = args.slice(1).join(' ').trim();
         if (!title) throw new CommandError('objective title is required');
@@ -850,6 +1008,42 @@ function registerAll(services, registry) {
   registerCombat(registry, services);
   registerConstruction(registry, services);
   registerSchematics(registry, services);
+
+  registry.register({
+    name: 'batch', category: 'task', summary: 'Run several effectful actions in order, for one bot or the whole fleet', usage: 'batch <bot|all> <action> [args] then <action> [args] ...',
+    execute: async (args, context = {}) => {
+      if (!args.length) throw new CommandError('usage: batch <bot|all> <action> [args] then <action> [args] ...');
+      const target = String(args[0]).toLowerCase();
+      const fleet = isFleetTarget(target);
+      if (!fleet && !isBotName(services, target)) throw new CommandError(`unknown bot ${target}; use a roster name or all`);
+      const steps = [];
+      let current = [];
+      for (const token of args.slice(1)) {
+        if (String(token).toLowerCase() === 'then') {
+          if (current.length) steps.push(current);
+          current = [];
+        } else current.push(token);
+      }
+      if (current.length) steps.push(current);
+      if (!steps.length) throw new CommandError('batch needs at least one action');
+      const bot = fleet ? null : pickBot(services, target);
+      const runOne = (step) => (fleet
+        ? runFleetActions(services, 'all', (actions) => runBotAction(services, actions.bot, [actions.bot.name, ...step], context))
+        : runBotAction(services, bot, [bot.name, ...step], context));
+      const results = [];
+      for (const step of steps) {
+        // Steps are sequential: a later step such as "return home" must see the
+        // world/inventory produced by the previous one.
+        const result = await runOne(step);
+        results.push({ action: step.join(' '), ...result });
+        if (result.ok === false) break;
+      }
+      return {
+        ok: results.length === steps.length && results.every((result) => result.ok !== false),
+        target, steps: steps.length, completedSteps: results.length, results
+      };
+    }
+  });
 
   registry.register({
     name: 'queue', category: 'core', summary: 'Inspect or repair the join/reconnect queue', usage: 'queue <status|retry <bot|all>|cooldown reset>',

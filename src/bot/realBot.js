@@ -40,7 +40,8 @@ class RealBot extends BotAdapter {
     configurationTimeoutMs = config.server.configurationTimeoutMs,
     now = Date.now,
     authDelayMs = config.server.authDelayMs, authTimeoutMs = config.server.authTimeoutMs,
-    authEnabled = config.server.authEnabled, registerOnFirstJoin = config.server.registerOnFirstJoin
+    authEnabled = undefined, registerOnFirstJoin = config.server.registerOnFirstJoin,
+    authCommandsEnabled = config.server.authCommandsEnabled
   } = {}) {
     super({ name, logger: logger || new Logger({ level: config.logging.level }), speed: 1 });
     if (!BOT_NAMES.includes(name)) throw new Error(`refusing to create a bot outside the fixed team roster: ${name}`);
@@ -55,9 +56,21 @@ class RealBot extends BotAdapter {
     this.configurationTimeoutMs = configurationTimeoutMs;
     this.loginTimeoutMs = config.server.loginTimeoutMs;
     this.spawnTimeoutMs = config.server.spawnTimeoutMs;
-    this.authEnabled = authEnabled !== false;
-    this.registerOnFirstJoin = registerOnFirstJoin;
+    // Automatic password auth is hard-disabled by operator directive. The
+    // explicit option exists so the historical auth unit tests can exercise
+    // the command parser in isolation; the runtime never passes it.
+    this.authCommandsEnabled = authCommandsEnabled === true;
+    // Historical auth-parser tests opt in explicitly. The runtime never sets
+    // authCommandsEnabled, so this cannot re-enable password auth from .env.
+    this.authEnabled = this.authCommandsEnabled
+      && authEnabled !== false
+      && (authEnabled === true || Boolean(loginPassword || registerPassword));
+    this.authMode = this.authCommandsEnabled ? 'password' : 'disabled';
+    this.registerOnFirstJoin = this.authCommandsEnabled && registerOnFirstJoin === true;
     this.hasRegistered = false;
+    this.authRequiredManual = false;
+    this.authPrompt = null;
+    this.authPromptAt = 0;
     this.authDelayMs = authDelayMs;
     this.authTimeoutMs = authTimeoutMs;
     this._mineflayer = mineflayer;
@@ -610,6 +623,9 @@ class RealBot extends BotAdapter {
     this.retryPaused = false;
     this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
     this.authConfirmed = false;
+    this.authRequiredManual = false;
+    this.authPrompt = null;
+    this.authPromptAt = 0;
     this.lastError = null;
     this.lastEventAt = 0;
     this._movementLock = false;
@@ -1314,6 +1330,19 @@ class RealBot extends BotAdapter {
     this._lastChatIngest = { text: plain, at };
     this._markEvent();
     const safe = this._redact(plain);
+    // The server may demand manual authentication. Record it as a visible
+    // state, keep the healthy socket open, and block gameplay. Never send a
+    // password command: that is exactly what produced the rejected /login
+    // storm on 26.1.
+    if (!this.authCommandsEnabled && config.server.authManualPromptRe && config.server.authManualPromptRe.test(plain)) {
+      const first = !this.authRequiredManual;
+      this.authRequiredManual = true;
+      this.authPrompt = safe.slice(0, 240);
+      this.authPromptAt = at;
+      this.authenticated = false;
+      this.lastError = `manual authentication required by the server: ${this.authPrompt}`;
+      if (first) this.logger.warn(`[${this.name}] AUTH_REQUIRED_MANUAL: ${this.authPrompt}; automatic commands are disabled and the session stays connected`);
+    }
     if (this.name && plain.includes(this.name) && /(slain|killed|shot|blown up|burned|burn|drowned|fell|withered|starved|suffocat|died|death|magic|fireball|pummeled|impaled|stung|frozen)/i.test(plain)) {
       this.lastDeathMessage = plain.slice(0, 240);
     }
@@ -1568,6 +1597,14 @@ class RealBot extends BotAdapter {
    * that. The timeout is not extended: the total wait remains authTimeoutMs.
    */
   _sendAuthCommand(command, kind) {
+    if (!this.authCommandsEnabled) {
+      return Promise.resolve({
+        ok: false,
+        code: 'AUTH_DISABLED',
+        kind,
+        error: 'automatic /login and /register are disabled; authentication must be performed manually'
+      });
+    }
     const success = kind === 'register'
       ? /successfully registered|registration (?:successful|complete)|you are now registered|already registered|now logged in|successfully logged in|already logged in|login successful|successfully authenticated|authentication successful|you (?:have been|are) (?:logged in|authenticated)/i
       : /successfully logged in|you are now logged in|now logged in|already logged in|welcome back|logged in successfully|login successful|logged in\.?$|successfully authenticated|authentication successful|you (?:have been|are) (?:logged in|authenticated)/i;
@@ -1644,6 +1681,13 @@ class RealBot extends BotAdapter {
   }
 
   async _handleLoginCommands() {
+    if (!this.authCommandsEnabled) {
+      // No password exchange is attempted in either direction. A spawned
+      // session is considered accepted by the server; if it later prints a
+      // manual-auth prompt, _ingestChatText raises AUTH_REQUIRED_MANUAL.
+      this.authenticated = true;
+      return { ok: true, required: false, mode: 'disabled' };
+    }
     if (!this.passwordRequired) {
       this.authenticated = true;
       return { ok: true, required: false };
@@ -1715,6 +1759,18 @@ class RealBot extends BotAdapter {
     this._unlockMovement();
     if (this.bot) this.bot.physicsEnabled = true;
     return { ok: true, required: true, registered };
+  }
+
+  // The server's own player list is independent evidence of presence. A bot
+  // whose entity has not reached READY yet can still be listed by the server;
+  // that must never be rendered as "offline".
+  get entity() { return this.bot ? this.bot.entity : null; }
+
+  get players() { return this.bot && this.bot.players ? this.bot.players : null; }
+
+  get serverPlayerListed() {
+    if (this.bot && this.bot.players && this.bot.players[this.name]) return true;
+    return Boolean(this.bot && this.bot.entity);
   }
 
   // ------------------------------------------------------------------
@@ -2596,6 +2652,13 @@ class RealBot extends BotAdapter {
     return {
       ...base,
       ready: this.ready,
+      authMode: this.authMode,
+      authCommandsEnabled: this.authCommandsEnabled,
+      passwordRequired: this.passwordRequired,
+      authenticated: this.authenticated,
+      authRequiredManual: this.authRequiredManual,
+      authPrompt: this.authPrompt,
+      authPromptAt: this.authPromptAt,
       host: this.host,
       port: this.port,
       version: this.version,

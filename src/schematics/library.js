@@ -17,16 +17,38 @@ const CATEGORY_LISTS = {
   grandmaster: ['kingdom', 'metropolis', 'mega_base', 'floating_citadel', 'underground_kingdom', 'colossal_castle', 'world_tree_palace', 'sunken_city', 'sky_fortress', 'eternal_library']
 };
 
-const TIER_PLAN = [
-  { tier: 1, name: 'beginner', count: 100, start: 1 },
-  { tier: 2, name: 'novice', count: 100, start: 101 },
-  { tier: 3, name: 'apprentice', count: 150, start: 201 },
-  { tier: 4, name: 'intermediate', count: 150, start: 351 },
-  { tier: 5, name: 'advanced', count: 150, start: 501 },
-  { tier: 6, name: 'expert', count: 150, start: 651 },
-  { tier: 7, name: 'master', count: 150, start: 801 },
-  { tier: 8, name: 'grandmaster', count: 170, start: 951 }
-];
+const TIER_NAMES = ['beginner', 'novice', 'apprentice', 'intermediate', 'advanced', 'expert', 'master', 'grandmaster'];
+// The original 1,120 designs are preserved as the "core" slice. Extra
+// catalogue designs are weighted toward small/mid structures, where the
+// generator has the deepest combinatorial space, so every one is genuine
+// geometry rather than a renamed duplicate.
+const CORE_COUNTS = [100, 100, 150, 150, 150, 150, 150, 170];
+// Exact 10,000 catalogue. The beginner/novice caps are the measured number of
+// distinct geometries their structural space accepts; the remainder is placed
+// in apprentice and above, where every candidate was accepted. This keeps the
+// library at exactly 10,000 without renaming a duplicate or lowering the bar.
+const TARGET_COUNTS_10K = [962, 2847, 3115, 1304, 682, 505, 327, 258];
+const CATALOGUE_WEIGHTS = [0.10, 0.34, 0.30, 0.13, 0.06, 0.04, 0.02, 0.01];
+
+function buildTierPlan(total = config.schematics.targetCount) {
+  const target = Math.max(CORE_COUNTS.reduce((sum, n) => sum + n, 0), Number(total) || 0);
+  let counts;
+  if (target === 10000) {
+    counts = TARGET_COUNTS_10K.slice();
+  } else {
+    const extra = target - CORE_COUNTS.reduce((sum, n) => sum + n, 0);
+    counts = CORE_COUNTS.map((count, index) => count + Math.floor(extra * CATALOGUE_WEIGHTS[index]));
+    counts[1] += target - counts.reduce((sum, n) => sum + n, 0);
+  }
+  let start = 1;
+  return counts.map((count, index) => {
+    const entry = { tier: index + 1, name: TIER_NAMES[index], count, start };
+    start += count;
+    return entry;
+  });
+}
+
+const TIER_PLAN = buildTierPlan();
 
 const MANIFEST_VERSION = 2;
 const DEFAULT_SEED = 'chickenbots-v4-architecture';
@@ -64,10 +86,39 @@ function enumerateSpecs({ seed = DEFAULT_SEED, plan = TIER_PLAN } = {}) {
   return specs;
 }
 
+function manifestEntry(chosen, number) {
+  return {
+    id: chosen.id,
+    number,
+    name: chosen.name,
+    tier: chosen.tier,
+    tierIndex: chosen.tierIndex,
+    difficulty: chosen.difficulty,
+    category: chosen.category,
+    archetype: chosen.archetype,
+    style: chosen.style,
+    dimensions: chosen.dimensions,
+    materials: chosen.materials,
+    phases: chosen.phases,
+    geometryHash: chosen.geometryHash,
+    exactHash: chosen.exactHash,
+    specHash: chosen.specHash,
+    seed: chosen.seed,
+    tags: chosen.tags,
+    versionCompatibility: chosen.versionCompatibility,
+    spec: chosen.spec
+  };
+}
+
 /**
  * Generate the whole library, rejecting duplicate geometry and palette-only
  * variants. If a candidate collides, its spec is deterministically perturbed
  * and regenerated; failures are reported, never silently counted.
+ *
+ * The tier plan is a target, not a guarantee: small tiers have a finite
+ * structural space. Any rejected slot is refilled by a real generated
+ * apprentice design (not a renamed duplicate) so the requested total is
+ * reached without lowering the uniqueness bar.
  */
 function generateLibrary({ seed = DEFAULT_SEED, plan = TIER_PLAN, onProgress = null, maxAttempts = 12 } = {}) {
   const started = Date.now();
@@ -108,33 +159,42 @@ function generateLibrary({ seed = DEFAULT_SEED, plan = TIER_PLAN, onProgress = n
       }
     }
     if (chosen) {
-      entries.push({
-        id: chosen.id,
-        number: baseSpec.number,
-        name: chosen.name,
-        tier: chosen.tier,
-        tierIndex: chosen.tierIndex,
-        difficulty: chosen.difficulty,
-        category: chosen.category,
-        archetype: chosen.archetype,
-        style: chosen.style,
-        dimensions: chosen.dimensions,
-        materials: chosen.materials,
-        phases: chosen.phases,
-        geometryHash: chosen.geometryHash,
-        exactHash: chosen.exactHash,
-        specHash: chosen.specHash,
-        seed: chosen.seed,
-        tags: chosen.tags,
-        versionCompatibility: chosen.versionCompatibility,
-        spec: chosen.spec
-      });
+      entries.push(manifestEntry(chosen, baseSpec.number));
     } else {
       rejected.push({ id: baseSpec.id, category: baseSpec.category, tier: baseSpec.tierName, reason: lastError });
     }
     if (onProgress && (idx % 25 === 0 || idx === specs.length - 1)) {
       onProgress({ done: idx + 1, total: specs.length, accepted: entries.length, rejected: rejected.length });
     }
+  }
+  // Refill rejected slots with real, freshly generated apprentice designs.
+  // The deterministic seed includes a supplement counter, and every candidate
+  // still passes both geometry and structural-spec deduplication.
+  let supplement = 0;
+  while (entries.length < specs.length && supplement < 5000) {
+    const category = CATEGORY_LISTS.apprentice[supplement % CATEGORY_LISTS.apprentice.length];
+    const number = 10001 + supplement;
+    const id = designId(number, 'apprentice', category);
+    let chosen = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < 24; attempt++) {
+      try {
+        const structuralSpec = createSpec({
+          tier: 3, category, variant: 5000 + supplement + attempt * 1000,
+          number, seed: `${seed}:supplement:${attempt}`
+        });
+        const schematic = generateSchematic(structuralSpec, { id, name: designName(number, 'apprentice', category) });
+        if (hashes.has(schematic.geometryHash)) { lastError = `duplicate geometry of ${hashes.get(schematic.geometryHash)}`; continue; }
+        if (specHashes.has(schematic.specHash)) { lastError = `duplicate structural spec`; continue; }
+        chosen = schematic;
+        hashes.set(schematic.geometryHash, id);
+        specHashes.set(schematic.specHash, id);
+        break;
+      } catch (err) { lastError = err.message; }
+    }
+    if (chosen) entries.push(manifestEntry(chosen, number));
+    else rejected.push({ id, category, tier: 'apprentice', reason: lastError, supplement: true });
+    supplement++;
   }
   const manifest = {
     version: MANIFEST_VERSION,
@@ -147,6 +207,7 @@ function generateLibrary({ seed = DEFAULT_SEED, plan = TIER_PLAN, onProgress = n
       total: entries.length,
       uniqueGeometry: new Set(entries.map((e) => e.geometryHash)).size,
       rejected: rejected.length,
+      supplemented: entries.filter((e) => e.number > 10000).length,
       byTier: entries.reduce((acc, e) => { acc[e.tier] = (acc[e.tier] || 0) + 1; return acc; }, {}),
       byCategory: entries.reduce((acc, e) => { acc[e.category] = (acc[e.category] || 0) + 1; return acc; }, {})
     },
@@ -171,13 +232,36 @@ function loadManifest(file = MANIFEST_PATH) {
 
 class SchematicLibrary {
   constructor({ manifest = null, minCount = config.schematics.minimumCount, custom = undefined, enableCustom = null } = {}) {
-    this.manifest = manifest || loadManifest();
+    // A 10,000-design manifest is ~20 MB of JSON. Loading it in every runtime
+    // (including a simulation or a dashboard status tick) is wasteful, so the
+    // file is read on first use. An explicitly supplied manifest is already in
+    // memory and is never re-read.
+    this._manifest = manifest;
+    this._manifestLoaded = Boolean(manifest);
     this.minCount = minCount;
     this.cache = new Map();
     this.byId = new Map();
-    if (this.manifest) for (const d of this.manifest.designs) this.byId.set(d.id, d);
+    if (this._manifest && Array.isArray(this._manifest.designs)) {
+      for (const design of this._manifest.designs) this.byId.set(design.id, design);
+    }
     this.custom = custom || null;
     this._customEnabled = enableCustom === null ? Boolean(config.building?.customSchematics) : Boolean(enableCustom);
+  }
+
+  get manifest() {
+    if (!this._manifestLoaded) {
+      this._manifest = loadManifest();
+      this._manifestLoaded = true;
+      if (this._manifest) for (const design of this._manifest.designs) this.byId.set(design.id, design);
+    }
+    return this._manifest;
+  }
+
+  set manifest(value) {
+    this._manifest = value;
+    this._manifestLoaded = true;
+    this.byId.clear();
+    if (value && Array.isArray(value.designs)) for (const design of value.designs) this.byId.set(design.id, design);
   }
 
   get customStore() {
@@ -250,8 +334,11 @@ class SchematicLibrary {
   }
 
   get(id) {
+    // Touch the lazy manifest first so byId is populated for an explicit or
+    // on-disk manifest before the first lookup.
+    void this.manifest;
     const entry = this.byId.get(id);
-    if (entry) return { ...this.manifest.designs.find((d) => d.id === id) };
+    if (entry) return { ...entry };
     const store = this.customStore;
     const custom = store ? store.get(id) : null;
     if (!custom) return null;

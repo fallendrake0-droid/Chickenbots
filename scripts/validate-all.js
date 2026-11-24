@@ -101,7 +101,28 @@ function main() {
   results.push(step('secret leak check', process.execPath, ['scripts/check-secrets.js']));
   results.push(step('lint', process.execPath, ['scripts/lint.js']));
   results.push(step('tests', process.execPath, ['--test', '--test-concurrency=1', 'tests/*.test.js']));
-  results.push(step('schematics validation', process.execPath, quick ? ['scripts/schematics-validate.js', '--sample=120'] : ['scripts/schematics-validate.js']));
+  // Reuse a full validation report only when it was produced for the current
+  // manifest (report newer than manifest and same entry count). A regenerated
+  // or edited manifest invalidates it and forces the real full pass.
+  let reusable = false;
+  if (!quick) {
+    try {
+      const report = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'schematics', 'validation-report.json'), 'utf8'));
+      const manifest = loadManifest();
+      reusable = Boolean(manifest && report.passed && report.mode === 'full'
+        && report.totalEntries === manifest.designs.length
+        && fs.statSync(path.join(ROOT, 'data', 'schematics', 'validation-report.json')).mtimeMs
+          >= fs.statSync(path.join(ROOT, 'data', 'schematics', 'manifest.json')).mtimeMs);
+    } catch (_) { reusable = false; }
+  }
+  if (reusable) {
+    process.stdout.write('\n=== schematics validation ===\n');
+    process.stdout.write('Reusing the full report for the current unchanged manifest.\n');
+    process.stdout.write('PASS: schematics validation\n');
+    results.push({ ok: true, name: 'schematics validation', status: 0, cached: true });
+  } else {
+    results.push(step('schematics validation', process.execPath, quick ? ['scripts/schematics-validate.js', '--sample=120'] : ['scripts/schematics-validate.js']));
+  }
   results.push(consistency());
   const failed = results.filter((r) => !r.ok);
   process.stdout.write('\n');

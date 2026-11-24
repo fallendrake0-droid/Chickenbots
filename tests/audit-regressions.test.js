@@ -36,9 +36,12 @@ test('the repository ships no default credential and config validation is explic
   assert.equal(config.server.registerPassword, '');
   assert.equal(validateConfig(config).ok, true);
 
+  // Password auth is disabled, so a live run no longer requires a credential.
   const noPassword = validateConfig(config, { requireCredentials: true });
-  assert.equal(noPassword.ok, false);
-  assert.ok(noPassword.errors.some((error) => /MC_LOGIN_PASSWORD/.test(error)));
+  assert.equal(noPassword.ok, true, noPassword.errors.join('; '));
+  assert.equal(noPassword.errors.some((error) => /MC_LOGIN_PASSWORD/.test(error)), false);
+  assert.equal(config.server.authEnabled, false);
+  assert.equal(config.server.authCommandsEnabled, false);
 
   const broken = JSON.parse(JSON.stringify(config));
   broken.server.port = 0;

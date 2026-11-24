@@ -190,7 +190,7 @@ test('auth confirmation is logged before held movement is released', async () =>
   const logs = [];
   const logger = { debug() {}, info(message) { logs.push(String(message)); }, warn() {}, error() {} };
   const fake = new FakeBot();
-  const real = new RealBot({
+  const real = new RealBot({ authCommandsEnabled: true, 
     name: '11001100', createBot: () => fake, logger,
     loginPassword: 'secret', registerPassword: '', authEnabled: true, authDelayMs: 1, authTimeoutMs: 500
   });
@@ -225,7 +225,7 @@ test('a 26.1 system_chat packet is decoded and confirms password authentication'
       isActionBar: false
     }));
   };
-  const real = new RealBot({
+  const real = new RealBot({ authCommandsEnabled: true, 
     name: '________', createBot: () => fake, logger,
     loginPassword: 'secret', registerPassword: '', authEnabled: true, authDelayMs: 1, authTimeoutMs: 500
   });
@@ -250,7 +250,7 @@ test('a 26.1 system_chat packet is decoded and confirms password authentication'
 test('camelCase and raw system chat for the same line are counted once', () => {
   const fake = new FakeBot();
   fake.registry = require('prismarine-registry')('26.1');
-  const real = new RealBot({ name: '________', createBot: () => fake, loginPassword: 'secret', registerPassword: '' });
+  const real = new RealBot({ authCommandsEnabled: true,  name: '________', createBot: () => fake, loginPassword: 'secret', registerPassword: '' });
   real.bot = fake;
   real._installChatCompat(fake);
   const component = { type: 'compound', value: { text: { type: 'string', value: 'Login successful.' } } };
@@ -263,7 +263,7 @@ test('an auth command with no reply is re-sent inside the same timeout budget', 
   const fake = new FakeBot();
   const commands = [];
   fake.chat = (line) => { commands.push(line); };
-  const real = new RealBot({
+  const real = new RealBot({ authCommandsEnabled: true, 
     name: '________', createBot: () => fake,
     loginPassword: 'secret', registerPassword: '', authEnabled: true, authDelayMs: 0, authTimeoutMs: 700
   });
@@ -286,7 +286,7 @@ test('the protocol client chat path is used in production and its reply is inges
     commands.push(line);
     setImmediate(() => fake._client.emit('systemChat', { formattedMessage: JSON.stringify({ text: 'Login successful.' }) }));
   };
-  const real = new RealBot({ name: '________', loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 500 });
+  const real = new RealBot({ authCommandsEnabled: true,  name: '________', loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 500 });
   real.bot = fake;
   real.connected = true;
   real.spawned = true;
@@ -299,7 +299,7 @@ test('the protocol client chat path is used in production and its reply is inges
 test('a timeout diagnostic never echoes an auth password', async () => {
   const fake = new FakeBot();
   fake.chat = (line) => { setImmediate(() => real._ingestChatText(line, 'test-echo')); };
-  const real = new RealBot({
+  const real = new RealBot({ authCommandsEnabled: true, 
     name: '________', createBot: () => fake,
     loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 300
   });
@@ -316,7 +316,7 @@ test('a timeout diagnostic never echoes an auth password', async () => {
 test('a synchronous protocol chat failure fails auth instead of timing out', async () => {
   const fake = new FakeBot();
   fake._client.chat = () => { throw new Error('chat write rejected'); };
-  const real = new RealBot({ name: '________', loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 12000 });
+  const real = new RealBot({ authCommandsEnabled: true,  name: '________', loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 12000 });
   real.bot = fake;
   real.connected = true;
   real.spawned = true;
@@ -329,7 +329,7 @@ test('a synchronous protocol chat failure fails auth instead of timing out', asy
 });
 
 test('a spawn that arrives before the spawn waiter is not lost when auth is still pending', async () => {
-  const real = new RealBot({ name: '________', createBot: () => new FakeBot(), loginPassword: 'secret', registerPassword: '' });
+  const real = new RealBot({ authCommandsEnabled: true,  name: '________', createBot: () => new FakeBot(), loginPassword: 'secret', registerPassword: '' });
   real.connection.begin({ host: 'example.test', port: 25565 });
   for (const state of [STATES.TCP_CONNECTING, STATES.HANDSHAKING, STATES.CONFIGURATION, STATES.AWAITING_SPAWN]) {
     assert.equal(real.connection.transition(state), true);
@@ -485,7 +485,7 @@ test('a join-time respawn packet while auth is pending is not called a respawn',
   const logs = [];
   const logger = { debug() {}, info(message) { logs.push(String(message)); }, warn() {}, error() {} };
   const fake = new FakeBot();
-  const real = new RealBot({
+  const real = new RealBot({ authCommandsEnabled: true, 
     name: '01010100', createBot: () => fake, logger,
     loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 500
   });

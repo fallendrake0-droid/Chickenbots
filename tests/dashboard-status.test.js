@@ -43,7 +43,10 @@ test('connection status is a single honest verdict for every lifecycle state', (
 
   const auth = connectionStatus({ ...base, authenticated: false, ready: false, lastError: 'wrong password' });
   assert.equal(auth.status, 'auth_failed');
-  assert.equal(auth.online, false);
+  // The server still has this player in its world. Online and ready are
+  // separate verdicts; an auth problem must never be painted as offline.
+  assert.equal(auth.online, true);
+  assert.equal(auth.gameplayReady, false);
 
   // A ready entity proves the session is live even when a legacy boolean or a
   // stale auth error is still hanging around from an earlier attempt.
@@ -53,15 +56,18 @@ test('connection status is a single honest verdict for every lifecycle state', (
 
   const dead = connectionStatus({ ...base, health: 0 });
   assert.equal(dead.status, 'dead');
-  assert.equal(dead.online, false);
+  assert.equal(dead.online, true, 'a dead but spawned bot is still online');
+  assert.equal(dead.gameplayReady, false);
 
   const stale = connectionStatus({ ...base, lastEventAt: Date.now() - 120000 }, { staleAfterMs: 90000 });
   assert.equal(stale.status, 'stale');
-  assert.equal(stale.online, false);
+  assert.equal(stale.online, true, 'presence survives a silent packet gap');
+  assert.equal(stale.gameplayReady, false);
 
   const initialising = connectionStatus({ ...base, ready: false });
-  assert.equal(initialising.status, 'initialising');
-  assert.equal(initialising.online, false);
+  assert.equal(initialising.status, 'online_not_ready');
+  assert.equal(initialising.online, true);
+  assert.equal(initialising.gameplayReady, false);
 });
 
 test('the snapshot never reports a kicked or failed bot as online', async () => {
@@ -88,9 +94,11 @@ test('the snapshot never reports a kicked or failed bot as online', async () => 
     auth.lastError = 'Incorrect password';
     snapshot = statusSnapshot(runtime.services);
     const authRow = snapshot.bots.find((bot) => bot.name === '10101000');
-    assert.equal(authRow.online, false);
+    assert.equal(authRow.online, true, 'server presence outranks a local auth flag');
+    assert.equal(authRow.authPending, true);
+    assert.equal(authRow.ready, false);
     assert.equal(authRow.status, 'auth_failed');
-    assert.equal(snapshot.overview.online, 8);
+    assert.equal(snapshot.overview.online, 9);
   } finally {
     await runtime.shutdown('test');
   }
@@ -120,11 +128,11 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
     // The website must get the configured names from the live runtime, never
     // from a cached /api/settings or a client-side default roster.
     assert.deepEqual(state.body.state.diagnostics.config.roster, NAMES);
-    assert.equal(state.body.state.diagnostics.config.server.joinIntervalMs, 0);
+    assert.ok(state.body.state.diagnostics.config.server.joinIntervalMs > 0);
     assert.match(String(state.headers['cache-control']), /no-store/);
     const settings = await request(port, '/api/settings');
     assert.deepEqual(settings.body.settings.roster, NAMES);
-    assert.equal(settings.body.settings.server.joinIntervalMs, 0);
+    assert.ok(settings.body.settings.server.joinIntervalMs > 0);
     assert.match(String(settings.headers['cache-control']), /no-store/);
     const queue = await request(port, '/api/queue');
     assert.equal(queue.body.ok, true);

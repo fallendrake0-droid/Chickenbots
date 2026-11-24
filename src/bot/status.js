@@ -3,27 +3,30 @@
 const { config } = require('../config');
 
 /**
- * One authoritative answer to "is this bot actually online?".
+ * One authoritative answer to "is this bot online, and can it play?".
  *
- * The dashboard, diagnostics and runtime all use this function so a bot cannot
- * be counted as online by one view and offline by another. "Online" means the
- * socket is open, the bot has authenticated and spawned, it is not dead and it
- * has produced a packet recently. Every other state gets its own label rather
- * than being flattened into a misleading "Online".
+ * Online and ready are intentionally different questions. A bot the server
+ * has spawned is online even while it is still initialising, dead, waiting at
+ * a respawn screen or blocked by manual authentication. `gameplayReady` is the
+ * narrower verdict used by the autonomy gate: transport + spawn + no pending
+ * auth + a live entity. The dashboard, CLI, runtime and command layer all read
+ * these fields; none of them re-derives an answer from a different flag.
  */
 const AUTH_ERROR_RE = /auth|login|password|register|credential|not authenticated|not logged in/i;
 
 const STATUS_META = Object.freeze({
-  online: { label: 'Online', online: true },
-  joining: { label: 'Joining', online: false },
-  reconnecting: { label: 'Reconnecting', online: false },
-  authenticating: { label: 'Authenticating', online: false },
-  auth_failed: { label: 'Auth failed', online: false },
-  dead: { label: 'Dead', online: false },
-  stale: { label: 'No packets', online: false },
-  initialising: { label: 'Starting', online: false },
-  offline: { label: 'Offline', online: false },
-  unknown: { label: 'Unknown', online: false }
+  online: { label: 'Online', online: true, ready: true },
+  online_not_ready: { label: 'Online — starting', online: true, ready: false },
+  auth_required_manual: { label: 'Online — auth required', online: true, ready: false },
+  auth_failed: { label: 'Online — auth failed', online: true, ready: false },
+  joining: { label: 'Joining', online: false, ready: false },
+  reconnecting: { label: 'Reconnecting', online: false, ready: false },
+  authenticating: { label: 'Authenticating', online: true, ready: false },
+  dead: { label: 'Dead — online', online: true, ready: false },
+  stale: { label: 'No packets', online: true, ready: false },
+  initialising: { label: 'Online — starting', online: true, ready: false },
+  offline: { label: 'Offline', online: false, ready: false },
+  unknown: { label: 'Unknown', online: false, ready: false }
 });
 
 function connectionStatus(bot, { now = Date.now(), staleAfterMs = config.server.staleAfterMs || 90000 } = {}) {
@@ -33,97 +36,107 @@ function connectionStatus(bot, { now = Date.now(), staleAfterMs = config.server.
   const lastEventAt = Number.isFinite(bot.lastEventAt) && bot.lastEventAt > 0 ? bot.lastEventAt : null;
   const lastEventAgeMs = lastEventAt ? Math.max(0, now - lastEventAt) : null;
   const lastError = bot.lastError || null;
-
-  // Once a live adapter has a real session, the lifecycle machine is the
-  // authoritative answer. The booleans below are only a compatibility
-  // fallback for MockBot and for constructors that have never connected.
   const machine = bot.connection && typeof bot.connection.snapshot === 'function' ? bot.connection.snapshot(now) : null;
-  // An EPIPE/end callback can arrive before the lifecycle close transition.
-  // The socket is already unusable, so do not report the bot online merely
-  // because the previous READY state has not been projected away yet.
+
+  // The transport is genuinely gone. This is the one case where the server has
+  // no session to list and "offline" is the honest answer.
   if (bot._transportDead) {
     return result('offline', 'Transport closed; awaiting session cleanup', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
   }
-  if (machine && machine.generation > 0) {
-    const stale = Boolean(machine.state === 'ready' && lastEventAt && lastEventAgeMs > staleAfterMs);
-    if (stale) {
-      return result('stale', `No packet from the server for ${Math.round(lastEventAgeMs / 1000)}s (${machine.stage})`, { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-    }
-    switch (machine.state) {
-      case 'ready':
-        if (Number.isFinite(bot.health) && bot.health <= 0) return result('dead', 'Spawned but dead; waiting to respawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-        return result('online', 'Connected, authenticated and spawned', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-      case 'respawning':
-        if (Number.isFinite(bot.health) && bot.health <= 0) return result('dead', 'Dead; waiting for the respawn screen', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-        return result('online', 'Respawning at the server spawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-      case 'authenticating':
-        return result(AUTH_ERROR_RE.test(String(lastError || '')) ? 'auth_failed' : 'authenticating', lastError || 'Waiting for password authentication', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-      case 'awaiting_spawn':
-      case 'configuration':
-      case 'handshaking':
-      case 'tcp_connecting':
-      case 'resolving': {
-        const elapsed = machine.stageElapsedMs === null ? '' : ` for ${(machine.stageElapsedMs / 1000).toFixed(1)}s`;
-        const retry = Boolean(bot.lastDisconnect) && (machine.state === 'resolving' || machine.state === 'tcp_connecting');
-        return result(retry ? 'reconnecting' : 'joining', `${retry ? 'Reconnecting — ' : ''}${machine.stageLabel}${elapsed} (session ${machine.generation})`, { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-      }
-      case 'stopping':
-        return result('offline', 'Disconnecting', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-      case 'failed': {
-        const failure = machine.failure || {};
-        const detail = failure.error || lastError || 'Connection failed';
-        return result(failure.code === 'AUTH_FAILED' ? 'auth_failed' : 'offline', `Failed in ${failure.stage || machine.stage}: ${detail}`, { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-      }
-      case 'closed':
-      case 'idle':
-      default:
-        return result('offline', machine.detail || 'No open connection', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
-    }
+
+  const liveMachine = Boolean(machine && machine.generation > 0);
+  const transportConnected = liveMachine ? Boolean(machine.open) : bot.connected !== false;
+  const spawned = liveMachine
+    ? Boolean(machine.spawned) || ['ready', 'respawning'].includes(machine.state)
+    : bot.spawned !== false;
+  const playerListed = serverPlayerListed(bot);
+  // A spawned player is in the server's world even if a readiness flag says
+  // otherwise. A player-info entry proves presence before the spawn packet has
+  // been projected into our local flags.
+  const online = Boolean(transportConnected && (spawned || playerListed));
+  const authPending = Boolean(bot.authRequiredManual)
+    || (bot.passwordRequired === true && bot.authConfirmed !== true && spawned)
+    // Legacy/mock fixtures (and a server that rejected auth before this
+    // runtime had a manual flag) still get an honest, non-offline label.
+    || (bot.authenticated === false && bot.ready !== true && AUTH_ERROR_RE.test(String(lastError || '')));
+  const authenticated = !authPending && (bot.authenticated !== false || spawned);
+
+  const facts = {
+    now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine,
+    transportConnected, spawned, playerListed, online, authPending, authenticated
+  };
+
+  if (!transportConnected) {
+    return result('offline', lastError ? `Disconnected: ${lastError}` : 'No open connection', facts);
+  }
+  if (!spawned && !playerListed) {
+    const retry = Boolean(bot.lastDisconnect) && (!machine || ['resolving', 'tcp_connecting'].includes(machine.state));
+    const detail = machine ? `${machine.stageLabel}${machine.stageElapsedMs === null ? '' : ` for ${(machine.stageElapsedMs / 1000).toFixed(1)}s`}` : 'Connected, waiting for spawn';
+    return result(retry ? 'reconnecting' : 'joining', `${retry ? 'Reconnecting — ' : ''}${detail}`, facts);
   }
 
-  const connected = bot.connected !== false;
-  const spawned = bot.spawned !== false;
-  const authenticated = bot.authenticated !== false;
-  const ready = bot.ready === true || (bot.ready === undefined && connected && spawned && authenticated);
-  const stale = Boolean(connected && spawned && authenticated && lastEventAt && lastEventAgeMs > staleAfterMs);
-
-  if (!connected) {
-    return result('offline', lastError ? `Disconnected: ${lastError}` : 'No open connection', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
-  }
-  if (stale) {
-    return result('stale', `No packet from the server for ${Math.round(lastEventAgeMs / 1000)}s`, { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
-  }
-  if (!spawned) {
-    return result('joining', authenticated ? 'Connected, waiting for spawn' : 'Connected, authenticating and waiting for spawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
-  }
-  // A ready client entity is the strongest signal: the socket, spawn and
-  // authentication must all have succeeded even if one legacy boolean was
-  // stale. Never label a live, ready bot as "Auth failed".
-  if (ready) {
-    if (Number.isFinite(bot.health) && bot.health <= 0) {
-      return result('dead', 'Spawned but dead; waiting to respawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
-    }
-    return result('online', 'Connected, authenticated and spawned', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
-  }
-  if (!authenticated) {
-    const key = AUTH_ERROR_RE.test(String(lastError || '')) ? 'auth_failed' : 'authenticating';
-    return result(key, lastError || 'Waiting for password authentication', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
+  if (authPending) {
+    const failed = Boolean(lastError) && AUTH_ERROR_RE.test(String(lastError)) && bot.authRequiredManual !== true;
+    return result(failed ? 'auth_failed' : 'auth_required_manual', lastError || 'Manual authentication required by the server; gameplay is blocked', facts);
   }
   if (Number.isFinite(bot.health) && bot.health <= 0) {
-    return result('dead', 'Spawned but dead; waiting to respawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
+    return result('dead', 'Spawned but dead; waiting to respawn', facts);
   }
-  return result('initialising', 'Spawned but the client entity is not ready yet', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
+  if (spawned && lastEventAt && lastEventAgeMs > staleAfterMs) {
+    return result('stale', `No packet from the server for ${Math.round(lastEventAgeMs / 1000)}s (still listed by the server)`, facts);
+  }
+
+  // Legacy booleans without a lifecycle machine are still honoured, but only
+  // to decide readiness. Presence already won above: a spawned bot is online.
+  if (machine && machine.generation > 0) {
+    if (machine.state === 'ready' || machine.state === 'respawning') {
+      return result('online', 'Connected, spawned and ready for gameplay', facts);
+    }
+    if (machine.state === 'authenticating') {
+      return result(bot.passwordRequired === true ? 'authenticating' : 'online_not_ready', 'Spawned; waiting for the client entity to become ready', facts);
+    }
+  }
+  const readyFlag = bot.ready === true || (bot.ready === undefined && bot.authenticated !== false);
+  if (!authenticated) {
+    const failed = AUTH_ERROR_RE.test(String(lastError || ''));
+    return result(failed ? 'auth_failed' : 'auth_required_manual', lastError || 'Authentication pending; gameplay is blocked', facts);
+  }
+  if (readyFlag) {
+    return result('online', 'Connected, spawned and ready for gameplay', facts);
+  }
+  return result('online_not_ready', 'Spawned and online; the client entity is not ready yet', facts);
 }
 
-function result(status, detail, { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError = null, machine = null }) {
+function serverPlayerListed(bot) {
+  if (!bot) return false;
+  if (bot.serverPlayerListed === true) return true;
+  if (bot.entity && bot.players && bot.name && bot.players[bot.name]) return true;
+  if (bot.entity) return true;
+  return false;
+}
+
+function result(status, detail, {
+  now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError = null, machine = null,
+  transportConnected = false, spawned = false, playerListed = false, online = false,
+  authPending = false, authenticated = false
+}) {
   const meta = STATUS_META[status] || STATUS_META.unknown;
+  const gameplayReady = Boolean(meta.ready && online && spawned && !authPending && authenticated);
   return {
-    online: meta.online,
+    online: Boolean(meta.online && online),
+    ready: gameplayReady,
+    gameplayReady,
     status,
     statusLabel: meta.label,
     label: meta.label,
     statusDetail: detail,
     detail,
+    transportConnected: Boolean(transportConnected),
+    serverPlayerListed: Boolean(playerListed || spawned),
+    spawned: Boolean(spawned),
+    authenticated: Boolean(authenticated && !authPending),
+    authPending: Boolean(authPending),
+    authRequiredManual: authPending,
     lastEventAt,
     lastEventAgeMs: lastEventAgeMs === undefined && lastEventAt ? Math.max(0, now - lastEventAt) : (lastEventAgeMs ?? null),
     staleAfterMs,
@@ -134,4 +147,4 @@ function result(status, detail, { now, lastEventAt, lastEventAgeMs, staleAfterMs
   };
 }
 
-module.exports = { connectionStatus, STATUS_META, AUTH_ERROR_RE };
+module.exports = { connectionStatus, STATUS_META, AUTH_ERROR_RE, serverPlayerListed };

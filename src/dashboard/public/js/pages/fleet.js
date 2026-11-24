@@ -653,7 +653,7 @@ export const connectionsPage = {
         <div class="callout callout--info">${icon('shield')}<div><strong>Connection gate.</strong> The runtime currently reports <span class="mono">${runtime.autonomyAllowed ? 'autonomy allowed' : 'autonomy gated'}</span>. Bots use <span class="mono">${esc(((config.server && config.server.joinIntervalMs) ?? 0) / 1000)}s</span> artificial join spacing, at <span class="mono">${esc(server.host || '—')}:${esc(server.port || '—')}</span> (${esc(server.resolvedVersion || server.version || 'version unknown')}). Reconnect and disconnect are real runtime actions.</div></div>
         <div class="grid grid--stats">
           ${statCard({ label: 'Configured roster', value: num((config.roster || []).length || 10), iconName: 'users', tone: 'neutral', context: 'Fixed usernames from config' })}
-          ${statCard({ label: 'Ready', value: `${num(rows.filter((bot) => bot.online).length)}<small> / ${rows.length}</small>`, iconName: 'check-circle', tone: rows.length && rows.every((bot) => bot.online) ? 'success' : 'warning', context: 'Connected + authenticated + spawned' })}
+          ${statCard({ label: 'Gameplay ready', value: `${num(rows.filter((bot) => bot.ready || bot.gameplayReady).length)}<small> / ${rows.length}</small>`, iconName: 'check-circle', tone: rows.length && rows.every((bot) => bot.ready || bot.gameplayReady) ? 'success' : 'warning', context: 'Online is counted separately from gameplay readiness' })}
           ${statCard({ label: 'Auth failures', value: num(rows.filter((bot) => bot.status === 'auth_failed').length), iconName: 'key', tone: rows.some((bot) => bot.status === 'auth_failed') ? 'warning' : 'success', context: 'Password rejected or timed out' })}
           ${statCard({ label: 'Errors reported', value: num(rows.filter((bot) => bot.lastError).length), iconName: 'alert', tone: rows.some((bot) => bot.lastError) ? 'danger' : 'success', context: 'Latest adapter error per bot' })}
         </div>
@@ -726,7 +726,7 @@ export const connectionsPage = {
               ['PVP', config.pvp ? 'Enabled' : 'Disabled'],
               ['AI planner', config.ai ? 'Enabled' : 'Disabled'],
               ['Event loop', runtime.eventLoop ? (runtime.eventLoop.samples ? `mean ${runtime.eventLoop.meanMs}ms · p99 ${runtime.eventLoop.p99Ms}ms · max ${runtime.eventLoop.maxMs}ms` : 'collecting samples') : '—'],
-              ['Readiness', `${rows.filter((r) => r.online).length}/${rows.length} ready · ${rows.filter((r) => ['joining', 'reconnecting'].includes(r.status)).length} connecting · ${rows.filter((r) => r.status === 'authenticating').length} authenticating · ${rows.filter((r) => ['offline', 'auth_failed'].includes(r.status)).length} offline`]
+              ['Readiness', `${rows.filter((r) => r.gameplayReady || r.ready).length}/${rows.length} ready · ${rows.filter((r) => r.online).length} online · ${rows.filter((r) => ['joining', 'reconnecting'].includes(r.status)).length} connecting · ${rows.filter((r) => r.authPending || r.status === 'auth_required_manual').length} manual auth · ${rows.filter((r) => ['offline'].includes(r.status)).length} offline`]
             ])}
           </div>
         </section>

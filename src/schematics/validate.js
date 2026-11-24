@@ -25,24 +25,41 @@ function knownBlockSet(version = validationVersion()) {
   }
 }
 
-/** Structural support analysis: how many structural blocks have no neighbour. */
+const CLASS_CACHE = new Map();
+function cachedClass(name) {
+  if (CLASS_CACHE.has(name)) return CLASS_CACHE.get(name);
+  const cls = classOfBlock(name);
+  if (CLASS_CACHE.size < 20000) CLASS_CACHE.set(name, cls);
+  return cls;
+}
+
+/**
+ * Structural support analysis: how many structural blocks have no neighbour.
+ * Numeric packed keys and cached block classes keep the 10,000-design full
+ * validation linear; string keys and a fresh class regex per block made it
+ * quadratic in allocation cost and dominated the whole run.
+ */
 function supportAnalysis(schematic, { maxUnsupportedRatio = 0.05 } = {}) {
-  const occupied = new Set(schematic.blocks.map(([x, y, z]) => `${x},${y},${z}`));
+  const { width: w, length: l } = schematic.dimensions;
+  const key = (x, y, z) => (y * w + x) * l + z;
+  const occupied = new Set(schematic.blocks.map(([x, y, z]) => key(x, y, z)));
+  const paletteNames = schematic.palette.map((entry) => parseBlock(entry).name);
   let checked = 0;
   let unsupported = 0;
   const examples = [];
   for (const [x, y, z, p] of schematic.blocks) {
-    const name = parseBlock(schematic.palette[p]).name;
-    const cls = classOfBlock(name);
+    const name = paletteNames[p];
+    const cls = cachedClass(name);
     if (cls === 'light' || cls === 'vegetation' || cls === 'glass' || cls === 'interior' || cls === 'decoration') continue;
     if (y === 0) continue;
     checked++;
-    const neighbours = [
-      `${x},${y - 1},${z}`, `${x},${y + 1},${z}`,
-      `${x + 1},${y},${z}`, `${x - 1},${y},${z}`,
-      `${x},${y},${z + 1}`, `${x},${y},${z - 1}`
-    ];
-    if (!neighbours.some((k) => occupied.has(k))) {
+    const supported = occupied.has(key(x, y - 1, z))
+      || occupied.has(key(x, y + 1, z))
+      || (x + 1 < w && occupied.has(key(x + 1, y, z)))
+      || (x > 0 && occupied.has(key(x - 1, y, z)))
+      || (z + 1 < l && occupied.has(key(x, y, z + 1)))
+      || (z > 0 && occupied.has(key(x, y, z - 1)));
+    if (!supported) {
       unsupported++;
       if (examples.length < 5) examples.push({ x, y, z, block: name });
     }
@@ -75,6 +92,7 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
   }
   const paletteSet = new Set(schematic.palette.map((entry) => formatBlock(entry)));
   if (paletteSet.size !== schematic.palette.length) issues.invalid.push('palette contains duplicate entries');
+  const placementNames = schematic.palette.map((entry) => placementItem(parseBlock(entry)));
   const materials = {};
   const phaseSet = new Set();
   let outOfBounds = 0;
@@ -83,7 +101,7 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
     if (x < 0 || y < 0 || z < 0 || x >= dims.width || y >= dims.height || z >= dims.length) outOfBounds++;
     if (p < 0 || p >= schematic.palette.length) issues.invalid.push(`palette index out of range: ${p}`);
     phaseSet.add(phase);
-    const name = placementItem(parseBlock(schematic.palette[p]));
+    const name = placementNames[p];
     materials[name] = (materials[name] || 0) + 1;
   }
   if (outOfBounds) issues.invalid.push(`${outOfBounds} blocks outside stated dimensions`);
@@ -152,6 +170,7 @@ function validateLibrary(manifest, { regenerate = true, sampleSize = null, versi
   if (!report.meetsMinimum) report.invalidFiles.push(`only ${designs.length} designs, minimum is ${report.minimumRequired}`);
 
   const seenDetails = new Map();
+  const seenSpecs = new Map();
   let indices = designs.map((_, i) => i);
   if (regenerate && sampleSize && sampleSize < designs.length) {
     const stride = Math.max(1, Math.floor(designs.length / sampleSize));
@@ -167,8 +186,8 @@ function validateLibrary(manifest, { regenerate = true, sampleSize = null, versi
     } else {
       seenDetails.set(geom, entry.id);
     }
-    const specSeen = designs.slice(0, idx).find((d) => d.specHash === entry.specHash);
-    if (specSeen) report.duplicateSpecs.push({ a: specSeen.id, b: entry.id });
+    if (seenSpecs.has(entry.specHash)) report.duplicateSpecs.push({ a: seenSpecs.get(entry.specHash), b: entry.id, hash: entry.specHash });
+    else seenSpecs.set(entry.specHash, entry.id);
     if (!regenerate) {
       if (!entry.blocks && !entry.materials) report.invalidFiles.push(`${entry.id}: missing data`);
       return;
@@ -187,7 +206,7 @@ function validateLibrary(manifest, { regenerate = true, sampleSize = null, versi
     } catch (err) {
       report.invalidFiles.push(`${entry.id}: generation failed: ${err.message}`);
     }
-    if (onProgress && (count % 50 === 0 || count === indices.length - 1)) onProgress({ done: count + 1, total: indices.length });
+    if (onProgress && ((count + 1) % 50 === 0 || count === indices.length - 1)) onProgress({ done: count + 1, total: indices.length });
   });
   report.uniqueDesigns = new Set(designs.map((d) => d.geometryHash)).size;
   report.passed = report.totalEntries >= report.minimumRequired
