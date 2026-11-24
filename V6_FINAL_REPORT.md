@@ -1,7 +1,7 @@
 # V6 connection-lifecycle report
 
 **Branch:** `arena/de11bd2d-chickenbots`  
-**Head:** `0d7a02a` (pushed)  
+**Head:** `f63ebee` (pushed)  
 **Scope:** five-bot disconnect root causes, lifecycle hardening, diagnostics, tests, audit.  
 **Live status:** not claimed. No live ten-minute idle run and no five-bot live-server run were performed in this environment. The local `mc.createServer` 26.1 harness stopped at `socketClosed` before `login`, so it was not used as a join test.
 
@@ -157,6 +157,7 @@ git checkout -- data/schematics/validation-report.json   # report reverted
 - `3532f03` — timer write guards, per-bot join-stall isolation.
 - `4ee7567` — cross-session death evidence and stale cleanup guards.
 - `0d7a02a` — socket write failures routed through bounded cleanup.
+- `f63ebee` — retry-metadata coverage and this report.
 
 All are pushed to `origin/arena/de11bd2d-chickenbots`.
 
