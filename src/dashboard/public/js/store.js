@@ -266,6 +266,10 @@ export async function runQueueAction(action) {
   return result;
 }
 
+export function bots() {
+  return (state.snapshot && state.snapshot.bots) || [];
+}
+
 export function bot(name) {
   return (state.snapshot && state.snapshot.bots || []).find((entry) => entry.name === name) || null;
 }
