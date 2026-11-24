@@ -438,7 +438,20 @@ function registerAll(services, registry) {
         return { ok: result.ok !== false, ...result };
       }
       if (action === 'farm') {
-        const crop = args.slice(2).join(' ') || null;
+        const words = args.slice(2).map((word) => String(word).toLowerCase());
+        const crop = words.join(' ') || null;
+        if (words[0] === 'plant') {
+          const result = await actions.farming.plantCrops({
+            crop: words[1] || 'wheat',
+            count: words[2] === undefined ? 16 : intArg(words[2], 'count', { min: 1, max: 256 })
+          });
+          return { ok: result.ok !== false, ...result };
+        }
+        if (words[0] === 'maintain') {
+          const result = await actions.farming.maintain();
+          return { ok: result.ok !== false, ...result };
+        }
+        if (words[0] === 'status') return { ok: true, ...actions.farming.status() };
         const result = crop && /animal|breed/i.test(crop) ? await actions.farming.feedAnimals() : await actions.farming.harvestAll({ crop });
         return { ok: result.ok !== false, ...result };
       }
@@ -584,7 +597,7 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'farm', category: 'farming', summary: 'Harvest/replant crops or feed animals; stop cancels active farming', usage: 'farm [bot] [harvest|wheat|carrots|potatoes|beetroot|pumpkin|melon|animals|stop]',
+    name: 'farm', category: 'farming', summary: 'Harvest mature crops, establish or maintain a tilled/watered farm, feed animals', usage: 'farm [bot] [harvest|wheat|carrots|potatoes|beetroot|pumpkin|melon|plant [crop] [count]|maintain|status|animals|stop]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
       if (first === 'stop') {
@@ -599,6 +612,18 @@ function registerAll(services, registry) {
       const actions = actionsFor(services, bot.name);
       if (/^animals?$|^breed$/.test(requested)) {
         const result = await actions.farming.feedAnimals();
+        return { ok: result.ok !== false, ...result };
+      }
+      if (requested === 'status') return { ok: true, ...actions.farming.status() };
+      const words = rest.map((word) => String(word).toLowerCase());
+      if (words[0] === 'plant') {
+        const crop = words[1] || 'wheat';
+        const count = words[2] === undefined ? 16 : intArg(words[2], 'count', { min: 1, max: 256 });
+        const result = await actions.farming.plantCrops({ crop, count });
+        return { ok: result.ok !== false, ...result };
+      }
+      if (words[0] === 'maintain') {
+        const result = await actions.farming.maintain();
         return { ok: result.ok !== false, ...result };
       }
       const result = await actions.farming.harvestAll({ crop: requested || null });

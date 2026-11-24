@@ -746,14 +746,15 @@ export const farmingPage = {
       <div class="page">
         ${pageHeader({
           eyebrow: 'Gameplay', title: 'Farming', description: 'Crop plots, seed stocks and animal counts reported by the farming action, per bot.',
-          actions: `<button class="button button--primary" type="button" data-fleet-command="farm">${icon('sprout')} Harvest all</button>`
+          actions: `<button class="button button--primary" type="button" data-fleet-command="farm">${icon('sprout')} Harvest all</button><button class="button" type="button" data-fleet-command="farm plant wheat 16">${icon('leaf')} Plant wheat</button><button class="button" type="button" data-fleet-command="farm maintain">${icon('refresh')} Maintain farms</button>`
         })}
         <div class="grid grid--stats">
-          ${statCard({ label: 'Crops ready', value: num(sum(rows, (row) => (row.crops || []).length)), iconName: 'sprout', tone: 'accent', context: 'Mature crops detected in scans' })}
+          ${statCard({ label: 'Crops ready', value: num(sum(rows, (row) => row.matureCount || 0)), iconName: 'sprout', tone: 'accent', context: 'Mature crops detected in scans' })}
           ${statCard({ label: 'Seed stocks', value: num(sum(rows, (row) => sum(row.seeds || [], (seed) => seed.count))), iconName: 'package', tone: 'info', context: 'Seeds available for replanting' })}
           ${statCard({ label: 'Animals', value: num(sum(rows, (row) => row.animals || 0)), iconName: 'heart', tone: 'neutral', context: 'Nearby animals reported' })}
           ${statCard({ label: 'Harvested', value: num(sum(rows, (row) => (row.stats && row.stats.harvested) || 0)), iconName: 'wheat', tone: 'success', context: 'Lifetime harvest counter' })}
           ${statCard({ label: 'Replanted', value: num(sum(rows, (row) => (row.stats && row.stats.replanted) || 0)), iconName: 'leaf', tone: 'info', context: 'Successful replants after harvest' })}
+          ${statCard({ label: 'Offspring', value: num(sum(rows, (row) => (row.stats && row.stats.animalsBred) || 0)), iconName: 'heart', tone: 'success', context: 'Animal pairs bred' })}
         </div>
         <div class="grid grid--2">
           ${rows.length ? rows.map((row) => `<section class="card">
@@ -769,7 +770,7 @@ export const farmingPage = {
               ${(row.seeds || []).length ? `<div class="chips">${row.seeds.map((seed) => `<span class="chip">${esc(humanize(seed.crop))} · ${num(seed.count)}</span>`).join('')}</div>` : '<div class="muted small">No seeds in inventory.</div>'}
               ${(row.crops || []).length ? `<div class="table-wrap" style="margin-top:10px"><table class="table table--compact"><thead><tr><th>Crop</th><th>Position</th><th>Mature</th></tr></thead><tbody>${row.crops.slice(0, 8).map((crop) => `<tr><td>${esc(humanize(crop.name || crop.type || 'crop'))}</td><td class="mono tiny">${crop.position ? `${crop.position.x}, ${crop.position.y}, ${crop.position.z}` : '—'}</td><td>${crop.mature === false ? badge('Growing', 'warn') : badge('Mature', 'ok')}</td></tr>`).join('')}</tbody></table></div>` : ''}
               ${(row.farms || []).length ? `<div class="divider"></div><div class="tiny muted" style="margin-bottom:6px">Harvested plots remembered by this bot</div><div class="table-wrap"><table class="table table--compact"><thead><tr><th>Crop</th><th>Plot position</th><th>Last harvest</th></tr></thead><tbody>${row.farms.map((plot) => `<tr><td>${esc(humanize(plot.crop || 'crop'))}</td><td class="mono tiny">${plot.position ? `${plot.position.x}, ${plot.position.y}, ${plot.position.z}` : '—'}</td><td class="tiny">${plot.at ? esc(timeAgo(plot.at)) : '—'}</td></tr>`).join('')}</tbody></table></div>` : ''}
-              <div class="row gap-2" style="margin-top:10px">${actionButton('Harvest', `farm ${row.bot}`, 'sprout')}<a class="button button--sm" href="#/bots/${encodeURIComponent(row.bot)}/inventory">Inventory</a></div>
+              <div class="row gap-2" style="margin-top:10px">${actionButton('Harvest', `farm ${row.bot}`, 'sprout')}${actionButton('Plant', `farm ${row.bot} plant wheat 16`, 'leaf')}${actionButton('Maintain', `farm ${row.bot} maintain`, 'refresh')}<a class="button button--sm" href="#/bots/${encodeURIComponent(row.bot)}/inventory">Inventory</a></div>
             </div>
           </section>`).join('') : `<div class="card">${emptyState('No farming status', 'The farming action has not reported yet.', 'sprout')}</div>`}
         </div>

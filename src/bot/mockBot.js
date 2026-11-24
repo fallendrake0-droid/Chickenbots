@@ -5,6 +5,7 @@ const { MockWorld, DROPS } = require('./mockWorld');
 const { delay, CancelledError } = require('../util/async');
 const { distance, key } = require('../util/vec');
 const { BED_NAMES, FOODS, inventorySlotUsage } = require('../world/items');
+const { CROPS, TILLABLE, isMatureCrop } = require('../world/crops');
 const { config } = require('../config');
 
 const PICK_REQUIRED = {
@@ -25,6 +26,7 @@ const RECIPES = {
   wooden_pickaxe: { yield: 1, ingredients: { oak_planks: 3, stick: 2 } },
   wooden_axe: { yield: 1, ingredients: { oak_planks: 3, stick: 2 } },
   wooden_shovel: { yield: 1, ingredients: { oak_planks: 1, stick: 2 } },
+  wooden_hoe: { yield: 1, ingredients: { oak_planks: 2, stick: 2 } },
   wooden_sword: { yield: 1, ingredients: { oak_planks: 2, stick: 1 } },
   stone_pickaxe: { yield: 1, ingredients: { cobblestone: 3, stick: 2 } },
   stone_axe: { yield: 1, ingredients: { cobblestone: 3, stick: 2 } },
@@ -306,8 +308,33 @@ class MockBot extends BotAdapter {
       const sign = block.properties.part === 'head' ? -1 : 1;
       this.world.setBlock({ x: pos.x + dx * sign, y: pos.y, z: pos.z + dz * sign }, 'air');
     }
+    if (block.name === 'pitcher_crop' && block.properties && block.properties.half !== 'upper') {
+      const upper = this.world.getBlock({ x: pos.x, y: pos.y + 1, z: pos.z });
+      if (upper && upper.name === 'pitcher_crop') this.world.setBlock({ x: pos.x, y: pos.y + 1, z: pos.z }, 'air');
+    }
     this.stats.dug++;
     const drops = {};
+    const def = CROPS[block.name];
+    if (def) {
+      const mature = isMatureCrop(block);
+      const seed = (((pos.x * 7 + pos.z * 13 + pos.y) % 3) + 3) % 3;
+      const add = (name, count) => {
+        if (!name || count <= 0) return;
+        drops[name] = (drops[name] || 0) + count;
+        this.addItem(name, count);
+      };
+      if (!mature) {
+        add(def.seed, 1);
+      } else if (def.stem) {
+        add(def.seed, 1);
+      } else if (def.seed === def.produce) {
+        add(def.produce, 1 + seed);
+      } else {
+        add(def.produce, 1);
+        if (def.seedYield) add(def.seed, 1 + (seed % 3));
+      }
+      return { ok: true, block: block.name, drops, mature };
+    }
     const drop = DROPS[block.name] === undefined ? block.name : DROPS[block.name];
     if (drop) {
       const count = block.name.includes('leaves') ? ((pos.x * 7 + pos.z * 13 + pos.y) % 5 === 0 ? 1 : 0) : 1;
@@ -336,6 +363,7 @@ class MockBot extends BotAdapter {
     this.removeItem(itemName, 1);
     this.world.setBlock(pos, name, state);
     if (['chest', 'trapped_chest'].includes(name)) this._mergeChestStorage(pos);
+    if (name === 'water') this._hydrateFarmland(pos);
     if (companion && companion.position) {
       const target = this.getBlock(companion.position);
       if (!target || target.name === 'air' || target.name === wanted) {
@@ -455,6 +483,79 @@ class MockBot extends BotAdapter {
   }
 
   async wake() { this.isSleeping = false; return { ok: true }; }
+
+  _hydrateFarmland(waterPos) {
+    for (let dz = -4; dz <= 4; dz++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        for (const dy of [0, 1]) {
+          const pos = { x: Math.floor(waterPos.x) + dx, y: Math.floor(waterPos.y) + dy, z: Math.floor(waterPos.z) + dz };
+          const block = this.getBlock(pos);
+          if (block && block.name === 'farmland') this.world.setBlock(pos, 'farmland', { ...(block.properties || {}), moisture: 7 });
+        }
+      }
+    }
+  }
+
+  async tillSoil(pos) {
+    if (distance(this.position, pos) > 5) return { ok: false, error: 'too far to till' };
+    const block = this.getBlock(pos);
+    if (!block) return { ok: false, error: 'soil position is unloaded' };
+    if (block.name === 'farmland') return { ok: true, already: true, position: { ...pos } };
+    if (!TILLABLE.has(block.name)) return { ok: false, error: `${block.name} cannot be tilled` };
+    const hoe = this.bestToolFor('hoe');
+    if (!hoe) return { ok: false, error: 'no hoe in inventory' };
+    await this._wait(250);
+    this.world.setBlock(pos, 'farmland', { moisture: this._waterNear(pos) ? 7 : 0 });
+    this.stats.tilled = (this.stats.tilled || 0) + 1;
+    return { ok: true, position: { ...pos }, block: 'farmland', tool: hoe.name || hoe };
+  }
+
+  _waterNear(pos, radius = 4) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (const dy of [0, 1]) {
+          const block = this.getBlock({ x: Math.floor(pos.x) + dx, y: Math.floor(pos.y) + dy, z: Math.floor(pos.z) + dz });
+          if (block && ['water', 'flowing_water'].includes(block.name)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  async feed(animal, itemName) {
+    if (!animal || !itemName) return { ok: false, error: 'feed requires an animal and food' };
+    const entity = typeof animal === 'object' && animal.id !== undefined
+      ? this.world.entities.find((entry) => entry.id === animal.id)
+      : this.world.entities.find((entry) => entry.name === animal || entry.type === animal);
+    if (!entity) return { ok: false, error: 'animal not found' };
+    if (entity.alive === false) return { ok: false, error: 'animal is not alive' };
+    if (entity.baby) return { ok: false, error: 'animal is too young to breed' };
+    if (distance(this.position, entity.position) > 4) return { ok: false, error: 'too far to feed' };
+    if (entity.inLove) return { ok: false, error: 'animal is already in love' };
+    if (this.countItem(itemName) < 1) return { ok: false, error: `no ${itemName}` };
+    this.removeItem(itemName, 1);
+    entity.inLove = true;
+    entity.fedAt = Date.now();
+    this.stats.fed = (this.stats.fed || 0) + 1;
+    const mate = this.world.entities.find((other) => other !== entity && other.alive !== false && !other.baby
+      && (other.name || other.type) === (entity.name || entity.type) && other.inLove
+      && distance(other.position, entity.position) <= 8);
+    if (!mate) return { ok: true, animal: entity.name || entity.type, food: itemName, consumed: 1, verified: true };
+    entity.inLove = false;
+    entity.fedAt = null;
+    mate.inLove = false;
+    mate.fedAt = null;
+    const offspring = this.world.addMob(entity.name || entity.type, {
+      x: (entity.position.x + mate.position.x) / 2,
+      y: entity.position.y,
+      z: (entity.position.z + mate.position.z) / 2
+    }, { baby: true });
+    this.stats.bred = (this.stats.bred || 0) + 1;
+    return {
+      ok: true, animal: entity.name || entity.type, food: itemName, consumed: 1, verified: true,
+      bred: true, offspring: { id: offspring.id, type: offspring.type, baby: true }
+    };
+  }
 
   /** Both halves of a double chest share one storage key. */
   _chestStorageKey(pos) {

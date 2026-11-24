@@ -262,12 +262,13 @@ test('farming can establish a crop from bare soil and harvests return seeds', as
   const { MockWorld } = require('../src/bot/mockWorld');
   const { BotActions } = require('../src/actions');
   const world = new MockWorld();
-  const bot = new MockBot({ name: '00110000', world, inventory: { wheat_seeds: 6 }, position: { x: -6, y: 65, z: -6 } });
+  const bot = new MockBot({ name: '00110000', world, inventory: { wheat_seeds: 6, wooden_hoe: 1, water_bucket: 1 }, position: { x: -6, y: 65, z: -6 } });
   const actions = new BotActions({ bot, taskBoard: new TaskBoard({ now: () => 1000 }), home: { x: -6, y: 65, z: -6 } });
   const planted = await actions.farming.plantCrops({ crop: 'wheat', count: 4 });
   assert.ok(planted.planted > 0, JSON.stringify(planted));
+  world.advanceCrops(8);
   const harvest = await actions.farming.harvestAll({ crop: 'wheat', limit: 4 });
-  assert.ok(harvest.harvested > 0);
+  assert.ok(harvest.harvested > 0, JSON.stringify(harvest));
   assert.ok(bot.countItem('wheat_seeds') >= 1, 'wheat harvest should drop at least one seed');
 });
 

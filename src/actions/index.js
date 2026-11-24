@@ -6,7 +6,7 @@ const { SurvivalController } = require('./survival');
 const { CombatController } = require('./combat');
 const { MiningController } = require('./mining');
 const { WoodcuttingController } = require('./woodcutting');
-const { FarmingController } = require('./farming');
+const { FarmingController, normalizeCrop } = require('./farming');
 const { SleepController } = require('./sleep');
 const { ExplorationController } = require('./exploration');
 const { InventoryManager } = require('./inventory');
@@ -50,6 +50,7 @@ class BotActions {
     this.fishing = new FishingController({ bot, memory, ledger, logger: this.logger });
     this.exploration = new ExplorationController({ bot, memory, home: this.home, logger: this.logger, teamIndex: index });
     this.inventory = new InventoryManager({ bot, ledger, memory, logger: this.logger, home: this.home });
+    this.farming.inventory = this.inventory;
     this.homeBase = new HomeBaseManager({ bots: [bot], world, memory, taskBoard, ledger, library, logger: this.logger });
     this.lastAction = null;
     this.lastActionAt = 0;
@@ -482,17 +483,33 @@ class BotActions {
         break;
       }
       case 'FARM_CROP': {
-        result = await this.farming.harvestAll({ limit: 16, crop: task.params?.crop || null });
-        let planted = 0;
-        const harvested = result.harvested || 0;
-        if (harvested === 0 && task.params?.establish) {
-          const start = await this.farming.plantCrops({ crop: task.params?.crop || 'wheat', count: 16 });
-          planted = start.planted || 0;
-          result.establish = start;
+        const requestedCrop = task.params?.crop === undefined || task.params?.crop === null ? 'wheat' : task.params.crop;
+        const cropName = normalizeCrop(requestedCrop);
+        if (!cropName) {
+          result = { ok: false, error: `unknown crop ${requestedCrop}`, quantity: 0, verified: false };
+          break;
         }
-        result.quantity = harvested + planted;
-        result.verified = result.quantity > 0;
-        if (result.quantity === 0) {
+        const target = Math.max(1, Math.floor(Number(task.params?.count) || Number(task.units?.target) || 16));
+        const establish = Boolean(task.params?.establish);
+        result = await this.farming.harvestAll({ limit: 16, crop: task.params?.crop || null });
+        const existing = this.farming.cropCount({ crop: cropName });
+        const deficit = Math.max(0, target - existing);
+        let start = null;
+        let planted = 0;
+        if (deficit > 0 && (establish || existing === 0)) {
+          start = await this.farming.plantCrops({ crop: cropName, count: Math.min(deficit, 16) });
+          planted = start.planted || 0;
+        }
+        const after = existing + planted;
+        result.establish = start;
+        result.planted = planted;
+        result.cropCount = after;
+        result.quantity = establish
+          ? (planted > 0 ? planted : (after >= target ? target : 0))
+          : (result.produced || 0);
+        result.worked = (result.harvested || 0) > 0 || planted > 0;
+        result.verified = establish ? (planted > 0 || after >= target) : result.quantity > 0;
+        if (result.quantity === 0 && !result.worked) {
           result.ok = true;
           result.pending = true;
           const relocation = await this._relocateForSurfaceWork('farming');
@@ -500,11 +517,21 @@ class BotActions {
         }
         break;
       }
-      case 'FARM_ANIMAL':
+      case 'FARM_ANIMAL': {
         result = await this.farming.feedAnimals();
         result.quantity = result.fed.length;
         result.verified = result.fed.length > 0;
+        result.worked = result.fed.length > 0;
+        if (!result.worked) {
+          // A herd may live somewhere else; do not collapse the objective on
+          // an empty local scan.
+          result.ok = true;
+          result.pending = true;
+          const relocation = await this._relocateForSurfaceWork('animals');
+          if (relocation) result = { ...result, ...relocation, quantity: 0, verified: false };
+        }
         break;
+      }
       case 'EXPLORE':
       case 'FIND_SITE':
         result = await this.exploration.explore({ steps: 3 });

@@ -22,7 +22,7 @@ const { resolveServerVersion } = require('./bot/serverVersion');
 const { connectionStatus } = require('./bot/status');
 
 const STARTER_KIT = {
-  bread: 32, cooked_beef: 16, stone_pickaxe: 2, iron_pickaxe: 1, iron_axe: 1, iron_sword: 1,
+  bread: 32, cooked_beef: 16, stone_pickaxe: 2, iron_pickaxe: 1, iron_axe: 1, iron_sword: 1, iron_hoe: 1,
   shield: 1, torch: 64, oak_log: 96, cobblestone: 192, oak_planks: 96, water_bucket: 2,
   coal: 32, stick: 48, wheat_seeds: 24, oak_sapling: 12, white_bed: 5, iron_ingot: 16,
   diamond_pickaxe: 1, diamond_sword: 1, diamond_chestplate: 1, diamond_helmet: 1,
@@ -537,6 +537,11 @@ class TeamRuntime {
         return;
       }
       this.ticks++;
+      // Crop growth is server-driven in live play. The deterministic world has
+      // no random ticks, so advance real block-state ages on a slow cadence.
+      if (this.simulate && this.world && typeof this.world.advanceCrops === 'function' && this.ticks % 4 === 0) {
+        this.world.advanceCrops(1);
+      }
       for (const bot of this.bots.values()) {
         if (bot.ready && bot.connected !== false && bot.health <= 0) {
           const actions = this.actions && typeof this.actions.get === 'function' ? this.actions.get(bot.name) : null;

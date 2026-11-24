@@ -6,7 +6,8 @@ const { redactString } = require('../util/redact');
 const { classifyKick, sleep } = require('./connection');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { bestTool, FOODS, BED_NAMES, toolTier } = require('../world/items');
+const { FOODS, BED_NAMES, toolTier } = require('../world/items');
+const { TILLABLE } = require('../world/crops');
 
 const HOSTILE = new Set([
   'zombie', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider', 'cave_spider',
@@ -1114,13 +1115,72 @@ class RealBot extends BotAdapter {
     const check = this._assertReady();
     if (check) return check;
     this._syncInventory();
-    const choice = bestTool(this.inventory, category);
+    const choice = this.bestToolFor(category);
     if (!choice) return { ok: false, error: `no ${category} available` };
     const item = this._findItem(choice.name);
     if (!item) return { ok: false, error: `no ${choice.name} in inventory` };
     await this.bot.equip(item, 'hand');
     this._updateEquipmentFromBot();
     return { ok: true, tool: choice.name };
+  }
+
+  async tillSoil(pos) {
+    const check = this._assertReady();
+    if (check) return check;
+    const block = this._blockAt(pos);
+    if (!block) return { ok: false, error: 'soil position is unloaded' };
+    if (block.name === 'farmland') return { ok: true, already: true, position: { ...pos } };
+    if (!TILLABLE.has(block.name)) return { ok: false, error: `${block.name} cannot be tilled` };
+    const equip = await this.equipBestTool('hoe');
+    if (!equip.ok) return equip;
+    if (distance(this.position, pos) > 5) {
+      const move = await this.goTo(pos, { range: 4, timeoutMs: 12000 });
+      if (move.ok === false) return { ok: false, error: move.error || 'cannot reach soil' };
+    }
+    if (typeof this.bot.activateBlock !== 'function') return { ok: false, error: 'mineflayer does not expose activateBlock' };
+    try {
+      try { await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true); } catch (_) { /* look is best-effort */ }
+      await this.bot.activateBlock(block);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    let after = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await sleep(attempt === 0 ? 250 : 350);
+      this._blockCache.delete(`${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`);
+      after = this._blockAt(pos);
+      if (after && after.name === 'farmland') break;
+    }
+    if (!after || after.name !== 'farmland') return { ok: false, error: `tilling left ${after ? after.name : 'unknown'} instead of farmland` };
+    this.stats.tilled = (this.stats.tilled || 0) + 1;
+    return { ok: true, position: { ...pos }, block: 'farmland', tool: equip.tool };
+  }
+
+  async feed(animal, itemName) {
+    const check = this._assertReady();
+    if (check) return check;
+    if (!animal || !itemName) return { ok: false, error: 'feed requires an animal and food' };
+    const id = animal.id;
+    const entity = Object.values(this.bot.entities || {}).find((entry) => entry && (entry.id === id || (!id && entry.name === animal.name)));
+    if (!entity) return { ok: false, error: 'animal not found' };
+    if (distance(this.position, entity.position) > 4) {
+      const move = await this.goTo(entity.position, { range: 2, timeoutMs: 10000 });
+      if (move.ok === false) return { ok: false, error: move.error || 'cannot reach animal' };
+    }
+    const before = this.countItem(itemName);
+    if (before < 1) return { ok: false, error: `no ${itemName}` };
+    const equip = await this.equipItem(itemName);
+    if (!equip.ok) return equip;
+    if (typeof this.bot.activateEntity !== 'function') return { ok: false, error: 'mineflayer does not expose activateEntity' };
+    try {
+      await this.bot.activateEntity(entity);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    await sleep(400);
+    this._syncInventory();
+    const consumed = Math.max(0, before - this.countItem(itemName));
+    return { ok: consumed > 0, animal: animal.name || animal.type || entity.name, food: itemName, consumed, verified: consumed > 0, error: consumed > 0 ? undefined : 'server did not consume the food (breeding cooldown?)' };
   }
 
   async equipItem(name, destination = 'hand') {
@@ -1483,6 +1543,9 @@ class RealBot extends BotAdapter {
   async collectDrops(radius = 12) {
     const check = this._assertReady();
     if (check) return check;
+    // Item entities spawn on the server tick after the block breaks. Give that
+    // tick a chance to arrive before scanning, or a real harvest looks empty.
+    await sleep(120);
     let collected = 0;
     const items = Object.values(this.bot.entities || {}).filter((e) => e.name === 'item' && distance(e.position, this.position) <= radius);
     for (const entity of items) {

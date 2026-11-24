@@ -151,7 +151,9 @@ tests/                      team, excavation, construction, schematics, builder,
 * Mining scans for every Overworld ore, enforces pickaxe tiers, refuses lava-adjacent digs,
   liquid ceilings and unsupported floors, lights tunnels, records ore discoveries.
 * Woodcutting chops trunks top-down, clears attached leaves, collects saplings and replants on the
-  original soil. Farming harvests crops, replants seeds, and feeds animals where the adapter supports it.
+  original soil. Farming reads vanilla crop ages, harvests only mature crops, harvests pumpkin/melon
+  fruit without breaking the stem, replants and verifies each block, tills soil with a real hoe,
+  builds a hydrated plot when needed, and feeds/breeds animals with a verified food deduction.
 * Inventory fullness uses real storage slots (36, stack-aware, and the live
   window slots when Mineflayer exposes them), never a count of distinct item names. When a mining,
   chopping, farming or excavation run fills a bot, it walks to the team's spawn-anchored home,
@@ -375,11 +377,11 @@ requires an explicit `confirm` token or `confirmed:true`.
 ```
 help [command]                 status                         diagnostics
 ai [status|off]                team [state|on|off|memory|locks|tasks|roles|leader|formation|resources|objectives|follow|regroup|retreat|defend|reassign]
-bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore]|chop [type]|farm [crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
+bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore]|chop [type]|farm [plant [crop] [count]|maintain|status|crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
 inventory [bot]                eat [bot]                       sleep [bot|all|auto on|off]
 survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
 auto <eat|healing|armour|tools|crafting|shield|weapon|totem|potions|food> [on|off] [bot|all]
-mine [bot] [ore|stone|stop]     chop [bot] [species|stop]       farm [bot] [crop|animals|stop]
+mine [bot] [ore|stone|stop]     chop [bot] [species|stop]       farm [bot] [plant [crop] [count]|maintain|status|crop|animals|stop]
 fish [bot|all] [casts]          fish stop [bot|all]
 defend [bot|stop]              explore [bot] [steps] | explore stop [bot|all]
 combat [status|on|off|start|stop|mode|guard|duel|rescue]   pve [on|off|status]   pvp [on|off|status]

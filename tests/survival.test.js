@@ -193,7 +193,8 @@ test('farming harvests crops and replants seeds', async () => {
   const result = await farming.harvest({ x: 2, y: 65, z: 2 });
   assert.equal(result.ok, true, result.error);
   assert.equal(result.replanted, true);
-  assert.equal(world.getBlock({ x: 2, y: 65, z: 2 }).name, 'wheat_seeds');
+  assert.equal(world.getBlock({ x: 2, y: 65, z: 2 }).name, 'wheat');
+  assert.equal(world.getBlock({ x: 2, y: 65, z: 2 }).properties.age, 0, 'replant restarts the crop at age 0');
   assert.ok(bot.countItem('wheat') >= 1);
   assert.equal(farming.stats.harvested, 1);
 });

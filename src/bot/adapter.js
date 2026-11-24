@@ -2,7 +2,7 @@
 
 const { distance } = require('../util/vec');
 const {
-  bestTool, bestFood, PICKAXES, AXES, SHOVELS, SWORDS, armorPoints,
+  bestTool, bestFood, PICKAXES, AXES, SHOVELS, SWORDS, HOES, armorPoints,
   BED_NAMES, categoryOf, sumCategory, inventorySlotUsage
 } = require('../world/items');
 
@@ -143,8 +143,12 @@ class BotAdapter {
 
   distanceTo(pos) { return distance(this.position, pos); }
 
+  /** Optional farming primitives; controllers degrade honestly without them. */
+  async tillSoil() { return { ok: false, error: 'adapter does not support tilling soil' }; }
+  async feed() { return { ok: false, error: 'adapter does not support animal feeding' }; }
+
   bestToolFor(category) {
-    const table = { pickaxe: PICKAXES, axe: AXES, shovel: SHOVELS, sword: SWORDS }[category];
+    const table = { pickaxe: PICKAXES, axe: AXES, shovel: SHOVELS, sword: SWORDS, hoe: HOES }[category];
     if (!table) return null;
     return bestTool(this.inventory, table);
   }

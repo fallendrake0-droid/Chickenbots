@@ -16,7 +16,7 @@ function timeOfDay(bot) {
   return 0;
 }
 
-const SURFACE_BLOCKS = /(_log|_leaves|_sapling|_propagule|wheat|carrots|potatoes|beetroots|melon|pumpkin|farmland|chest|barrel|_bed|oak_door|torch)$/;
+const SURFACE_BLOCKS = /(_log|_leaves|_sapling|_propagule|wheat|carrots|potatoes|beetroots|melon|pumpkin|torchflower|pitcher|farmland|chest|barrel|_bed|oak_door|torch)$/;
 
 /** Find blocks by name through the world when supported, else bounded scan. */
 function findBlocks(bot, names, { near = bot.position, radius = 24, limit = 50, yFrom = null, yTo = null } = {}) {

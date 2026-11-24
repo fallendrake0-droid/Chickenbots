@@ -1,6 +1,7 @@
 'use strict';
 
 const { key, distance } = require('../util/vec');
+const { CROPS } = require('../world/crops');
 
 const HOSTILE_TYPES = new Set(['zombie', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider', 'cave_spider', 'witch', 'slime', 'phantom', 'pillager', 'vindicator', 'evoker', 'vex', 'ravager', 'silverfish', 'guardian', 'elder_guardian', 'breeze', 'warden', 'zombie_villager', 'magma_cube', 'blaze', 'ghast', 'piglin', 'hoglin', 'zoglin', 'wither_skeleton', 'enderman']);
 
@@ -294,18 +295,65 @@ class MockWorld {
     return true;
   }
 
+  /**
+   * Deterministic crop growth for the simulator. Live growth comes from the
+   * server; here each advance raises real `age` block states and lets mature
+   * pumpkin/melon stems place one fruit on adjacent empty soil.
+   */
+  advanceCrops(ticks = 1) {
+    const step = Math.max(1, Math.floor(Number(ticks) || 1));
+    let grown = 0;
+    let fruits = 0;
+    const additions = [];
+    for (const [k, name] of this.overrides) {
+      const def = CROPS[name];
+      if (!def) continue;
+      const props = this.states.get(k) || {};
+      if (name === 'pitcher_crop' && props.half === 'upper') continue;
+      const age = Number(props.age);
+      if (!Number.isFinite(age)) continue;
+      if (age < def.maxAge) {
+        const next = Math.min(def.maxAge, age + step);
+        this.states.set(k, { ...props, age: next });
+        grown++;
+        continue;
+      }
+      if (!def.stem || !def.fruit) continue;
+      const [x, y, z] = k.split(',').map(Number);
+      const hasFruit = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => this.blockNameAt(x + dx, y, z + dz) === def.fruit);
+      if (hasFruit) continue;
+      const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort((a, b) => (hash3(x + a[0], y, z + a[1], 91) % 4) - (hash3(x + b[0], y, z + b[1], 91) % 4));
+      for (const [dx, dz] of dirs) {
+        const fx = x + dx;
+        const fz = z + dz;
+        const target = this.blockNameAt(fx, y, fz);
+        const below = this.blockNameAt(fx, y - 1, fz);
+        const above = this.blockNameAt(fx, y + 1, fz);
+        if (target === 'air' && above === 'air' && ['farmland', 'dirt', 'grass_block', 'coarse_dirt'].includes(below)) {
+          additions.push({ pos: { x: fx, y, z: fz }, name: def.fruit });
+          fruits++;
+          break;
+        }
+      }
+    }
+    for (const addition of additions) this.setBlock(addition.pos, addition.name);
+    this._scanCache.clear();
+    return { ok: true, ticks: step, grown, fruits };
+  }
+
   isSolid(pos) {
     const block = this.getBlock(pos);
     return Boolean(block && block.name !== 'air' && block.name !== 'water' && block.name !== 'lava');
   }
 
-  addMob(type, position, { health = 20, id = null } = {}) {
+  addMob(type, position, { health = null, id = null, baby = false } = {}) {
     const entity = {
       id: id || `mob-${this.entities.length + 1}`,
       type,
       name: type,
       position: { x: position.x, y: position.y, z: position.z },
-      health,
+      health: health === null ? (baby ? 10 : 20) : health,
+      baby: Boolean(baby),
       hostile: HOSTILE_TYPES.has(type),
       alive: true,
       createdAt: this.time
