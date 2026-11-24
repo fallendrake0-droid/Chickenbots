@@ -1,6 +1,6 @@
 import { api, ApiError } from './api.js';
 import { botOnline } from './botStatus.js';
-import { configureRoster } from './utils.js';
+import { configureRoster, roster } from './utils.js';
 
 const PREFS_KEY = 'chickenbots.prefs.v1';
 const SAMPLE_LIMIT = 80;
@@ -98,8 +98,19 @@ function applySnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return;
   state.snapshot = snapshot;
   state.lastStateAt = Date.now();
-  if (Array.isArray(snapshot.bots) && snapshot.bots.length && !state.settings) {
-    configureRoster(snapshot.bots.map((entry) => entry.name));
+  // The runtime config is authoritative, not the roster fetched when this tab
+  // was opened. Re-sync on every snapshot so a renamed roster appears without
+  // a hard refresh, including on the Settings page which renders
+  // state.settings.roster directly.
+  const configured = snapshot.diagnostics && snapshot.diagnostics.config && snapshot.diagnostics.config.roster;
+  const authoritative = Array.isArray(configured) && configured.length
+    ? configured
+    : (Array.isArray(snapshot.bots) && snapshot.bots.length ? snapshot.bots.map((entry) => entry.name) : null);
+  if (authoritative && authoritative.join('\u0000') !== roster().join('\u0000')) {
+    configureRoster(authoritative);
+    if (state.settings) state.settings.roster = authoritative;
+  } else if (authoritative && state.settings) {
+    state.settings.roster = authoritative;
   }
   state.error = null;
   const point = { at: Date.now(), bots: {} };

@@ -77,6 +77,13 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     next();
   });
   app.use(express.json({ limit: '2mb' }));
+  // Live telemetry must never be served from a browser or proxy cache: a
+  // cached /api/settings response is enough to show a retired roster.
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+  });
   const publicDir = path.join(__dirname, 'public');
   app.use(express.static(publicDir, {
     index: 'index.html',

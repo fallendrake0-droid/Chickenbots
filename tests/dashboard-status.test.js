@@ -20,7 +20,7 @@ function request(port, path, method = 'GET', body = null) {
     }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data), headers: res.headers }));
     });
     req.on('error', reject);
     if (payload) req.write(payload);
@@ -117,6 +117,13 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
     let state = await request(port, '/api/state');
     assert.equal(state.body.state.overview.online, 5);
     assert.deepEqual(state.body.state.bots.map((bot) => bot.name), NAMES);
+    // The website must get the configured names from the live runtime, never
+    // from a cached /api/settings or a client-side default roster.
+    assert.deepEqual(state.body.state.diagnostics.config.roster, NAMES);
+    assert.match(String(state.headers['cache-control']), /no-store/);
+    const settings = await request(port, '/api/settings');
+    assert.deepEqual(settings.body.settings.roster, NAMES);
+    assert.match(String(settings.headers['cache-control']), /no-store/);
 
     const kicked = await request(port, '/api/bot/________/disconnect', 'POST', {});
     assert.equal(kicked.body.ok, true);
