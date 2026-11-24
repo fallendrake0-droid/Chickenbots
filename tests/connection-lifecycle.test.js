@@ -313,7 +313,7 @@ test('stale events from a replaced socket cannot touch the new session', async (
   await real.disconnect('test');
 });
 
-test('a duplicate spawn without a respawn packet is explained and does not rewrite the session', async () => {
+test('a respawn packet without a death is ignored and the spawn stays a duplicate', async () => {
   const { real, fake } = newReal();
   const pending = real.connect({ timeoutMs: 500 });
   await new Promise((resolve) => setImmediate(resolve));
@@ -329,10 +329,21 @@ test('a duplicate spawn without a respawn packet is explained and does not rewri
   assert.equal(real.lastSpawn.respawned, false);
   assert.ok(real.connection.snapshot().timeline.some((entry) => entry.event === 'spawn_duplicate'));
 
+  // Some servers send this during the initial join. There was no death, so it
+  // must not turn into a "respawned" line or reset the session.
+  bot._client.emit('respawn');
+  assert.equal(real.connection.state, STATES.READY, 'a respawn without a death must be ignored');
+  assert.ok(real.connection.snapshot().timeline.some((entry) => entry.event === 'respawn_ignored'));
+  bot.emit('spawn');
+  assert.equal(real.lastSpawn.respawned, false);
+  assert.equal(real.lastSpawn.at, firstSpawnAt);
+
+  // After a real death the same packet is a genuine respawn.
+  real.lastDeath = { at: Date.now(), cause: 'test', confidence: 'confirmed' };
   bot._client.emit('respawn');
   assert.equal(real.connection.state, STATES.RESPAWNING);
   bot.emit('spawn');
-  assert.equal(real.lastSpawn.respawned, true, 'a server respawn packet is a real respawn');
+  assert.equal(real.lastSpawn.respawned, true, 'a respawn packet after a death is a real respawn');
   assert.equal(real.connection.state, STATES.READY);
   await real.disconnect('test');
 });

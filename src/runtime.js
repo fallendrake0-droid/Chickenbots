@@ -409,6 +409,12 @@ class TeamRuntime {
         this.connectionErrors[bot.name] = reason;
         return { ok: false, error: reason, paused: true };
       }
+      if (!this.simulate && !this.serverVersion) {
+        const resolved = await this._ensureServerVersion();
+        if (!resolved || this.shutdownRequested) {
+          return { ok: false, error: this.serverVersionError || 'server version unavailable', code: 'VERSION_UNRESOLVED' };
+        }
+      }
       attempt++;
       // Aternos throttles an immediate rejoin after a real session ends. Wait
       // behind the hold-down *before* taking the join slot, so the server never
@@ -686,6 +692,11 @@ class TeamRuntime {
    * disconnect is respected until an explicit reconnect clears that intent.
    */
   async _recoverDisconnected() {
+    // Aternos can be asleep when the runtime starts. The version probe is the
+    // only thing allowed to touch the server until it resolves; starting five
+    // retry loops here burned join slots on VERSION_UNRESOLVED and delayed the
+    // first real login by tens of seconds.
+    if (!this.simulate && !this.serverVersion) return;
     let started = 0;
     for (const name of BOT_NAMES) {
       const bot = this.bots.get(name);
@@ -706,9 +717,12 @@ class TeamRuntime {
         }), this.shutdownController.signal);
       }
       if (this.shutdownRequested) return;
+      const hadSession = Number(bot.lastSessionEndedAt || 0) > 0;
       const task = this._startConnection(bot);
       task.then((result) => {
-        if (result && result.ok) this.logger.info(`[${name}] reconnect supervisor restored the bot`);
+        // An initial join is not a restoration. Only claim the supervisor
+        // restored a bot when this bot actually had a ready session before.
+        if (result && result.ok && hadSession) this.logger.info(`[${name}] reconnect supervisor restored the bot`);
         return result;
       }).catch(() => null);
       started++;

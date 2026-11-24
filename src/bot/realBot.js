@@ -1079,6 +1079,17 @@ class RealBot extends BotAdapter {
       });
       client.on('respawn', () => {
         if (!owns()) return;
+        // Some servers emit a respawn packet during the initial join, after a
+        // dimension change, or alongside a health correction even though the
+        // bot never died. Treating that as a respawn printed "respawned" right
+        // after "ready" and rewrote the session clock. A real death produces a
+        // `death` event first, so only honour the packet when one was seen.
+        const deathSinceSpawn = Boolean(this.lastDeath && this.lastDeath.at >= this.spawnAt);
+        if (this._spawnedThisSession && this.connection.state === STATES.READY && !deathSinceSpawn) {
+          this.connection.event('respawn_ignored', 'respawn packet without a death; not treated as a respawn');
+          this.logger.debug(`[${this.name}] TRACE in respawn without a death; ignored`);
+          return;
+        }
         this._respawnPacketSeen = true;
         this.connection.event('respawn', 'server respawn packet');
         if (this.passwordRequired && !this.authConfirmed) this._transition(STATES.AUTHENTICATING, 'respawn while authentication is pending', { stage: 'auth' });

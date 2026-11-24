@@ -636,14 +636,18 @@ commissioning.
   the chunk burst. The Connections page reports mean/p99/max delay from `monitorEventLoopDelay`.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
-  real version instead of sending five bots into mineflayer's autoVersion crash path.
+  real version instead of sending five bots into mineflayer's autoVersion crash path. While the probe
+  is unresolved the reconnect supervisor does not start login sockets, so a sleeping server is not
+  charged as five bot connection attempts or retry backoff.
   The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy
   advertises a newer status name than the protocol it answered with, the protocol mapping wins.
   `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail and auth timing. Per-packet
   movement, keepalive and position traces stay off even then unless `MC_TRACE_PACKETS=true`: writing
   that volume to a terminal can block the event loop and cost the socket its keepalive. A kicked bot
   gets a pre-cleanup disconnect snapshot with the session generation, stage, timings, keep-alive and
-  tick-loop counters, plus a bounded lifecycle timeline. The Connections dashboard renders the same
+  tick-loop counters, plus a bounded lifecycle timeline. A server respawn packet that arrives without
+  a preceding death is recorded as `respawn_ignored`; the following spawn is a duplicate, not a
+  `respawned` line. The Connections dashboard renders the same
   timeline as per-bot cards. Passwords are
   never printed; auth commands, echoed `/register`/`/login` chat, configured secret values and
   password/token-shaped metadata are redacted centrally before they reach the terminal, log store or

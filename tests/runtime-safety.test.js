@@ -46,3 +46,57 @@ test('pausing autonomy never stops reconnect supervision', async () => {
   assert.equal(recovered, 1, 'a paused runtime must still restore dropped bots');
   assert.equal(runtime.ticking, false);
 });
+
+test('bots wait for the version probe instead of burning attempts on VERSION_UNRESOLVED', async () => {
+  const runtime = new TeamRuntime({ simulate: false, connect: true, dashboard: false });
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  runtime._ensureServerVersion = async () => {
+    await gate;
+    runtime.serverVersion = '26.1';
+    return true;
+  };
+  runtime._acquireJoinSlot = async () => () => {};
+  runtime._markJoinSuccess = () => ({ strikes: 0, maxStrikes: 10 });
+  runtime._anchorHomeToSpawn = () => {};
+  const connects = [];
+  const bot = {
+    name: '________', ready: false, retryPaused: false, lastSessionEndedAt: 0,
+    version: 'auto', passwordRequired: false,
+    connect: async () => { connects.push('connect'); bot.ready = true; return { ok: true }; }
+  };
+  runtime.bots = new Map([[bot.name, bot]]);
+  const task = runtime._connectWithRetry(bot);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(connects, [], 'no socket may be opened before the version is resolved');
+  releaseGate();
+  const result = await task;
+  assert.equal(result.ok, true);
+  assert.equal(connects.length, 1);
+  runtime.eventLoopDelay.disable();
+});
+
+test('the supervisor only claims it restored a bot that had a previous session', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const logs = [];
+  runtime.logger = { info: (message) => logs.push(String(message)), warn() {}, error() {}, debug() {} };
+  const initial = {
+    name: '________', connected: false, ready: false, spawned: false,
+    authenticated: false, lastSessionEndedAt: 0
+  };
+  runtime.bots = new Map([[initial.name, initial]]);
+  let starts = 0;
+  runtime._startConnection = () => { starts++; return Promise.resolve({ ok: true }); };
+  await runtime._recoverDisconnected();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts, 1);
+  assert.ok(!logs.some((line) => line.includes('reconnect supervisor restored')), 'an initial join is not a restoration');
+
+  const returning = { ...initial, lastSessionEndedAt: Date.now() - 1000 };
+  runtime.bots = new Map([[returning.name, returning]]);
+  await runtime._recoverDisconnected();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts, 2);
+  assert.ok(logs.some((line) => line.includes('reconnect supervisor restored')), 'a real reconnect is reported');
+  runtime.eventLoopDelay.disable();
+});
