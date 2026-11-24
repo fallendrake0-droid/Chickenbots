@@ -100,6 +100,7 @@ async function main() {
   }
   logger.info('runtime starting');
   logger.info(`roster: ${BOT_NAMES.join(', ')}`);
+  logger.info(`join spacing: ${(config.server.joinIntervalMs / 1000).toFixed(1)}s between bot logins${config.server.joinJitterMs ? ` + up to ${(config.server.joinJitterMs / 1000).toFixed(1)}s jitter` : ''}`);
   logger.info(args.simulate ? 'mode: deterministic simulation' : `mode: live (${config.server.host}:${config.server.port}, version ${config.server.version})`);
   logger.info(`logging: ${config.logging.level} (per-packet traces ${config.logging.tracePackets ? 'on' : 'off; set MC_TRACE_PACKETS=true to enable'})`);
   if (!args.simulate) {

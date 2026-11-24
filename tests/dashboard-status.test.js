@@ -120,9 +120,11 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
     // The website must get the configured names from the live runtime, never
     // from a cached /api/settings or a client-side default roster.
     assert.deepEqual(state.body.state.diagnostics.config.roster, NAMES);
+    assert.equal(state.body.state.diagnostics.config.server.joinIntervalMs, 10000);
     assert.match(String(state.headers['cache-control']), /no-store/);
     const settings = await request(port, '/api/settings');
     assert.deepEqual(settings.body.settings.roster, NAMES);
+    assert.equal(settings.body.settings.server.joinIntervalMs, 10000);
     assert.match(String(settings.headers['cache-control']), /no-store/);
 
     const kicked = await request(port, '/api/bot/________/disconnect', 'POST', {});

@@ -31,6 +31,8 @@ test('configuration preserves the five usernames, server defaults and safety swi
   assert.equal(config.server.host, 'cr3xlol.aternos.me');
   assert.equal(config.server.port, 55742);
   assert.equal(config.server.version, 'auto');
+  assert.equal(config.server.joinIntervalMs, 10000);
+  assert.equal(config.server.joinJitterMs, 0);
   assert.equal(config.dashboard.port, 3000);
   assert.equal(config.dashboard.host, '0.0.0.0');
   assert.equal(config.autonomy.pvp, false);

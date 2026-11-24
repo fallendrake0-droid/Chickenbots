@@ -196,7 +196,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     res.json({
       ok: true,
       settings: {
-        server: { host: config.server.host, port: config.server.port, version: config.server.version, auth: config.server.auth },
+        server: { host: config.server.host, port: config.server.port, version: config.server.version, auth: config.server.auth, joinIntervalMs: config.server.joinIntervalMs, joinJitterMs: config.server.joinJitterMs, rejoinDelayMs: config.server.rejoinDelayMs },
         dashboard: { host: config.dashboard.host, port: config.dashboard.port },
         security: { tokenRequired: Boolean(accessToken), passwordConfigured: Boolean(config.server.loginPassword || config.server.registerPassword) },
         roster: config.team.names,

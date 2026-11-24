@@ -155,7 +155,10 @@ function statusSnapshot(services) {
           port: config.server.port,
           version: config.server.version,
           resolvedVersion: runtime ? runtime.serverVersion : null,
-          versionError: runtime ? runtime.serverVersionError : null
+          versionError: runtime ? runtime.serverVersionError : null,
+          joinIntervalMs: config.server.joinIntervalMs,
+          joinJitterMs: config.server.joinJitterMs,
+          rejoinDelayMs: config.server.rejoinDelayMs
         },
         dashboard: { host: config.dashboard.host, port: config.dashboard.port },
         pvp: config.autonomy.pvp,
