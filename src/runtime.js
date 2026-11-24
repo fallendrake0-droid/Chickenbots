@@ -517,9 +517,9 @@ class TeamRuntime {
     try {
       if (this.allBotsReady) this.autonomyArmed = true;
       this._syncBots();
-      if (this.paused) return;
-      // Connection supervision must run even while the autonomy gate is closed;
-      // otherwise a bot that fails after the initial retry budget is never restored.
+      // Connection supervision must run while paused and while the autonomy
+      // gate is closed. Pausing work must never leave a disconnected bot out of
+      // the server until an operator notices.
       if (!this.simulate && this.shouldConnect) {
         this.supervisorTicks++;
         if (this.supervisorTicks % 2 === 0 && !this.supervisorBusy) {
@@ -529,6 +529,7 @@ class TeamRuntime {
             .finally(() => { this.supervisorBusy = false; });
         }
       }
+      if (this.paused) return;
       if (!this.autonomyAllowed) {
         // A ready bot must still eat, flee or defend itself while the team waits
         // for the remaining members; otherwise it stands still and is slain by

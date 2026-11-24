@@ -71,6 +71,40 @@ test('shutdown abort wakes a reconnect sleep immediately', async () => {
   assert.ok(Date.now() - started < 1000);
 });
 
+test('anti-afk activity keeps an idle session alive without interrupting real work', () => {
+  const real = new RealBot({ name: '________' });
+  const controls = [];
+  let swings = 0;
+  let moving = false;
+  real.bot = {
+    entity: { onGround: true },
+    pathfinder: { isMoving: () => moving },
+    swingArm() { swings++; },
+    setControlState(state, value) { controls.push([state, value]); }
+  };
+  real.connected = true;
+  real.spawned = true;
+  real.authenticated = true;
+  real.health = 20;
+
+  real._antiAfkPulse();
+  real._antiAfkPulse();
+  real._antiAfkPulse();
+  assert.equal(swings, 3);
+  assert.deepEqual(controls, [], 'no movement while the first three pulses only swing');
+  real._antiAfkPulse();
+  assert.deepEqual(controls, [['jump', true]], 'the fourth pulse proves real movement');
+  assert.ok(real._antiAfkJumpTimer, 'the jump is released on a timer');
+
+  moving = true;
+  real._antiAfkPulses = 3;
+  real._antiAfkPulse();
+  assert.equal(controls.length, 1, 'a working pathfinder is never interrupted');
+  real._stopAntiAfk();
+  assert.equal(real._antiAfkTimer, null);
+  assert.equal(real._antiAfkJumpTimer, null);
+});
+
 test('a bot with a password stays unauthenticated until the server confirms login', async () => {
   const { real, commands } = authHarness({ loginPassword: 'secret' });
   assert.equal(real.ready, false);

@@ -33,6 +33,9 @@ test('configuration preserves the five usernames, server defaults and safety swi
   assert.equal(config.server.version, 'auto');
   assert.equal(config.server.joinIntervalMs, 10000);
   assert.equal(config.server.joinJitterMs, 0);
+  assert.equal(config.server.connectStaggerMs, 10000);
+  assert.equal(config.server.connectJitterMs, 0);
+  assert.equal(config.server.rejoinDelayMs, 10000);
   assert.equal(config.dashboard.port, 3000);
   assert.equal(config.dashboard.host, '127.0.0.1');
   assert.equal(config.dashboard.allowInsecure, false);

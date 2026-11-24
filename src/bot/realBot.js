@@ -96,6 +96,7 @@ class RealBot extends BotAdapter {
     this._connectionGeneration = 0;
     this._tickEndSent = false;
     this._antiAfkTimer = null;
+    this._antiAfkJumpTimer = null;
     this._antiAfkPulses = 0;
     this.kickKind = null;
     this.retryPaused = false;
@@ -1651,25 +1652,51 @@ class RealBot extends BotAdapter {
   get chatLog() { return this._chatLog.slice(-50); }
 
   /**
-   * Paper/Bukkit idle-kick plugins often ignore a static position packet.
-   * Swing the arm periodically: it is a real player action, costs nothing and
-   * is not a movement packet, so it cannot fight the pathfinder.
+   * Keep idle sessions alive without fighting the pathfinder.
+   *
+   * A swing every 30s proves the client is active. Some idle-kick plugins only
+   * count real movement, so every fourth pulse also taps jump while the bot is
+   * standing safely on the ground with no path, dig or container open. This
+   * never runs mid-task and the movement is vertical, so it cannot walk a bot
+   * off a farm or into lava.
    */
   _startAntiAfk() {
     this._stopAntiAfk();
-    this._antiAfkTimer = setInterval(() => {
-      if (!this.ready || !this.bot) return;
-      try {
-        if (typeof this.bot.swingArm === 'function') this.bot.swingArm();
-        this._antiAfkPulses++;
-      } catch (_) { /* an animation must never drop the session */ }
-    }, 45000);
+    this._antiAfkTimer = setInterval(() => this._antiAfkPulse(), 30000);
     if (typeof this._antiAfkTimer.unref === 'function') this._antiAfkTimer.unref();
+  }
+
+  _antiAfkPulse() {
+    if (!this.ready || !this.bot) return;
+    try {
+      if (typeof this.bot.swingArm === 'function') this.bot.swingArm();
+      this._antiAfkPulses++;
+    } catch (_) { /* an animation must never drop the session */ }
+    if (this._antiAfkPulses % 4 !== 0) return;
+    if (this._movementLock || this.inWater || this.inLava || this.health <= 0) return;
+    const entity = this.bot.entity;
+    if (!entity || !entity.onGround || entity.vehicle) return;
+    if (this.bot.pathfinder && typeof this.bot.pathfinder.isMoving === 'function' && this.bot.pathfinder.isMoving()) return;
+    if (this.bot.targetDigBlock || this.bot.currentWindow) return;
+    if (typeof this.bot.setControlState !== 'function') return;
+    const owner = this.bot;
+    try {
+      owner.setControlState('jump', true);
+    } catch (_) { return; }
+    if (this._antiAfkJumpTimer) clearTimeout(this._antiAfkJumpTimer);
+    this._antiAfkJumpTimer = setTimeout(() => {
+      if (this.bot === owner) {
+        try { owner.setControlState('jump', false); } catch (_) { /* session ended */ }
+      }
+    }, 220);
+    if (typeof this._antiAfkJumpTimer.unref === 'function') this._antiAfkJumpTimer.unref();
   }
 
   _stopAntiAfk() {
     if (this._antiAfkTimer) clearInterval(this._antiAfkTimer);
     this._antiAfkTimer = null;
+    if (this._antiAfkJumpTimer) clearTimeout(this._antiAfkJumpTimer);
+    this._antiAfkJumpTimer = null;
   }
 
   async disconnect(reason = 'shutdown') {

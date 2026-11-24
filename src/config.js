@@ -104,13 +104,13 @@ const config = {
     // server sends keep-alives every ~15-20s, so 90s is safely above normal.
     staleAfterMs: envInt('MC_STALE_AFTER_MS', 90000),
     // Aternos throttles a reconnect that follows a real session end. Hold the
-    // first rejoin long enough to stay out of the limiter; initial joins are
-    // not delayed by this.
-    rejoinDelayMs: envInt('MC_REJOIN_DELAY_MS', 30000),
-    // Aternos and vanilla proxies throttle rapid joins. Open one socket at a
-    // time, with jitter, instead of starting all five bots simultaneously.
-    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 5000),
-    connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 1000),
+    // first rejoin briefly; the join queue and throttle backoff still protect
+    // against a server that rejects it. Initial joins use the same 10s spacing.
+    rejoinDelayMs: envInt('MC_REJOIN_DELAY_MS', 10000),
+    // Never start the next initial connection task before the fleet join
+    // interval has elapsed. Jitter is zero so the spacing is exactly 10s.
+    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 10000),
+    connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 0),
     // Paper/Bukkit applies a per-IP connection throttle (`connection-throttle`,
     // commonly 30-60s on Aternos). Every bot in this fleet shares one source
     // IP, so joins must be at least this far apart or the server rejects them

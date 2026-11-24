@@ -326,7 +326,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `10000` / `0` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so five bots on one host must join slowly or the server rejects them. |
-| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `5000` / `1000` | gap before queuing each bot's initial connection task; the join queue still enforces `MC_JOIN_INTERVAL_MS` |
+| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `10000` / `0` | exact gap before queuing each bot's initial connection task; the join queue also enforces `MC_JOIN_INTERVAL_MS` |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | first fleet-wide pause after a throttle or a socket that never reaches spawn; repeats double the pause up to the maximum |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
@@ -337,7 +337,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
 | `MC_KEEPALIVE_MS` | `120000` | client-side keepalive watchdog; raise this if Aternos lag causes `client timed out` drops |
 | `MC_STALE_AFTER_MS` | `90000` | a connected bot with no inbound packet for this long is reported as `No packets`, never `Online` |
-| `MC_REJOIN_DELAY_MS` | `30000` | hold-down before the first rejoin after a real session ends; stops the Aternos "Connection throttled" loop without slowing initial joins |
+| `MC_REJOIN_DELAY_MS` | `10000` | hold-down before the first rejoin after a real session ends; the fleet reconnect supervisor keeps trying and the throttle queue backs off if the server rejects it |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `127.0.0.1` | bind address; loopback by default because the dashboard can issue commands |
@@ -600,8 +600,9 @@ commissioning.
   first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
   `settings.connection-throttle: 0` in `bukkit.yml` (or a value below `MC_JOIN_INTERVAL_MS`) and restart
   it; otherwise keep the interval generous. A bot that drops re-enters the same queue after
-  `MC_REJOIN_DELAY_MS`, and connected bots swing their arm every 45s so idle/AFK plugins do not kick
-  the team while the rest of the roster joins.
+  `MC_REJOIN_DELAY_MS` (10s by default), and the reconnect supervisor keeps running even while
+  autonomy is paused. Connected bots swing their arm every 30s and jump in place every fourth pulse
+  when they are safely idle, so idle/AFK plugins do not kick the team while the rest of the roster joins.
   When `MC_LOGIN_PASSWORD` is set (there is no built-in default; put it in an untracked `.env`),
   every join sends only `/login` because the accounts already exist. If the server answers `You are not registered.`, Chickenbots
   creates that account once (`/register`) and retries `/login`. Set
@@ -610,7 +611,9 @@ commissioning.
   cannot kick the bot for moving before login. A failed or unconfirmed password disconnects the bot
   instead of letting it move. An operator/staff kick or a ban pauses automatic retries for that bot;
   reconnect explicitly from the dashboard after reviewing the reason. Generic network/protocol kicks
-  still use bounded, jittered backoff, and the runtime never deliberately spams reconnects.
+  still use bounded, jittered backoff, and the runtime never deliberately spams reconnects. Bans and
+  whitelist/operator kicks still pause retries: automatically evading moderation would turn a
+  temporary kick into a ban. All other drops are retried indefinitely by default.
   A server-side `Invalid move player packet` kick on Minecraft 26.x is normally caused by a missing
   `client_tick_end`; Chickenbots sends it after every movement packet. If kicks continue, set
   `MC_VERSION` to the server's exact version instead of `auto`.
