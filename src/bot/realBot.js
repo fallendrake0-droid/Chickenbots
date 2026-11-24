@@ -101,6 +101,12 @@ class RealBot extends BotAdapter {
     this.worldView = null;
     this._chatLog = [];
     this._chatListeners = new Set();
+    // 26.1 can deliver the same system chat through mineflayer's `message`
+    // event and the raw `system_chat` packet. Keep the last ingested line so
+    // the synchronous duplicate is dropped without hiding a later repeat.
+    this._lastChatIngest = null;
+    this._ChatMessage = null;
+    this._authChatSeen = 0;
     this._spawnWaiters = new Set();
     this._movementLock = false;
     this._clientWriteOriginal = null;
@@ -525,7 +531,7 @@ class RealBot extends BotAdapter {
     this.logger[summaryLevel](`[${this.name}] DISCONNECT SNAPSHOT ${at} (${snapshot.reason}) generation=${snapshot.generation} state=${snapshot.state} stage=${snapshot.stage} spawned=${snapshot.spawned} authenticated=${snapshot.authenticated} connected=${snapshot.connected} ready=${snapshot.ready} held=${this._suppressedMovement} entity=${JSON.stringify(snapshot.position)} serverPosition=${JSON.stringify(snapshot.serverPosition)} timings=${JSON.stringify(snapshot.stageTimings)} keepAlive=${JSON.stringify(snapshot.keepAlive)} ticker=${JSON.stringify(snapshot.ticker)}`);
     const entryLevel = (snapshot.spawned || snapshot.ready) ? 'error' : 'debug';
     for (const entry of (snapshot.timeline || []).slice(-16)) {
-      this.logger[entryLevel](`[${this.name}] LIFECYCLE ${new Date(entry.at).toISOString()} ${entry.kind} ${entry.from ? `${entry.from}->` : ''}${entry.to || entry.stage || entry.event} ${entry.detail || ''}`);
+      this.logger[entryLevel](`[${this.name}] LIFECYCLE ${new Date(entry.at).toISOString()} ${entry.kind} ${entry.from ? `${entry.from}->` : ''}${entry.to || entry.event || entry.stage} ${entry.detail || ''}`);
     }
     for (const entry of this._traceLog.slice(-20)) {
       this.logger.error(`[${this.name}] TRACE ${entry.at} ${entry.direction} ${entry.packet} pos=${entry.x ?? '-'},${entry.y ?? '-'},${entry.z ?? '-'} yaw=${entry.yaw ?? '-'} pitch=${entry.pitch ?? '-'} ground=${entry.onGround} flags=${JSON.stringify(entry.flags)} auth=${entry.auth} locked=${entry.locked}`);
@@ -612,6 +618,9 @@ class RealBot extends BotAdapter {
     this._traceLog = [];
     this.lastServerPosition = null;
     this._authWaiters = new Set();
+    this._lastChatIngest = null;
+    this._ChatMessage = null;
+    this._authChatSeen = 0;
     this._loginWaiters = new Set();
     this._tcpWaiters = new Set();
     this._pendingConnectionError = null;
@@ -877,6 +886,7 @@ class RealBot extends BotAdapter {
     const generation = this.connection.generation;
     const owns = () => this.bot === bot && this.connection.isCurrent(generation);
     this._ownsEvent = owns;
+    this._installChatCompat(bot);
     bot.on('login', () => {
       if (!owns()) return;
       this._markEvent();
@@ -1248,20 +1258,114 @@ class RealBot extends BotAdapter {
     });
     bot.on('message', (message) => {
       if (this.bot !== bot) return;
-      this._markEvent();
-      const text = message.toString();
-      const safe = this._redact(text);
-      const plain = String(text || '').replace(/\u00a7./g, '').trim();
-      if (this.name && plain.includes(this.name) && /(slain|killed|shot|blown up|burned|burn|drowned|fell|withered|starved|suffocat|died|death|magic|fireball|pummeled|impaled|stung|frozen)/i.test(plain)) {
-        this.lastDeathMessage = plain.slice(0, 240);
+      let text = '';
+      try {
+        text = message == null ? '' : message.toString();
+      } catch (err) {
+        this.logger.debug(`[${this.name}] TRACE chat message could not be formatted: ${err.message}`);
+        return;
       }
-      this.logger.debug(`[${this.name}] TRACE chat: ${safe}`);
-      // Only the redacted text is retained. Auth listeners still receive the
-      // raw chat line locally so login confirmation parsing keeps working.
-      this._chatLog.push({ at: Date.now(), text: safe });
-      if (this._chatLog.length > 200) this._chatLog.shift();
-      for (const listener of this._chatListeners) listener(text);
+      this._ingestChatText(text, 'message');
     });
+  }
+
+  /**
+   * Convert every chat representation used by the supported protocol versions
+   * into plain text. 1.20.3+ sends NBT components, while minecraft-protocol's
+   * camelCase systemChat event already provides a JSON string. prismarine-chat
+   * understands both; a decode failure is logged and never crashes the socket.
+   */
+  _chatTextFrom(payload) {
+    if (payload == null) return '';
+    const ChatMessage = this._getChatMessageClass();
+    if (typeof payload === 'string') {
+      if (!ChatMessage) return payload;
+      try { return ChatMessage.fromNotch(payload).toString(); } catch (_) { return payload; }
+    }
+    if (!ChatMessage) return '';
+    try {
+      const message = ChatMessage.fromNotch(payload);
+      return message ? message.toString() : '';
+    } catch (err) {
+      this.logger.debug(`[${this.name}] TRACE chat component could not be decoded: ${err.message}`);
+      return '';
+    }
+  }
+
+  _getChatMessageClass() {
+    if (this._ChatMessage) return this._ChatMessage;
+    const registry = this.bot && this.bot.registry;
+    if (!registry) return null;
+    try {
+      this._ChatMessage = require('prismarine-chat')(registry);
+    } catch (err) {
+      this.logger.debug(`[${this.name}] TRACE prismarine-chat unavailable: ${err.message}`);
+      this._ChatMessage = null;
+    }
+    return this._ChatMessage;
+  }
+
+  _ingestChatText(text, source = 'message') {
+    const raw = String(text == null ? '' : text);
+    const plain = raw.replace(/\u00a7./g, '').trim();
+    if (!plain) return false;
+    const at = Date.now();
+    if (this._lastChatIngest && this._lastChatIngest.text === plain && at - this._lastChatIngest.at < 25) return false;
+    this._lastChatIngest = { text: plain, at };
+    this._markEvent();
+    const safe = this._redact(plain);
+    if (this.name && plain.includes(this.name) && /(slain|killed|shot|blown up|burned|burn|drowned|fell|withered|starved|suffocat|died|death|magic|fireball|pummeled|impaled|stung|frozen)/i.test(plain)) {
+      this.lastDeathMessage = plain.slice(0, 240);
+    }
+    this.logger.debug(`[${this.name}] TRACE chat (${source}): ${safe}`);
+    // During the password exchange every server line is operationally useful:
+    // AuthMe normally answers in system chat, and the old debug-only trace hid
+    // the exact reason a confirmation never matched. Keep it bounded.
+    if (this._authWaiters.size > 0 && this._authChatSeen < 10) {
+      this._authChatSeen += 1;
+      this.logger.info(`[${this.name}] AUTH CHAT (${source}): ${safe}`);
+    }
+    // Only the redacted text is retained. Auth listeners still receive the
+    // raw chat line locally so login confirmation parsing keeps working.
+    this._chatLog.push({ at, text: safe });
+    if (this._chatLog.length > 200) this._chatLog.shift();
+    for (const listener of [...this._chatListeners]) {
+      try { listener(raw); } catch (err) {
+        this.logger.debug(`[${this.name}] TRACE chat listener failed: ${err.message}`);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Mineflayer reads minecraft-protocol's camelCase systemChat event. Attach
+   * our own listeners first and also read the raw system_chat/profileless_chat
+   * packets, so a library-side formatting change cannot silently swallow the
+   * server's login confirmation. Duplicate lines are collapsed by
+   * _ingestChatText, not by discarding the protocol fallback.
+   */
+  _installChatCompat(bot) {
+    const client = bot && bot._client;
+    if (!client || typeof client.on !== 'function') return false;
+    const deliver = (payload, source) => {
+      if (this.bot !== bot) return;
+      const text = this._chatTextFrom(payload);
+      if (text) this._ingestChatText(text, source);
+    };
+    const attach = (event, handler) => {
+      if (typeof client.prependListener === 'function') client.prependListener(event, handler);
+      else client.on(event, handler);
+    };
+    attach('systemChat', (data) => {
+      if (data && data.formattedMessage != null) deliver(data.formattedMessage, 'systemChat');
+    });
+    attach('system_chat', (data) => {
+      if (data && data.content != null) deliver(data.content, 'system_chat');
+    });
+    attach('profileless_chat', (data) => {
+      if (data && data.message != null) deliver(data.message, 'profileless_chat');
+    });
+    return true;
   }
 
   /**
@@ -1455,37 +1559,87 @@ class RealBot extends BotAdapter {
     });
   }
 
-  /** Send one auth command and wait for the server's chat confirmation. */
+  /**
+   * Send an auth command and wait for the server's chat confirmation.
+   *
+   * The command is re-sent at bounded intervals inside the same timeout
+   * budget. A single write can be lost while the server is still attaching
+   * the player to its auth plugin, and merely waiting longer cannot recover
+   * that. The timeout is not extended: the total wait remains authTimeoutMs.
+   */
   _sendAuthCommand(command, kind) {
     const success = kind === 'register'
-      ? /successfully registered|registration (?:successful|complete)|you are now registered|already registered|now logged in|successfully logged in|already logged in|login successful/i
-      : /successfully logged in|you are now logged in|now logged in|already logged in|welcome back|logged in successfully|login successful|logged in\.?$/i;
+      ? /successfully registered|registration (?:successful|complete)|you are now registered|already registered|now logged in|successfully logged in|already logged in|login successful|successfully authenticated|authentication successful|you (?:have been|are) (?:logged in|authenticated)/i
+      : /successfully logged in|you are now logged in|now logged in|already logged in|welcome back|logged in successfully|login successful|logged in\.?$|successfully authenticated|authentication successful|you (?:have been|are) (?:logged in|authenticated)/i;
 
-    const failure = /wrong password|incorrect password|invalid password|password (?:is )?(?:wrong|incorrect)|not registered|please register|register first|too many (?:attempts|tries)|kicked/i;
+    const failure = /wrong password|incorrect password|invalid password|password (?:is )?(?:wrong|incorrect)|not registered|please register|register first|too many (?:attempts|tries)|kicked|unknown command|unknown or incomplete command|usage:\s*\/login|authentication failed|login failed/i;
     return new Promise((resolve) => {
       let settled = false;
       let timer;
+      let retryTimer;
+      let attempts = 0;
+      let lastChat = '';
       const finish = (value) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (retryTimer) clearInterval(retryTimer);
         off();
         this._authWaiters.delete(finish);
         resolve(value);
       };
       const off = this.onChat((text) => {
         const clean = String(text || '').replace(/\u00a7./g, '').trim();
+        if (!clean) return;
+        // The server may echo the submitted command; never carry a raw
+        // password into the timeout error or the disconnect snapshot.
+        lastChat = this._redact(clean).slice(0, 240);
         if (success.test(clean)) finish({ ok: true, kind, message: clean, alreadyRegistered: /already registered/i.test(clean) });
         else if (failure.test(clean)) finish({ ok: false, error: clean, kind });
       });
       this._authWaiters.add(finish);
-      timer = setTimeout(() => finish({ ok: false, code: 'AUTH_TIMEOUT', error: `timed out after ${this.authTimeoutMs}ms waiting for ${kind} confirmation from the server`, kind }), this.authTimeoutMs);
-      this.logger.debug(`[${this.name}] auth ${kind}: sending command (password redacted), timeout=${this.authTimeoutMs}ms`);
-      try {
-        this.bot.chat(command);
-      } catch (err) {
-        finish({ ok: false, code: 'AUTH_SEND_FAILED', error: err.message, kind });
-      }
+      this._authChatSeen = 0;
+      const send = () => {
+        if (settled) return;
+        attempts += 1;
+        this.logger.info(`[${this.name}] auth ${kind}: sending command (password hidden, attempt ${attempts}, timeout=${this.authTimeoutMs}ms)`);
+        try {
+          const client = this.bot && this.bot._client;
+          let sent;
+          // In production use the protocol client directly. Mineflayer's chat
+          // wrapper queues the write behind a promise chain, so a missing or
+          // throwing client.chat() becomes an unhandled rejection and looks
+          // exactly like "the server never answered". Injected test adapters
+          // still use their bot.chat() stub.
+          if (!this._createBot && client && typeof client.chat === 'function') {
+            sent = client.chat(command);
+          } else if (this.bot && typeof this.bot.chat === 'function') {
+            // Injected adapters and pre-play-state clients use the wrapper.
+            sent = this.bot.chat(command);
+          } else {
+            throw new Error('bot has no chat()');
+          }
+          if (sent && typeof sent.catch === 'function') {
+            sent.catch((err) => finish({ ok: false, code: 'AUTH_SEND_FAILED', error: err.message, kind, attempts }));
+          }
+        } catch (err) {
+          finish({ ok: false, code: 'AUTH_SEND_FAILED', error: err.message, kind, attempts });
+        }
+      };
+      timer = setTimeout(() => finish({
+        ok: false,
+        code: 'AUTH_TIMEOUT',
+        kind,
+        attempts,
+        error: `timed out after ${this.authTimeoutMs}ms waiting for ${kind} confirmation from the server`
+          + (lastChat ? ` (last server chat: ${lastChat})` : ' (no chat reply was received)')
+      }), this.authTimeoutMs);
+      const retryEveryMs = Math.max(250, Math.min(4000, Math.floor(this.authTimeoutMs / 3)));
+      send();
+      // A synchronous confirmation or send failure settles before the retry
+      // interval is armed; never create a timer that finish() has already
+      // missed, or the process keeps an auth waiter alive forever.
+      if (!settled && retryEveryMs < this.authTimeoutMs) retryTimer = setInterval(send, retryEveryMs);
     });
   }
 
@@ -1495,6 +1649,13 @@ class RealBot extends BotAdapter {
       return { ok: true, required: false };
     }
     if (!this.bot || !this.connected || !this.spawned) return { ok: false, code: 'AUTH_DISCONNECTED', error: 'cannot authenticate before spawn' };
+    if (this.loginPassword && !/\{password\}/.test(config.server.loginCommand)) {
+      return { ok: false, code: 'AUTH_CONFIG', error: 'MC_LOGIN_COMMAND must contain {password}', kind: 'login' };
+    }
+    if (this.registerPassword && !/\{password\}/.test(config.server.registerCommand)) {
+      return { ok: false, code: 'AUTH_CONFIG', error: 'MC_REGISTER_COMMAND must contain {password}', kind: 'register' };
+    }
+    this._authChatSeen = 0;
     // Freeze movement until the password is accepted. physicsEnabled alone is
     // not enough: mineflayer's updatePosition() keeps sending packets.
     this._lockMovement();

@@ -214,6 +214,120 @@ test('auth confirmation is logged before held movement is released', async () =>
   await real.disconnect('test complete');
 });
 
+test('a 26.1 system_chat packet is decoded and confirms password authentication', async () => {
+  const logs = [];
+  const logger = { debug() {}, info(message) { logs.push(String(message)); }, warn() {}, error() {} };
+  const fake = new FakeBot();
+  fake.registry = require('prismarine-registry')('26.1');
+  fake.chat = () => {
+    setImmediate(() => fake._client.emit('system_chat', {
+      content: { type: 'compound', value: { text: { type: 'string', value: 'You are now logged in' } } },
+      isActionBar: false
+    }));
+  };
+  const real = new RealBot({
+    name: '________', createBot: () => fake, logger,
+    loginPassword: 'secret', registerPassword: '', authEnabled: true, authDelayMs: 1, authTimeoutMs: 500
+  });
+  real.connection.begin({ host: 'example.test', port: 25565 });
+  for (const state of [STATES.TCP_CONNECTING, STATES.HANDSHAKING, STATES.CONFIGURATION, STATES.AWAITING_SPAWN, STATES.AUTHENTICATING]) {
+    assert.equal(real.connection.transition(state), true);
+  }
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  real._spawnedThisSession = true;
+  assert.equal(real._installChatCompat(fake), true);
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(real.authConfirmed, true);
+  assert.equal(real.authenticated, true);
+  assert.ok(real.chatLog.some((line) => line.text.includes('You are now logged in')), JSON.stringify(real.chatLog));
+  assert.ok(logs.some((line) => line.includes('AUTH CHAT (system_chat)')), logs.join('\n'));
+  await real.disconnect('test complete');
+});
+
+test('camelCase and raw system chat for the same line are counted once', () => {
+  const fake = new FakeBot();
+  fake.registry = require('prismarine-registry')('26.1');
+  const real = new RealBot({ name: '________', createBot: () => fake, loginPassword: 'secret', registerPassword: '' });
+  real.bot = fake;
+  real._installChatCompat(fake);
+  const component = { type: 'compound', value: { text: { type: 'string', value: 'Login successful.' } } };
+  fake._client.emit('systemChat', { formattedMessage: JSON.stringify({ text: 'Login successful.' }) });
+  fake._client.emit('system_chat', { content: component, isActionBar: false });
+  assert.equal(real.chatLog.filter((line) => line.text === 'Login successful.').length, 1, JSON.stringify(real.chatLog));
+});
+
+test('an auth command with no reply is re-sent inside the same timeout budget', async () => {
+  const fake = new FakeBot();
+  const commands = [];
+  fake.chat = (line) => { commands.push(line); };
+  const real = new RealBot({
+    name: '________', createBot: () => fake,
+    loginPassword: 'secret', registerPassword: '', authEnabled: true, authDelayMs: 0, authTimeoutMs: 700
+  });
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  const result = await real._sendAuthCommand('/login secret', 'login');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'AUTH_TIMEOUT');
+  assert.ok(result.attempts >= 2, JSON.stringify(result));
+  assert.equal(commands.length, result.attempts);
+  assert.match(result.error, /no chat reply was received/);
+});
+
+test('the protocol client chat path is used in production and its reply is ingested', async () => {
+  const fake = new FakeBot();
+  fake.registry = require('prismarine-registry')('26.1');
+  const commands = [];
+  fake._client.chat = (line) => {
+    commands.push(line);
+    setImmediate(() => fake._client.emit('systemChat', { formattedMessage: JSON.stringify({ text: 'Login successful.' }) }));
+  };
+  const real = new RealBot({ name: '________', loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 500 });
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  real._installChatCompat(fake);
+  const result = await real._sendAuthCommand('/login secret', 'login');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(commands, ['/login secret']);
+});
+
+test('a timeout diagnostic never echoes an auth password', async () => {
+  const fake = new FakeBot();
+  fake.chat = (line) => { setImmediate(() => real._ingestChatText(line, 'test-echo')); };
+  const real = new RealBot({
+    name: '________', createBot: () => fake,
+    loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 300
+  });
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  const result = await real._sendAuthCommand('/login secret', 'login');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'AUTH_TIMEOUT');
+  assert.doesNotMatch(result.error, /secret/);
+  assert.match(result.error, /\[redacted\]/);
+});
+
+test('a synchronous protocol chat failure fails auth instead of timing out', async () => {
+  const fake = new FakeBot();
+  fake._client.chat = () => { throw new Error('chat write rejected'); };
+  const real = new RealBot({ name: '________', loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 12000 });
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  const started = Date.now();
+  const result = await real._sendAuthCommand('/login secret', 'login');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'AUTH_SEND_FAILED');
+  assert.match(result.error, /chat write rejected/);
+  assert.ok(Date.now() - started < 1000, 'a failed chat write must not wait for the auth timeout');
+});
+
 test('a spawn that arrives before the spawn waiter is not lost when auth is still pending', async () => {
   const real = new RealBot({ name: '________', createBot: () => new FakeBot(), loginPassword: 'secret', registerPassword: '' });
   real.connection.begin({ host: 'example.test', port: 25565 });

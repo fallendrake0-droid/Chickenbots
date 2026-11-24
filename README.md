@@ -332,7 +332,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
-| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
+| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and total confirmation window for password auth; the command is re-sent inside that window so one lost chat write does not become a false timeout |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so ten bots do not retry together |
 | `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
@@ -648,8 +648,11 @@ commissioning.
   charged as ten bot connection attempts or retry backoff.
   The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy
   advertises a newer status name than the protocol it answered with, the protocol mapping wins.
-  `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail and auth timing. Per-packet
-  movement, keepalive and position traces stay off even then unless `MC_TRACE_PACKETS=true`: writing
+  `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail and auth timing. During the
+  password exchange every server chat line is also printed once as `AUTH CHAT (source)` (bounded) so
+  an unexpected prompt or rejection is visible without debug logging; the auth command is re-sent
+  inside `MC_AUTH_TIMEOUT_MS` instead of waiting once. Per-packet movement, keepalive and position
+  traces stay off even then unless `MC_TRACE_PACKETS=true`: writing
   that volume to a terminal can block the event loop and cost the socket its keepalive. A kicked bot
   gets a pre-cleanup disconnect snapshot with the session generation, stage, timings, keep-alive and
   tick-loop counters, plus a bounded lifecycle timeline. A server respawn packet that arrives without
