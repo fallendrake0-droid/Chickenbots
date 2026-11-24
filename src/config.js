@@ -109,8 +109,13 @@ const config = {
     // Client-requested chunk distance. 'far' (12) makes the server send up to
     // 625 chunks per bot; five simultaneous joins then parse/decompress them
     // on the protocol thread, which is enough to starve the 20 tps tick loop.
-    // 'short' (8) keeps normal awareness while bounding that burst.
-    viewDistance: envViewDistance('MC_VIEW_DISTANCE', 'short'),
+    // The live 17:25 run still blocked for 40s at 'short' (8), so the safe
+    // default is 'tiny' (6); a slow host can lower it further with 2-5.
+    viewDistance: envViewDistance('MC_VIEW_DISTANCE', 'tiny'),
+    // Pause the inbound socket after each kernel read so a burst of chunk
+    // packets cannot occupy one uninterrupted event-loop turn. Keepalive and
+    // tick timers get a turn between reads.
+    inboundYield: envBool('MC_INBOUND_YIELD', true),
     // Handshake/login and the configuration exchange have separate budgets.
     loginTimeoutMs: envInt('MC_LOGIN_TIMEOUT_MS', 30000),
     configurationTimeoutMs: envInt('MC_CONFIGURATION_TIMEOUT_MS', 15000),

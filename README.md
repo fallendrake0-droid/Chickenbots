@@ -335,7 +335,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
 | `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
-| `MC_VIEW_DISTANCE` | `short` | client-requested chunk radius: `tiny` (6), `short` (8), `normal` (10), `far` (12), or 2–32. The default bounds the chunk decompression burst when five bots join at once; `far` can block the protocol event loop long enough to miss tick/keepalive deadlines |
+| `MC_VIEW_DISTANCE` | `tiny` | client-requested chunk radius: `tiny` (6), `short` (8), `normal` (10), `far` (12), or 2–32. The live fleet still stalled for 40s at `short`; `tiny` is the safe default. Lower it to 2–5 on a slow host |
+| `MC_INBOUND_YIELD` | `true` | pause the inbound socket between kernel reads so a chunk burst cannot monopolise one event-loop turn |
 | `MC_LOGIN_TIMEOUT_MS` | `30000` | handshake/login stage timeout; separate from configuration, spawn and AuthMe so failures are diagnosable |
 | `MC_CONFIGURATION_TIMEOUT_MS` | `15000` | configuration-exchange budget once the server sends `start_configuration` |
 | `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
@@ -631,9 +632,11 @@ commissioning.
   up to 625 chunks per bot, and `minecraft-protocol` decompresses those packets synchronously on the
   event loop. Five joins (even staggered) can therefore freeze timers for tens of seconds, miss the
   server's keep-alive deadline and surface as `EPIPE` right after the block clears. Bots request
-  `MC_VIEW_DISTANCE=short` (8) by default; use `tiny` (6) on a slow host or when five bots join close
-  together, and only raise it when the dashboard's live event-loop delay shows the host can absorb
-  the chunk burst. The Connections page reports mean/p99/max delay from `monitorEventLoopDelay`.
+  `MC_VIEW_DISTANCE=tiny` (6) by default; the 17:25 run still blocked for 40s at `short`, so use
+  2–5 on a slow host, and only raise the distance when the dashboard's live event-loop delay shows
+  the host can absorb the chunk burst. The inbound socket also yields between kernel reads
+  (`MC_INBOUND_YIELD=true`). The Connections page reports mean/p99/max delay from
+  `monitorEventLoopDelay`.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
   real version instead of sending five bots into mineflayer's autoVersion crash path. While the probe

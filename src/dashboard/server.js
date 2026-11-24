@@ -120,7 +120,11 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   const invalidate = () => { snapshotCache = { at: 0, value: null }; };
   const snapshot = (force = false) => {
     if (!force && snapshotCache.value && Date.now() - snapshotCache.at < SNAPSHOT_CACHE_MS) return snapshotCache.value;
-    snapshotCache = { at: Date.now(), value: statusSnapshot(services) };
+    const started = Date.now();
+    const value = statusSnapshot(services);
+    const elapsed = Date.now() - started;
+    if (elapsed >= 1000) services.logger?.warn(`dashboard state snapshot took ${elapsed}ms; it blocked the event loop`);
+    snapshotCache = { at: Date.now(), value };
     return snapshotCache.value;
   };
   const eventClients = new Set();

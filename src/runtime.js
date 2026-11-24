@@ -562,7 +562,10 @@ class TeamRuntime {
     try {
       if (this.allBotsReady) this.autonomyArmed = true;
       this._checkEventLoopDelay();
+      const syncStarted = Date.now();
       this._syncBots();
+      const syncMs = Date.now() - syncStarted;
+      if (syncMs >= 1000) this.logger.warn(`state sync took ${syncMs}ms; the event loop was blocked inside _syncBots`);
       // Connection supervision must run while paused and while the autonomy
       // gate is closed. Pausing work must never leave a disconnected bot out of
       // the server until an operator notices.
@@ -580,7 +583,10 @@ class TeamRuntime {
         // A ready bot must still eat, flee or defend itself while the team waits
         // for the remaining members; otherwise it stands still and is slain by
         // the first zombie that finds it.
+        const safetyStarted = Date.now();
         await this._safetyOnlyTick();
+        const safetyMs = Date.now() - safetyStarted;
+        if (safetyMs >= 2000) this.logger.warn(`pre-join safety pass took ${safetyMs}ms; a ready bot cannot keep the fleet waiting on a blocking safety action`);
         return;
       }
       this.ticks++;

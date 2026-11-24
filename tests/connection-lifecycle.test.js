@@ -151,8 +151,27 @@ test('the client tick scheduler emits one tick_end per tick and defers a second 
   assert.equal(writes.length, stoppedAt, 'a stopped scheduler cannot emit another tick');
 });
 
+test('inbound socket reads yield between bursts so timers can run', async () => {
+  const real = new RealBot({ name: '________', createBot: () => new FakeBot() });
+  const socket = new EventEmitter();
+  socket.destroyed = false;
+  let pauses = 0;
+  let resumes = 0;
+  socket.pause = () => { pauses++; };
+  socket.resume = () => { resumes++; };
+  const client = new EventEmitter();
+  client.socket = socket;
+  real.bot = { _client: client };
+  assert.equal(real._installInboundYield(client), true);
+  socket.emit('data', Buffer.from('chunk'));
+  assert.equal(pauses, 1, 'the socket must pause after a kernel read');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(resumes, 1, 'the next event-loop turn must resume it');
+  await real.disconnect('test complete').catch(() => null);
+});
+
 test('the client asks for a bounded chunk radius so five joins cannot block the tick loop', async () => {
-  assert.equal(config.server.viewDistance, 'short');
+  assert.equal(config.server.viewDistance, 'tiny');
   const { real, fake, options } = newReal('01010100');
   const pending = real.connect();
   for (let i = 0; i < 80 && !fake(); i++) await new Promise((resolve) => setTimeout(resolve, 10));

@@ -121,6 +121,7 @@ class RealBot extends BotAdapter {
     this._serverTickingState = null;
     this._tickEndSent = false;
     this._lastTickEndAt = 0;
+    this._lastInboundPacketAt = 0;
     this._keepAlive = { received: 0, replies: 0, lastReceivedAt: 0, lastReplyAt: 0, maxGapMs: 0, warnings: 0, lastWarningAt: 0 };
     this.lastDisconnect = null;
     this._antiAfkTimer = null;
@@ -159,6 +160,36 @@ class RealBot extends BotAdapter {
    * kick the bot with "Invalid move player packet received" before /register
    * can complete.
    */
+  /**
+   * Give timers a turn between kernel reads. A single inbound burst can hold
+   * thousands of compressed chunk packets; decompression happens synchronously
+   * in minecraft-protocol, so without this pause the whole fleet misses its
+   * tick_end/keepalive deadlines while the protocol stream drains.
+   */
+  _installInboundYield(client) {
+    const socket = client && client.socket;
+    if (!socket || typeof socket.on !== 'function' || typeof socket.pause !== 'function') return false;
+    if (!config.server.inboundYield || socket.__cbInboundYield) return false;
+    socket.__cbInboundYield = true;
+    let paused = false;
+    const onData = () => {
+      if (paused || socket.destroyed) return;
+      paused = true;
+      try { socket.pause(); } catch (_) { paused = false; return; }
+      setImmediate(() => {
+        paused = false;
+        if (!socket.destroyed && this.bot && this.bot._client === client) {
+          try { socket.resume(); } catch (_) { /* socket ended */ }
+        }
+      });
+    };
+    socket.on('data', onData);
+    const remove = () => { try { socket.removeListener('data', onData); } catch (_) { /* ended */ } };
+    if (typeof client.once === 'function') client.once('end', remove);
+    client.once('close', remove);
+    return true;
+  }
+
   _installClientTrace() {
     const client = this.bot && this.bot._client;
     if (!client || typeof client.write !== 'function' || this._clientWriteOriginal) return;
@@ -521,6 +552,7 @@ class RealBot extends BotAdapter {
     this._pendingConnectionError = null;
     this._tickEndSent = false;
     this._lastTickEndAt = 0;
+    this._lastInboundPacketAt = 0;
     this._serverTickingState = null;
     this._tcpConnected = false;
     this._tcpAt = 0;
@@ -1005,6 +1037,8 @@ class RealBot extends BotAdapter {
       const attachSocket = (socket) => {
         if (!owns()) return;
         if (!socket) return markTcp();
+        this._lastInboundPacketAt = Date.now();
+        this._installInboundYield(client);
         if (socket.readyState === 'open' || (socket.connecting === false && !socket.destroyed)) return markTcp();
         socket.once('connect', markTcp);
         socket.once('error', (err) => {
@@ -1099,8 +1133,13 @@ class RealBot extends BotAdapter {
       client.on('update_health', (packet) => {
         if (owns()) this.logger.debug(`[${this.name}] TRACE in update_health health=${packet.health} food=${packet.food}`);
       });
-      client.on('packet', (data, meta) => {
+      client.on('packet', (data, meta, buffer) => {
         if (!owns()) return;
+        const now = Date.now();
+        if (this._lastInboundPacketAt && now - this._lastInboundPacketAt >= 1000) {
+          this.logger.warn(`[${this.name}] inbound packet gap ${now - this._lastInboundPacketAt}ms before ${meta && meta.name ? meta.name : 'unknown'} (${buffer ? buffer.length : 0} bytes)`);
+        }
+        this._lastInboundPacketAt = now;
         this._markEvent();
         if (!meta) return;
         if (['kick_disconnect', 'system_chat', 'player_loaded', 'start_configuration', 'login'].includes(meta.name)) {
