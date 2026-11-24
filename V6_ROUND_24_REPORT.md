@@ -104,8 +104,10 @@ explore all 1     10/10 ok
 ```
 
 The mining result is a real failure in the mock terrain, not a fabricated
-success. The live adapter must be exercised against a server with reachable ore
-before mining can be claimed live-tested.
+success. A dedicated test places reachable iron deposits beside every bot and
+asserts 8+ fleet rows mined ore and the world blocks disappeared. The live
+adapter must still be exercised against a server with reachable ore before
+mining can be claimed live-tested.
 
 ### Performance
 
@@ -143,12 +145,12 @@ The manifest is ~20 MB and remains tracked because it is the actual library.
 ## Verification
 
 ```text
-npm test            280 passed, 0 failed
+npm test            281 passed, 0 failed
 npm run lint        PASSED (147 files)
 npm run validate    PASSED
                     secret check PASS
                     lint PASS
-                    tests PASS 280/280
+                    tests PASS 281/281
                     schematics PASS (reused full 10k report)
                     consistency 10/10
 ```
@@ -169,8 +171,9 @@ once on the current manifest and produced the report.
 - **Full 10,000-design `BuildEngine` audit was not run.** All 10,000 pass the
   schematic validator; a 260-design tail sample passed the independent
   `BuildEngine` audit.
-- **Mock mining of natural terrain fails honestly** because the guaranteed mock
-  ore pockets are not exposed within reach. Unit tests cover ore removal with
-  reachable, tool-appropriate ore.
+- **Mock mining of untouched natural terrain fails honestly** because the
+  guaranteed mock ore pockets are not exposed within reach. A fleet test places
+  reachable deposits and verifies 8+ real removals; unit tests cover ore removal
+  with reachable, tool-appropriate ore.
 - `V6_FINAL_REPORT.md` remains the earlier unverified live-run report and is not
   updated until a real live run exists.

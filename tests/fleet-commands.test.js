@@ -145,3 +145,29 @@ test('a not-ready bot is skipped by fleet commands and cannot execute a direct g
     await runtime.shutdown('test');
   }
 });
+
+test('fleet mining removes real ore blocks and reports per-bot evidence', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    const targets = [];
+    for (const bot of runtime.bots.values()) {
+      const x = Math.floor(bot.position.x);
+      const z = Math.floor(bot.position.z);
+      const y = Math.floor(bot.position.y) - 2;
+      // A reachable, exposed deposit: ore, air above it, solid floor.
+      runtime.world.overrides.set(`${x},${y},${z}`, 'iron_ore');
+      runtime.world.overrides.set(`${x},${y + 1},${z}`, 'air');
+      runtime.world.overrides.set(`${x},${y - 1},${z}`, 'stone');
+      targets.push({ bot: bot.name, x, y, z });
+    }
+
+    const mined = await runtime.commands.execute('bot all mine iron', { source: 'internal' });
+    const result = mined.result;
+    assert.ok(result.completed >= 8, JSON.stringify(result.results));
+    assert.ok(result.results.filter((row) => row.ok && row.mined > 0).length >= 8);
+    const removed = targets.filter((target) => runtime.world.blockNameAt(target.x, target.y, target.z) !== 'iron_ore');
+    assert.ok(removed.length >= 8, `only ${removed.length} deposits disappeared`);
+  } finally {
+    await runtime.shutdown('test');
+  }
+});
