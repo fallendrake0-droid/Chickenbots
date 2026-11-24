@@ -75,7 +75,7 @@ test('protected blocks block a start until authorised', () => {
   assert.equal(okay.excavation.confirmations.authorized, true);
 });
 
-test('five bots cooperatively excavate a planned volume and verification passes on real blocks', async () => {
+test('ten bots cooperatively excavate a planned volume and verification passes on real blocks', async () => {
   const { world, bots, coordinator, manager } = setup();
   const res = manager.start({
     mode: 'AT', origin: { x: 0, y: 58, z: 0 }, width: 8, length: 8, depth: 4,

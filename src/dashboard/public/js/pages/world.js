@@ -62,7 +62,7 @@ export const worldPage = {
           actions: `<button class="button" type="button" data-world-reset>${icon('compass')} Reset camera</button><button class="button" type="button" data-world-fullscreen>${icon('scan')} Fullscreen</button><button class="button button--primary" type="button" data-world-refresh>${icon('refresh')} Refresh</button>`
         })}
         <div class="grid grid--stats">
-          ${statCard({ label: 'Online', value: `${num(online)}<small> / ${names.length || 5}</small>`, iconName: 'users', tone: online === names.length ? 'success' : online ? 'warning' : 'danger', context: online ? 'Spawned and authenticated' : 'Waiting for the connection gate' })}
+          ${statCard({ label: 'Online', value: `${num(online)}<small> / ${names.length || 10}</small>`, iconName: 'users', tone: online === names.length ? 'success' : online ? 'warning' : 'danger', context: online ? 'Spawned and authenticated' : 'Waiting for the connection gate' })}
           ${statCard({ label: 'View radius', value: `${num(view.radius)}<small> m</small>`, iconName: 'cube', tone: 'info', context: 'Server clamps 4–32m' })}
           ${statCard({ label: 'Columns', value: num(data && data.counts ? data.counts.columns : 0), iconName: 'grid', tone: 'neutral', context: data ? `${num(data.counts.chunks)} chunks · ${num(data.counts.entities)} entities` : 'No snapshot yet' })}
           ${statCard({ label: 'Render', value: view.stats ? `${num(view.stats.fps)}<small> fps</small>` : '—', iconName: 'activity', tone: view.stats && view.stats.fps >= 30 ? 'success' : 'warning', context: view.stats ? `${num(view.stats.triangles)} triangles · ${esc(view.stats.mode)}` : 'Measuring the first frames' })}

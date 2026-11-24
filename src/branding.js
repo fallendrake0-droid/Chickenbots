@@ -16,7 +16,7 @@ const LOGO = [
   "  \\_____|_|  |_|_____\\_____|_|\\_\\______|_| \\_|____/ \\____/  |_| |_____/ "
 ].join("\n");
 
-const TAGLINE = 'five bots · one coordinated team · v6';
+const TAGLINE = 'ten bots · one coordinated team · v6';
 
 function style(code, text, enabled) {
   return enabled ? `\u001b[${code}m${text}\u001b[0m` : text;

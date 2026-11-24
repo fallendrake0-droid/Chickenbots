@@ -24,7 +24,7 @@ function throttleCooldown({ strikes = 1, throttleDelayMs = 90000, maxDelayMs = 6
 
 /**
  * Reconnect delay with exponential backoff, a longer floor for server-side
- * throttling and jitter so five bots do not retry in lockstep.
+ * throttling and jitter so ten bots do not retry in lockstep.
  */
 function reconnectDelay({
   attempt = 1,

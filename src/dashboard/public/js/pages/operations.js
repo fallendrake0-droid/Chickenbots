@@ -420,7 +420,7 @@ export const crewAssignmentsPage = {
       <div class="page">
         ${pageHeader({ eyebrow: 'Builder Operations', title: 'Team Assignments', description: 'Initial specialist roles plus dynamic task-board allocation. A bot can change role; assignments are persisted with the active project and exposed to the coordinator.', actions: `<button class="button" type="button" data-command="team assignments">${icon('refresh-cw')} Refresh</button><a class="button" href="#/team">${icon('users')} Team</a>` })}
         <div class="grid grid--stats">
-          ${statCard({ label: 'Crew', value: num(bots.length), iconName: 'users', tone: bots.length === 5 ? 'success' : 'warning', context: bots.map((bot) => bot.name).join(', ') })}
+          ${statCard({ label: 'Crew', value: num(bots.length), iconName: 'users', tone: bots.length === 10 ? 'success' : 'warning', context: bots.map((bot) => bot.name).join(', ') })}
           ${statCard({ label: 'Assigned roles', value: num(Object.keys(occupants).length), iconName: 'badge', tone: 'info', context: 'Project-level roles' })}
           ${statCard({ label: 'Coordinator roles', value: num(Object.keys(roles).length), iconName: 'crown', tone: 'accent', context: 'Live allocation state' })}
           ${statCard({ label: 'Active project', value: p ? p.summary.status : 'IDLE', iconName: 'activity', tone: p ? statusTone(p.summary.status) : 'neutral', context: p?.summary.name || 'None' })}

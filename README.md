@@ -1,8 +1,8 @@
 # Chickenbots V6
 
-Five autonomous Minecraft bots that survive, prepare a real site, run materials and warehouse
+Ten autonomous Minecraft bots that survive, prepare a real site, run materials and warehouse
 logistics, light and secure the ground, then build a validated schematic on a vanilla **Overworld**
-server. V6 adds a complete five-bot combat engine — PvE threat profiles, explicit-only PvP,
+server. V6 adds a complete ten-bot combat engine — PvE threat profiles, explicit-only PvP,
 weapon/armour evaluation, offhand totems, consumables, team roles, focus fire, rescue and retreat —
 on top of the V5 construction crew and the existing survival, excavation and builder stack. Everything
 is local, deterministic and configuration-driven. There is **no AI service, no API key and no cloud inference** anywhere in the
@@ -10,6 +10,7 @@ runtime; the optional AI hook exists as a disabled flag.
 
 ```
 roster (fixed):  ________   10101000   01010100   11001100   00110000
+                 11101000   11101010   10001000   11001010   11101001
 server:          empiresmp.aternos.me:32990   (MC_VERSION=auto, ViaVersion/ViaBackwards friendly)
 dashboard:       http://127.0.0.1:3000      (loopback by default; preview opts into 0.0.0.0)
 ```
@@ -28,7 +29,7 @@ dashboard:       http://127.0.0.1:3000      (loopback by default; preview opts i
 ```bash
 npm install
 cp .env.example .env          # optional; defaults already match the required server
-npm start                     # live: connects all five bots
+npm start                     # live: connects all ten bots
 npm start -- --simulate       # deterministic local simulation (no network)
 npm run cli -- --simulate     # interactive command shell
 npm test                      # full test suite
@@ -48,7 +49,7 @@ Useful scripts:
 
 | script | what it actually does |
 | --- | --- |
-| `npm start` | creates the runtime, connects the five bots, starts autonomy + dashboard |
+| `npm start` | creates the runtime, connects the ten bots, starts autonomy + dashboard |
 | `npm start -- --simulate` | boots the deterministic mock world and the full dashboard |
 | `npm run cli -- --simulate "status"` | runs one command through the shared validated handler |
 | `npm test` | all layer tests (team, excavation, construction, schematics, builder, survival, combat, controllers) |
@@ -165,7 +166,7 @@ tests/                      team, excavation, construction, schematics, builder,
 
 ### Combat engine (V6)
 
-The combat controller is one coordinator per bot plus a team coordinator over all five. Every value it
+The combat controller is one coordinator per bot plus a team coordinator over all ten. Every value it
 reports is read from the adapter or the real inventory — no guessed mob health, no invented totem
 pops, no hidden aim assist.
 
@@ -325,14 +326,14 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
-| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `10000` / `0` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so five bots on one host must join slowly or the server rejects them. |
+| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `10000` / `0` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so ten bots on one host must join slowly or the server rejects them. |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `10000` / `0` | exact gap before queuing each bot's initial connection task; the join queue also enforces `MC_JOIN_INTERVAL_MS` |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | fleet-wide pause after a throttle or a socket that never reaches spawn. One outage episode records **one** strike no matter how many bots fail in it; a genuinely separate outage (after a bot became ready) escalates the bounded, jittered pause up to the maximum |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
-| `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
+| `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so ten bots do not retry together |
 | `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
 | `MC_VIEW_DISTANCE` | `tiny` | client-requested chunk radius: `tiny` (6), `short` (8), `normal` (10), `far` (12), or 2–32. The live fleet still stalled for 40s at `short`; `tiny` is the safe default. Lower it to 2–5 on a slow host |
@@ -363,11 +364,11 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 **Credential note.** Earlier revisions of this repository contained a literal demo password in
 `src/config.js`, `.env.example` and this README. It has been removed from the current tree; no value is
 reproduced here. Treat that historical value as compromised, rotate the Minecraft/AuthMe password for
-the five accounts, and keep the new value only in an untracked `.env`. `npm run check:secrets` fails if
+the ten accounts, and keep the new value only in an untracked `.env`. `npm run check:secrets` fails if
 a credential-shaped value or the old demo value is committed again.
 
-The five usernames are frozen in `src/config.js`. `RealBot` throws if asked to construct any other
-name, and the runtime always builds exactly the same five bots.
+The ten usernames are frozen in `src/config.js`. `RealBot` throws if asked to construct any other
+name, and the runtime always builds exactly the same ten bots.
 
 ---
 
@@ -589,16 +590,16 @@ npm run deploy:check -- --url http://127.0.0.1:3000        # static + live dashb
 The check verifies the frozen roster, safe server/PvP/AI defaults, the eight V6 combat modules and
 eleven combat command families, the five Combat Operations routes, the eight V5 construction modules,
 the nine Builder Operations routes, relative-only browser URLs and V6 package metadata. With `--url`
-it also probes `/healthz`, `/api/state` (including five combat controllers), `/api/commands` and the
+it also probes `/healthz`, `/api/state` (including ten combat controllers), `/api/commands` and the
 dashboard shell, so a broken preview or a missing combat/construction snapshot fails before
 commissioning.
 
 ## Limitations / next commissioning step
 
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
-  latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
+  latency; the runtime surfaces connection errors and refuses autonomy until all ten bots are ready.
   Bots join **one socket at a time**, at least `MC_JOIN_INTERVAL_MS` (10s by default) apart, because
-  Paper's `connection-throttle` is enforced per source IP and all five bots share the host's IP.
+  Paper's `connection-throttle` is enforced per source IP and all ten bots share the host's IP.
   A throttle or a socket that never reaches spawn pauses **every** join. All failures in the same
   outage are one strike, so four bots timing out do not turn a 90s pause into 10 minutes; a bot that
   becomes ready closes the episode and clears the pause, and only a separate later outage escalates
@@ -630,7 +631,7 @@ commissioning.
   protocol kicks continue, set `MC_VERSION` to the server's exact version instead of `auto`.
   The client-requested view distance also matters: Mineflayer's default `far` asks the server for
   up to 625 chunks per bot. `minecraft-protocol` 1.68.0 decompresses each compressed frame with
-  synchronous `zlib.unzipSync` inside its stream transform, so a five-bot chunk burst can freeze
+  synchronous `zlib.unzipSync` inside its stream transform, so a ten-bot chunk burst can freeze
   timers for tens of seconds, miss the server's 30s keep-alive deadline and surface as `EPIPE`
   right after the block clears. Chickenbots now replaces that transform with an async `zlib.unzip`
   step as the library is loaded, so decompression no longer holds the event loop. Bots also request
@@ -643,9 +644,9 @@ commissioning.
   `/api/diagnostics/export` downloads a redacted state + log bundle for support.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
-  real version instead of sending five bots into mineflayer's autoVersion crash path. While the probe
+  real version instead of sending ten bots into mineflayer's autoVersion crash path. While the probe
   is unresolved the reconnect supervisor does not start login sockets, so a sleeping server is not
-  charged as five bot connection attempts or retry backoff.
+  charged as ten bot connection attempts or retry backoff.
   The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy
   advertises a newer status name than the protocol it answered with, the protocol mapping wins.
   `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail and auth timing. Per-packet

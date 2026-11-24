@@ -54,10 +54,10 @@ async function main() {
     return `Node ${process.versions.node}`;
   });
 
-  check('roster is the fixed five usernames', () => {
+  check('roster is the fixed ten usernames', () => {
     const { config, BOT_NAMES } = requireLocal('src/config.js');
-    const expected = ['________', '10101000', '01010100', '11001100', '00110000'];
-    assert(BOT_NAMES.length === 5, `roster has ${BOT_NAMES.length} names`);
+    const expected = ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001'];
+    assert(BOT_NAMES.length === 10, `roster has ${BOT_NAMES.length} names`);
     assert(expected.every((name, index) => BOT_NAMES[index] === name), 'roster order changed');
     assert(config.team.names.every((name, index) => name === expected[index]), 'configured team names changed');
     return expected.join(', ');
@@ -203,13 +203,13 @@ async function main() {
       return `mode ${health.mode || 'unknown'}`;
     });
 
-    await probe('live state exposes five bots and construction state', async () => {
+    await probe('live state exposes ten bots and construction state', async () => {
       const body = await getJson('/api/state');
       assert(body.ok === true, 'state did not report ok');
-      assert(Array.isArray(body.state.bots) && body.state.bots.length === 5, `got ${body.state.bots?.length} bots`);
+      assert(Array.isArray(body.state.bots) && body.state.bots.length === 10, `got ${body.state.bots?.length} bots`);
       assert(body.state.construction, 'construction snapshot missing');
       assert(Array.isArray(body.state.construction.projects), 'construction projects missing');
-      assert(Array.isArray(body.state.combat) && body.state.combat.length === 5, 'combat state is missing');
+      assert(Array.isArray(body.state.combat) && body.state.combat.length === 10, 'combat state is missing');
       assert(body.state.combatTeam && Array.isArray(body.state.combatTeam.bots), 'team combat state is missing');
       return `${body.state.bots.length} bots, ${body.state.construction.projects.length} project(s), ${body.state.combat.length} combat controllers`;
     });

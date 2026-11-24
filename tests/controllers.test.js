@@ -34,17 +34,17 @@ async function simulation(options = {}) {
 test('runtime snapshot exposes every dashboard section with live values', async () => {
   const runtime = await simulation();
   try {
-    assert.equal(runtime.bots.size, 5);
+    assert.equal(runtime.bots.size, 10);
     assert.equal(runtime.autonomyAllowed, true);
     const snapshot = statusSnapshot(runtime.services);
     for (const key of TAB_KEYS) assert.ok(key in snapshot, `missing dashboard section ${key}`);
-    assert.equal(snapshot.bots.length, 5);
-    assert.equal(snapshot.overview.online, 5);
-    assert.equal(snapshot.overview.total, 5);
+    assert.equal(snapshot.bots.length, 10);
+    assert.equal(snapshot.overview.online, 10);
+    assert.equal(snapshot.overview.total, 10);
     assert.ok(snapshot.schematics.stats.count >= 1100);
     assert.equal(snapshot.diagnostics.config.pvp, true);
     assert.equal(snapshot.diagnostics.config.pve, true);
-    assert.deepEqual(snapshot.diagnostics.config.roster, ['________', '10101000', '01010100', '11001100', '00110000']);
+    assert.deepEqual(snapshot.diagnostics.config.roster, ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001']);
   } finally {
     await runtime.shutdown('test');
   }
@@ -195,7 +195,7 @@ test('dashboard serves the operations console, state, commands and schematic dow
     const exported = await httpGet(port, '/api/diagnostics/export');
     const bundle = JSON.parse(exported.body);
     assert.equal(Array.isArray(bundle.logs), true);
-    assert.equal(bundle.state.bots.length, 5);
+    assert.equal(bundle.state.bots.length, 10);
     assert.equal(/loginPassword|registerPassword|MC_LOGIN_PASSWORD/.test(exported.body), false, 'diagnostics export must not expose credentials');
     const settings = await httpGet(port, '/api/settings');
     assert.equal(JSON.parse(settings.body).ok, true);

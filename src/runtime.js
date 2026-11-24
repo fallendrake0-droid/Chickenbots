@@ -252,7 +252,7 @@ class TeamRuntime {
   /**
    * Resolve (and cache) the server version before opening any login sockets.
    * Aternos answers status pings with protocol -1 while the instance is asleep,
-   * so wait for a real version instead of letting all five bots fail in turn.
+   * so wait for a real version instead of letting all ten bots fail in turn.
    */
   async _ensureServerVersion() {
     if (this.serverVersion) return true;
@@ -333,7 +333,7 @@ class TeamRuntime {
 
   /**
    * Aternos throttles multiple logins from one IP. Serialize attempts and keep
-   * a fleet-wide cooldown after a throttle instead of firing all five sockets
+   * a fleet-wide cooldown after a throttle instead of firing all ten sockets
    * into the limiter at once.
    */
   async _acquireJoinSlot() {
@@ -696,7 +696,7 @@ class TeamRuntime {
 
   async _safetyOnlyTick() {
     if (!this.actions) return;
-    // One safety pass per bot, all in parallel. Serialising five pathfinders
+    // One safety pass per bot, all in parallel. Serialising ten pathfinders
     // could hold the only runtime tick for many seconds and delay the reconnect
     // supervisor; the outer `ticking` guard still prevents another pass from
     // stacking on top.
@@ -717,7 +717,7 @@ class TeamRuntime {
    */
   async _recoverDisconnected() {
     // Aternos can be asleep when the runtime starts. The version probe is the
-    // only thing allowed to touch the server until it resolves; starting five
+    // only thing allowed to touch the server until it resolves; starting ten
     // retry loops here burned join slots on VERSION_UNRESOLVED and delayed the
     // first real login by tens of seconds.
     if (!this.simulate && !this.serverVersion) return;
@@ -866,7 +866,7 @@ class TeamRuntime {
   }
 
   resume() {
-    if (!this.autonomyAllowed) return { ok: false, error: 'no ready bots; the five-bot connection gate is still closed' };
+    if (!this.autonomyAllowed) return { ok: false, error: 'no ready bots; the ten-bot connection gate is still closed' };
     this.paused = false;
     return { ok: true, paused: false, tick: this.ticks };
   }

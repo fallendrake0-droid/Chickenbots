@@ -350,7 +350,7 @@ class BotActions {
     task.relocationAttempts = attempts + 1;
     const index = Number(this.index) || 0;
     const distance = 18 + attempts * 8 + index * 3;
-    const angle = (index / 5) * Math.PI * 2 + attempts * 1.3;
+    const angle = (index / config.team.names.length) * Math.PI * 2 + attempts * 1.3;
     const x = Math.floor(home.x + Math.cos(angle) * distance);
     const z = Math.floor(home.z + Math.sin(angle) * distance);
     const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(x, z) + 1 : home.y;
@@ -377,7 +377,7 @@ class BotActions {
     task.relocationAttempts = attempts + 1;
     const index = Number(this.index) || 0;
     const distance = 32 + attempts * 16 + index * 5;
-    const angle = (index / 5) * Math.PI * 2 + Math.PI / 3 + attempts * 1.1;
+    const angle = (index / config.team.names.length) * Math.PI * 2 + Math.PI / 3 + attempts * 1.1;
     const x = Math.floor(home.x + Math.cos(angle) * distance);
     const z = Math.floor(home.z + Math.sin(angle) * distance);
     const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(x, z) + 1 : home.y;
@@ -618,7 +618,7 @@ class BotActions {
       case 'PLACE_BED': {
         // One verified placement per call; the task's unit target accumulates
         // across calls. A later objective can legitimately reuse the beds that
-        // already exist at home: requiring five *new* beds every plan burned
+        // already exist at home: requiring ten *new* beds every plan burned
         // the retry budget and failed an otherwise healthy objective. Existing
         // beds are counted from real blocks, never assumed.
         const wanted = Math.max(1, Number(task.params?.count) || 1);

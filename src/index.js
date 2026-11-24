@@ -25,7 +25,7 @@ function parseArgs(argv) {
 }
 
 /**
- * A second live runtime would log in with the same five usernames and make the
+ * A second live runtime would log in with the same ten usernames and make the
  * server kick the first instance (duplicate login), which surfaces as a raw
  * EPIPE/ECONNRESET rather than a readable kick message. Refuse to start twice.
  */
@@ -133,10 +133,10 @@ async function main() {
   }
   if (args.simulate) {
     const state = runtime.state();
-    process.stdout.write(`  Simulation ready: ${state.bots.filter((b) => b.ready).length}/5 bots, home ${state.home.x},${state.home.y},${state.home.z}\n`);
+    process.stdout.write(`  Simulation ready: ${state.bots.filter((b) => b.ready).length}/${BOT_NAMES.length} bots, home ${state.home.x},${state.home.y},${state.home.z}\n`);
     process.stdout.write('  Try: node src/cli.js --simulate\n\n');
   } else if (args.connect) {
-    process.stdout.write('  Autonomy is gated until all five bots connect, authenticate and spawn.\n');
+    process.stdout.write('  Autonomy is gated until all ten bots connect, authenticate and spawn.\n');
     process.stdout.write(`  Connection errors are shown on the dashboard diagnostics tab.\n\n`);
   }
   let shuttingDown = false;

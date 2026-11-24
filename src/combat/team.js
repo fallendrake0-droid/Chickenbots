@@ -12,7 +12,7 @@ const ROLE_OFFSETS = {
 };
 
 /**
- * Five-bot combat coordinator. It assigns dynamic roles, one focus target,
+ * Ten-bot combat coordinator. It assigns dynamic roles, one focus target,
  * different approach bearings and shared retreat/rescue decisions. It never
  * takes control of a controller's emergency response: survival actions remain
  * local and can pre-empt these assignments.

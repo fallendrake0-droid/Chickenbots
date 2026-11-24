@@ -256,7 +256,7 @@ function registerAll(services, registry) {
     name: 'diagnostics', aliases: ['diag'], category: 'core', summary: 'Run real self-checks over config, library, team and dashboard', usage: 'diagnostics',
     execute: async () => {
       const checks = [];
-      checks.push({ name: 'roster', ok: JSON.stringify(config.team.names) === JSON.stringify(BOT_NAMES) && config.team.names.length === 5, detail: config.team.names.join(', ') });
+      checks.push({ name: 'roster', ok: JSON.stringify(config.team.names) === JSON.stringify(BOT_NAMES) && config.team.names.length === BOT_NAMES.length, detail: config.team.names.join(', ') });
       checks.push({ name: 'server-default', ok: config.server.host === 'empiresmp.aternos.me' && config.server.port === 32990 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port} (${config.server.version})` });
       checks.push({ name: 'pve-enabled', ok: config.autonomy.pve !== false, detail: String(config.autonomy.pve) });
       checks.push({ name: 'pvp-explicit-only', ok: config.autonomy.pvp === true, detail: `${config.autonomy.pvp} (explicit target list still required)` });
@@ -268,7 +268,7 @@ function registerAll(services, registry) {
         const hashes = new Set(library.manifest.designs.map((d) => d.geometryHash));
         checks.push({ name: 'schematic-uniqueness', ok: hashes.size === library.count, detail: `${hashes.size}/${library.count} unique geometry hashes` });
       }
-      checks.push({ name: 'bots-configured', ok: services.bots.size === 5, detail: `${services.bots.size} bots loaded` });
+      checks.push({ name: 'bots-configured', ok: services.bots.size === BOT_NAMES.length, detail: `${services.bots.size} bots loaded` });
       const taskBoard = services.taskBoard;
       checks.push({ name: 'task-board', ok: Boolean(taskBoard), detail: taskBoard ? `${taskBoard.tasks.size} tasks` : 'missing' });
       const ledger = services.ledger;

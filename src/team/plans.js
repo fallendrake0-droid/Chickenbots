@@ -22,13 +22,13 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
   const objective = board.createObjective({
     id: `obj-${template.toLowerCase()}-${++planSeq}`,
     title: 'BUILD A PERMANENT SURVIVAL BASE',
-    description: 'Find a site, gather materials, excavate the foundation, build a secure base with storage, farms and five beds.',
+    description: 'Find a site, gather materials, excavate the foundation, build a secure base with storage, farms and ten beds.',
     priority: 90,
     progress: { current: 0, target: 1, unit: 'phases' },
-    completionCondition: 'foundation, walls, roof, storage, five beds and perimeter verified',
+    completionCondition: 'foundation, walls, roof, storage, ten beds and perimeter verified',
     failureCondition: 'site unusable and no alternative within 256 blocks',
     recoveryStrategy: 're-plan site and reuse gathered materials',
-    requirements: { oak_log: 256, stone: 128, iron_ingot: 32, food: 128, bed: 5 },
+    requirements: { oak_log: 256, stone: 128, iron_ingot: 32, food: 128, bed: 10 },
     metadata: { template, botNames }
   });
 
@@ -147,12 +147,12 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
 
   add({
     type: 'PLACE_BED',
-    label: 'Install five beds',
+    label: 'Install ten beds',
     priority: 74,
     requires: { items: { 'category:bed': 1 } },
-    params: { count: 5, reservedFor: botNames },
+    params: { count: 10, reservedFor: botNames },
     dependsOn: foundation ? [foundation.id, roof ? roof.id : null].filter(Boolean) : [],
-    units: { target: 5 },
+    units: { target: 10 },
     estimatedMs: 120000
   });
 

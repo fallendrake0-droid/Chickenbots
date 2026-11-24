@@ -62,8 +62,11 @@ function envViewDistance(name, fallback) {
   return Number.isFinite(numeric) ? numeric : raw.toLowerCase();
 }
 
-/** The five bot usernames are fixed. Never rename, never add bots. */
-const BOT_NAMES = Object.freeze(['________', '10101000', '01010100', '11001100', '00110000']);
+/** The ten bot usernames are fixed. Never rename, never add bots. */
+const BOT_NAMES = Object.freeze([
+  '________', '10101000', '01010100', '11001100', '00110000',
+  '11101000', '11101010', '10001000', '11001010', '11101001'
+]);
 
 const DEFAULT_RESERVES = Object.freeze({
   food: 128,
@@ -107,7 +110,7 @@ const config = {
     // hostname it connects to; the preflight only decides whether to attempt.
     dnsTimeoutMs: envInt('MC_DNS_TIMEOUT_MS', 10000),
     // Client-requested chunk distance. 'far' (12) makes the server send up to
-    // 625 chunks per bot; five simultaneous joins then parse/decompress them
+    // 625 chunks per bot; ten simultaneous joins then parse/decompress them
     // on the protocol thread, which is enough to starve the 20 tps tick loop.
     // The live 17:25 run still blocked for 40s at 'short' (8), so the safe
     // default is 'tiny' (6); a slow host can lower it further with 2-5.
@@ -242,7 +245,7 @@ const config = {
     requireConfirmation: true,
     preserveOres: true,
     protectedDefault: true,
-    bots: 5,
+    bots: BOT_NAMES.length,
     maxFallPerTick: 4
   },
   builder: {

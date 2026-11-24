@@ -176,7 +176,7 @@ test('mask-aware region volumes exclude preserved terrace/circle blocks', () => 
   assert.ok(regions.every((r) => r.volume > 0));
 });
 
-test('region assignment uses four workers plus a supervisor, or all five as a team', () => {
+test('region assignment uses four workers plus a supervisor, or all ten as a team', () => {
   const bounds = { min: { x: 0, y: 40, z: 0 }, max: { x: 15, y: 47, z: 15 } };
   const regions = splitRegions(bounds, 4);
   const names = ['________', '10101000', '01010100', '11001100', '00110000'];

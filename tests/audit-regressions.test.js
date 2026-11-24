@@ -141,7 +141,7 @@ test('dashboard token protects state and static assets while healthz stays avail
     assert.equal(staticDenied.status, 401);
     const allowed = await request(port, '/api/state', { auth: 'Bearer audit-test-token-123456' });
     assert.equal(allowed.status, 200);
-    assert.equal(allowed.json.state.bots.length, 5);
+    assert.equal(allowed.json.state.bots.length, 10);
     // Reuse the session cookie, which is what EventSource relies on.
     const cookie = String(allowed.headers['set-cookie'] || '').split(';')[0];
     assert.match(cookie, /^cb_dash=/);

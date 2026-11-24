@@ -645,7 +645,7 @@ export const fishingPage = {
           ${statCard({ label: 'Fish caught', value: num(totalCaught), iconName: 'fish', tone: totalCaught ? 'success' : 'neutral', context: 'Inventory-confirmed catches' })}
           ${statCard({ label: 'Casts', value: num(casts), iconName: 'target', tone: 'accent', context: 'Lifetime cast attempts' })}
           ${statCard({ label: 'Empty casts', value: num(failed), iconName: 'alert', tone: failed ? 'warning' : 'neutral', context: 'No catch, no water or no rod' })}
-          ${statCard({ label: 'Rods ready', value: `${rows.filter((row) => row.rod).length}<small> / ${rows.length || 5}</small>`, iconName: 'package', tone: rows.some((row) => row.rod) ? 'info' : 'warning', context: 'Bots holding a fishing rod' })}
+          ${statCard({ label: 'Rods ready', value: `${rows.filter((row) => row.rod).length}<small> / ${rows.length || 10}</small>`, iconName: 'package', tone: rows.some((row) => row.rod) ? 'info' : 'warning', context: 'Bots holding a fishing rod' })}
         </div>
         <section class="card">
           <div class="card-header"><div class="card-title">${icon('fish')} Shore status</div><span class="tiny muted">${rows.length} bots</span></div>

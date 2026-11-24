@@ -82,7 +82,7 @@ test('start refuses to build without materials instead of faking success', () =>
   assert.ok(Object.keys(start.missing).length > 0);
 });
 
-test('five bots cooperatively build a real schematic and verification passes', async () => {
+test('ten bots cooperatively build a real schematic and verification passes', async () => {
   const schematic = smallSchematic();
   const world = new MockWorld({ flat: true });
   const bots = makeBots(world, schematic);

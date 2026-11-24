@@ -15,7 +15,7 @@
  *  - a ready session closes the episode. The strike level is retained for the
  *    next episode so repeated separate outages still back off;
  *  - after `quietResetMs` with no failure the strike level returns to zero;
- *  - every pause is capped and jittered so five bots never retry in lockstep.
+ *  - every pause is capped and jittered so ten bots never retry in lockstep.
  */
 class JoinScheduler {
   constructor({

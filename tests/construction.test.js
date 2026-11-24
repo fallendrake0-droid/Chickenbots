@@ -141,7 +141,7 @@ test('warehouse performs verified physical deposits/withdrawals, categorises che
   assert.equal(warehouse.locate('cobblestone')[0].count, 2);
 });
 
-test('full construction pipeline runs five bots from survey to verified handover', async () => {
+test('full construction pipeline runs ten bots from survey to verified handover', async () => {
   const statePath = tmpState('pipeline');
   const world = new MockWorld({ flat: true, seed: 44 });
   const library = new SchematicLibrary();

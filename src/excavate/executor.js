@@ -195,7 +195,7 @@ class ExcavationExecutor {
   }
 
   /** Carve the shared access staircase before digging the region. Guarded by a
-   * team lock so five bots never carve the same entrance at once. */
+   * team lock so ten bots never carve the same entrance at once. */
   async _carveAccess() {
     const route = this.plan.accessRoute;
     if (!route || !Array.isArray(route.steps) || !route.steps.length) return;

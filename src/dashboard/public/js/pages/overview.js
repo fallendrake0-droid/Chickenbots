@@ -38,7 +38,7 @@ export default {
           <div>
             <div class="eyebrow">Operations overview</div>
             <h1>Welcome to Chickenbots</h1>
-            <p>Five autonomous bots, one coordinated team. This is the live operational picture.</p>
+            <p>Ten autonomous bots, one coordinated team. This is the live operational picture.</p>
             <div class="hero-meta">
               <span class="status">${icon('server')} ${esc(server.host || 'server not configured')}:${esc(server.port || '—')}</span>
               <span class="status">${modeBadge}</span>
@@ -98,7 +98,7 @@ export default {
         <div class="section grid grid--main-side">
           <div>
             ${sectionHead('Fleet overview', {
-              subtitle: 'All five fixed usernames, with their current activity and vitals.',
+              subtitle: 'All ten fixed usernames, with their current activity and vitals.',
               actions: `<a class="button button--sm" href="#/bots">All bots ${icon('arrow-right')}</a>`
             })}
             <div class="grid grid--bots">
@@ -139,7 +139,7 @@ export default {
           <div class="card-title">${icon('heart')} Fleet health</div>
           <div class="card-subtitle">Real samples collected since this page opened (${state.samples.length})</div>
         </div>
-        <div class="chart-legend">${botNames().map((name, index) => `<span class="legend-item"><span class="legend-swatch" style="background:${['#39b8a5','#5998e8','#e5a947','#a78bfa','#e05b68'][index % 5]}"></span>${esc(name)}</span>`).join('')}</div>
+        <div class="chart-legend">${botNames().map((name, index) => `<span class="legend-item"><span class="legend-swatch" style="background:${['#39b8a5','#5998e8','#e5a947','#a78bfa','#e05b68','#4ecdc4','#f78c6b','#8bd450','#c77dff','#ffb703'][index % 10]}"></span>${esc(name)}</span>`).join('')}</div>
       </div>
       ${lineChart(state.samples, botNames(), { metric: 'health', max: 20 })}`;
   }

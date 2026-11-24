@@ -39,7 +39,7 @@ export const homeBasePage = {
         <div class="grid grid--stats">
           ${statCard({ label: 'Home', value: home ? `${home.x}, ${home.y}, ${home.z}` : 'Not set', iconName: 'home', tone: home ? 'success' : 'warning', context: home ? 'Shared team home coordinate' : 'Set a home with the form below' })}
           ${statCard({ label: 'Beds held', value: num(beds), iconName: 'bed', tone: beds >= 5 ? 'success' : beds ? 'warning' : 'danger', context: 'Bed items in live inventories' })}
-          ${statCard({ label: 'Sleeping', value: `${sleeping}<small> / ${perBot.length || 5}</small>`, iconName: 'moon', tone: sleeping ? 'info' : 'neutral', context: 'Current sleep state' })}
+          ${statCard({ label: 'Sleeping', value: `${sleeping}<small> / ${perBot.length || 10}</small>`, iconName: 'moon', tone: sleeping ? 'info' : 'neutral', context: 'Current sleep state' })}
           ${statCard({ label: 'Home builds', value: num(builds.length), iconName: 'hammer', tone: builds.length ? 'accent' : 'neutral', context: builds.length ? builds.map((build) => build.state).join(', ') : 'No home build registered' })}
         </div>
         <div class="grid grid--main-side">
@@ -96,7 +96,7 @@ export const homeBasePage = {
               <div class="card-body">
                 ${kvRows([
                   ['Home coordinate', home ? `${home.x}, ${home.y}, ${home.z}` : 'unset', true],
-                  ['Bots reporting', `${perBot.length} / 5`],
+                  ['Bots reporting', `${perBot.length} / 10`],
                   ['Bed items', num(beds)],
                   ['Sleeping now', num(sleeping)],
                   ['Home builds', num(builds.length)]

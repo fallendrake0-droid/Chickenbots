@@ -62,7 +62,7 @@ class BotAdapter {
   /**
    * Drop the logical connection. Simulated adapters own no socket, but their
    * state must still become offline so dashboards and supervisors do not keep
-   * reporting a stopped runtime as five healthy bots.
+   * reporting a stopped runtime as ten healthy bots.
    */
   async disconnect(reason = 'shutdown') {
     if (typeof this.stopTicking === 'function') this.stopTicking();

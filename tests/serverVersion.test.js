@@ -81,7 +81,7 @@ test('a ping failure is wrapped with its cause', async () => {
   assert.equal(result.cause, 'ECONNRESET');
 });
 
-test('runtime preflight applies the resolved version to all five bots before connecting', async () => {
+test('runtime preflight applies the resolved version to all ten bots before connecting', async () => {
   const { TeamRuntime } = require('../src/runtime');
   const { BOT_NAMES } = require('../src/config');
   const runtime = new TeamRuntime({
@@ -93,7 +93,7 @@ test('runtime preflight applies the resolved version to all five bots before con
     const ok = await runtime._ensureServerVersion();
     assert.equal(ok, true);
     assert.equal(runtime.serverVersion, '1.21.4');
-    assert.equal(runtime.bots.size, 5);
+    assert.equal(runtime.bots.size, 10);
     for (const name of BOT_NAMES) assert.equal(runtime.bots.get(name).version, '1.21.4');
   } finally {
     await runtime.shutdown('test');
