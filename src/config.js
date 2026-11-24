@@ -91,7 +91,12 @@ const config = {
     // installed mineflayer/minecraft-protocol pair supports. 'auto' pings the
     // server and negotiates, which is the safe default.
     auth: env('MC_AUTH', 'offline'),
+    // Each connection stage has its own budget. A single 45s timeout could not
+    // distinguish a dead TCP connect from a server that accepts the socket but
+    // never finishes login, spawn or AuthMe, which made the join queue opaque.
     connectTimeoutMs: envInt('MC_CONNECT_TIMEOUT_MS', 45000),
+    loginTimeoutMs: envInt('MC_LOGIN_TIMEOUT_MS', 30000),
+    spawnTimeoutMs: envInt('MC_SPAWN_TIMEOUT_MS', 45000),
     keepAliveMs: envInt('MC_KEEPALIVE_MS', 120000),
     // A socket can die silently (NAT timeout, proxy restart) without emitting
     // 'end'. Mark a connected bot as stale when no packet arrives for this
@@ -139,16 +144,17 @@ const config = {
     }
   },
   dashboard: {
-    // DASHBOARD_LOCAL=true always wins over DASHBOARD_HOST. The server has no
-    // authentication of its own when DASHBOARD_TOKEN is empty, so loopback is
-    // the safe choice on a machine that is not behind the sandbox preview.
-    host: envBool('DASHBOARD_LOCAL', false) ? '127.0.0.1' : env('DASHBOARD_HOST', '0.0.0.0'),
+    // The control plane is a command surface. Loopback is the default so a
+    // fresh checkout can never be driven by someone else on the network. The
+    // sandbox preview opts out explicitly with DASHBOARD_ALLOW_INSECURE=true.
+    host: envBool('DASHBOARD_LOCAL', false) ? '127.0.0.1' : env('DASHBOARD_HOST', '127.0.0.1'),
     port: envInt('DASHBOARD_PORT', 3000),
     bind127: envBool('DASHBOARD_LOCAL', false),
     // Optional HTTP Basic/Bearer password. Required before exposing the
-    // control plane beyond loopback; an empty value leaves the local demo
-    // unauthenticated and logs a prominent warning when bound non-locally.
-    token: env('DASHBOARD_TOKEN', '')
+    // control plane beyond loopback unless the operator explicitly accepts the
+    // risk with DASHBOARD_ALLOW_INSECURE=true (trusted local preview only).
+    token: env('DASHBOARD_TOKEN', ''),
+    allowInsecure: envBool('DASHBOARD_ALLOW_INSECURE', false)
   },
   team: {
     names: BOT_NAMES,
@@ -159,6 +165,10 @@ const config = {
     lockTtlMs: envInt('TASK_LOCK_TTL_MS', 30000),
     observationTtlMs: envInt('OBSERVATION_TTL_MS', 300000),
     maxObservations: envInt('MAX_OBSERVATIONS', 4000),
+    // A task that repeatedly produces no verified progress is released back to
+    // the board instead of pinning one bot to a dead area forever.
+    taskStallMs: envInt('TASK_STALL_MS', 90000),
+    taskStallCycles: envInt('TASK_STALL_CYCLES', 3),
     formation: env('TEAM_FORMATION', 'FOLLOW'),
     // Autonomy is gated on a verified spawn + authentication.
     requireSpawnBeforeAutonomy: true
@@ -168,7 +178,11 @@ const config = {
     tickMs: envInt('AUTONOMY_TICK_MS', 750),
     actionTimeoutMs: envInt('ACTION_TIMEOUT_MS', 60000),
     maxConsecutiveFailures: envInt('MAX_ACTION_FAILURES', 4),
-    pvp: envBool('PvP_ENABLED', false), // PvP is off by default, always.
+    // PvE is safe automation and is on by default. PvP is also enabled as a
+    // feature, but PvpPolicy still requires an explicit operator target list;
+    // no player is ever auto-targeted by scanning.
+    pve: envBool('PVE_ENABLED', true),
+    pvp: envBool('PvP_ENABLED', true),
     serverPvp: envBool('SERVER_PVP_ENABLED', true), // set false when the Minecraft server itself has pvp=false
     // Optional AI hook. Disabled by default; the deterministic engine is
     // complete without it.
@@ -284,6 +298,8 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   text('server.version', server.version, 64);
   if (server.auth !== 'offline' && server.auth !== 'microsoft') fail('server.auth', "must be 'offline' or 'microsoft'");
   integer('server.connectTimeoutMs', server.connectTimeoutMs, 1000, 600000);
+  integer('server.loginTimeoutMs', server.loginTimeoutMs, 1000, 600000);
+  integer('server.spawnTimeoutMs', server.spawnTimeoutMs, 1000, 600000);
   integer('server.keepAliveMs', server.keepAliveMs, 1000, 3600000);
   integer('server.staleAfterMs', server.staleAfterMs, 1000, 3600000);
   integer('server.rejoinDelayMs', server.rejoinDelayMs, 0, 3600000);
@@ -315,8 +331,11 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   else if (dashboard.token && dashboard.token.length < 16) fail('dashboard.token', 'must be at least 16 characters, or empty to leave the local demo open');
   else if (dashboard.token.length > 256) fail('dashboard.token', 'must be at most 256 characters');
   const loopbackBind = ['127.0.0.1', '::1', 'localhost'].includes(String(dashboard.host || '').toLowerCase());
-  if (!dashboard.token && !loopbackBind) {
-    warn('dashboard.token', 'is empty while the dashboard is bound beyond loopback; set DASHBOARD_TOKEN before exposing the control plane');
+  boolean('dashboard.allowInsecure', dashboard.allowInsecure);
+  if (!dashboard.token && !loopbackBind && !dashboard.allowInsecure) {
+    fail('dashboard.token', 'is empty while the dashboard is bound beyond loopback; set DASHBOARD_TOKEN or explicitly opt into DASHBOARD_ALLOW_INSECURE=true for a trusted local preview');
+  } else if (!dashboard.token && !loopbackBind && dashboard.allowInsecure) {
+    warn('dashboard.token', 'control plane is unauthenticated on a non-loopback bind because DASHBOARD_ALLOW_INSECURE=true');
   }
 
   if (!Array.isArray(team.names) || team.names.length !== BOT_NAMES.length || team.names.some((name, index) => name !== BOT_NAMES[index])) {
@@ -327,10 +346,13 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('team.lockTtlMs', team.lockTtlMs, 1000, 3600000);
   integer('team.observationTtlMs', team.observationTtlMs, 1000, 86400000);
   integer('team.maxObservations', team.maxObservations, 1, 100000);
+  integer('team.taskStallMs', team.taskStallMs, 1000, 3600000);
+  integer('team.taskStallCycles', team.taskStallCycles, 1, 100);
 
   boolean('autonomy.enabled', autonomy.enabled);
   integer('autonomy.tickMs', autonomy.tickMs, 50, 60000);
   integer('autonomy.actionTimeoutMs', autonomy.actionTimeoutMs, 1000, 3600000);
+  boolean('autonomy.pve', autonomy.pve);
   boolean('autonomy.pvp', autonomy.pvp);
   boolean('autonomy.serverPvp', autonomy.serverPvp);
   if (autonomy.ai && autonomy.ai.enabled) {

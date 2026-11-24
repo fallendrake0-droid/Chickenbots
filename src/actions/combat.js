@@ -27,7 +27,7 @@ function sleep(ms) {
 class CombatController {
   constructor({
     bot, team = null, combatTeam = null, memory = null, logger = null, comms = null,
-    pvp = config.autonomy.pvp, pvpTargets = [], protectedPlayers = [], mode = 'BALANCED',
+    pvp = config.autonomy.pvp, pve = config.autonomy.pve, pvpTargets = [], protectedPlayers = [], mode = 'BALANCED',
     meta = null, config: combatConfig = {}
   } = {}) {
     if (!bot) throw new Error('CombatController requires a bot');
@@ -66,7 +66,7 @@ class CombatController {
     this.killedIds = new Set();
     this.totems = new TotemManager({ bot, team, comms, reserve: 1, criticalReserve: 1 });
     this.guardPosition = null;
-    this.pveEnabled = true;
+    this.pveEnabled = pve !== false;
     this.armed = true;
     this._meta = meta || bot.itemMeta || {};
     this.serverPvp = Boolean(bot.serverPvp === undefined ? config.autonomy.serverPvp !== false : bot.serverPvp);

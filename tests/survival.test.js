@@ -34,8 +34,10 @@ test('configuration preserves the five usernames, server defaults and safety swi
   assert.equal(config.server.joinIntervalMs, 10000);
   assert.equal(config.server.joinJitterMs, 0);
   assert.equal(config.dashboard.port, 3000);
-  assert.equal(config.dashboard.host, '0.0.0.0');
-  assert.equal(config.autonomy.pvp, false);
+  assert.equal(config.dashboard.host, '127.0.0.1');
+  assert.equal(config.dashboard.allowInsecure, false);
+  assert.equal(config.autonomy.pve, true);
+  assert.equal(config.autonomy.pvp, true);
   assert.equal(config.autonomy.ai.enabled, false);
   assert.equal(config.autonomy.ai.apiKey, '');
   assert.ok(config.team.requireSpawnBeforeAutonomy);

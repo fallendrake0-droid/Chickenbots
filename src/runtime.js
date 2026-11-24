@@ -516,13 +516,16 @@ class TeamRuntime {
       }
       for (const actions of this.actions.list()) {
         const bot = actions.bot;
-        if (!bot.connected || !bot.spawned || bot.health <= 0) continue;
+        if (!bot.connected || !bot.spawned) continue;
         try {
+          // Safety and death bookkeeping must run for a dead bot too; the
+          // controller returns early without moving it.
           await actions.safetyTick();
+          if (bot.health <= 0) continue;
           const assignment = this.coordinator.getAssignment(bot.name);
           if (assignment) {
             await actions.step({ coordinator: this.coordinator, bots: this.bots });
-          } else if (this.ticks % 20 === 0) {
+          } else if (this.ticks % 20 === 0 && actions.recovery.canWork()) {
             await this._idleWork(actions);
           }
         } catch (err) {
@@ -563,7 +566,7 @@ class TeamRuntime {
     // stacking on top.
     await Promise.allSettled(this.actions.list().map(async (actions) => {
       const bot = actions.bot;
-      if (!bot.ready || !bot.connected || !bot.spawned || bot.health <= 0) return;
+      if (!bot.ready || !bot.connected || !bot.spawned) return;
       try {
         await actions.safetyTick();
       } catch (err) {
@@ -729,8 +732,16 @@ class TeamRuntime {
       ticks: this.ticks,
       uptimeMs: this.startedAt ? Date.now() - this.startedAt : 0,
       home: this.home,
-      bots: [...this.bots.values()].map((bot) => ({ name: bot.name, connected: bot.connected, spawned: bot.spawned, authenticated: bot.authenticated, ready: bot.ready })),
+      bots: [...this.bots.values()].map((bot) => ({ name: bot.name, connected: bot.connected, spawned: bot.spawned, authenticated: bot.authenticated, ready: bot.ready, health: bot.health, deaths: bot.deaths || 0, lastSpawn: bot.lastSpawn || null, stageTimings: bot.stageTimings || null })),
       connectionErrors: { ...this.connectionErrors },
+      joinQueue: {
+        nextJoinAt: this.nextJoinAt || null,
+        cooldownUntil: this.joinCooldownUntil || null,
+        waiting: [...this.reconnectTasks.keys()],
+        joinIntervalMs: config.server.joinIntervalMs,
+        joinJitterMs: config.server.joinJitterMs,
+        throttleStrikes: this.throttleStrikes || 0
+      },
       dashboard: this.dashboard ? this.dashboard.url : null,
       construction: this.construction ? { activeId: this.construction.activeId, projects: this.construction.projects.size } : null,
       combat: this.combatTeam ? this.combatTeam.status() : null,

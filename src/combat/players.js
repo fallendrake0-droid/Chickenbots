@@ -3,9 +3,10 @@
 const { config } = require('../config');
 
 /**
- * Explicit player-target authorisation. PvP is off by default; neither a random
- * player nor a teammate can become a target through scanning. Targets must be
- * named by an operator and the server's PvP setting remains authoritative.
+ * Explicit player-target authorisation. PvP is enabled as a feature by default,
+ * but neither a random player nor a teammate can become a target through
+ * scanning. Targets must be named by an operator and the server's PvP setting
+ * remains authoritative.
  */
 class PvpPolicy {
   constructor({ teamNames = config.team.names, enabled = false, mode = 'EXPLICIT', targets = [], protectedPlayers = [], arenas = [] } = {}) {
@@ -55,7 +56,7 @@ class PvpPolicy {
     if (!player) return { ok: false, code: 'NO_TARGET', error: 'no player target' };
     if (this.isTeammate(player)) return { ok: false, code: 'TEAMMATE', error: 'teammates are never valid PvP targets' };
     if (this.isProtected(player)) return { ok: false, code: 'PROTECTED', error: 'player is protected' };
-    if (!this.isAuthorized(player)) return { ok: false, code: 'NOT_AUTHORIZED', error: 'player is not on the explicit target list' };
+    if (!this.isAuthorized(player)) return { ok: false, code: 'NOT_AUTHORIZED', error: 'player is not on the explicit PvP target list' };
     if (this.mode === 'EXPLICIT' && !explicit) return { ok: false, code: 'NOT_EXPLICIT', error: 'explicit operator targeting is required' };
     const arena = this.inArena(position || (player && player.position));
     if (!arena.allowed) return { ok: false, code: 'ARENA', error: arena.reason };

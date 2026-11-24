@@ -26,7 +26,10 @@ function tokenize(line) {
     if (quote) {
       if (char === quote) quote = null;
       else current += char;
-    } else if (char === '"' || char === "'") {
+    } else if ((char === '"' || char === "'") && current === '') {
+      // Only a quote at the start of a token opens a quoted string. This keeps
+      // JSON parameter objects (`--params {"block":"stone"}`) intact instead of
+      // silently stripping their property quotes.
       quote = char;
     } else if (/\s/.test(char)) {
       if (current) { tokens.push(current); current = ''; }

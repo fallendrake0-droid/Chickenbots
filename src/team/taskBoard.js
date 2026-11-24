@@ -109,7 +109,7 @@ class TaskBoard {
   addTask(spec) {
     if (!spec || !spec.type) throw new Error('task requires a type');
     if (this.tasks.size >= this.maxTasks) return { ok: false, error: 'task board full' };
-    const id = spec.id || `task-${++taskSeq}-${spec.type.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+    const id = spec.id || `task-${Date.now().toString(36)}-${++taskSeq}-${spec.type.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
     if (this.tasks.has(id)) return { ok: false, error: `duplicate task id ${id}` };
     const task = {
       id,
@@ -136,6 +136,9 @@ class TaskBoard {
       completedAt: null,
       lastError: null,
       verification: null,
+      stallCycles: 0,
+      noProgressSince: null,
+      lastProgressValue: 0,
       metadata: spec.metadata || {},
       lockKeys: spec.lockKeys ? spec.lockKeys.slice() : []
     };
@@ -215,6 +218,9 @@ class TaskBoard {
     task.status = TASK_STATUS.CLAIMED;
     task.attempts += 1;
     task.lastError = null;
+    task.stallCycles = 0;
+    task.noProgressSince = this.now();
+    task.lastProgressValue = task.units.current || 0;
     this._clearWait(botId);
     this._event('task.claimed', { taskId, botId });
     return { ok: true, task };
@@ -265,7 +271,14 @@ class TaskBoard {
   updateProgress(taskId, { current, target, note } = {}) {
     const task = this.tasks.get(taskId);
     if (!task) return null;
-    if (current !== undefined) task.units.current = Math.max(0, current);
+    if (current !== undefined) {
+      const previous = task.units.current || 0;
+      task.units.current = Math.max(0, current);
+      if (task.units.current > previous) {
+        task.noProgressSince = this.now();
+        task.stallCycles = 0;
+      }
+    }
     if (target !== undefined) task.units.target = Math.max(0, target);
     if (note) task.progressNote = note;
     if (task.objectiveId) this.refreshObjectiveProgress(task.objectiveId);

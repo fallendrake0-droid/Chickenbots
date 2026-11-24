@@ -5,7 +5,7 @@ const THROTTLE_RE = /throttl|wait before reconnecting|too many connect|rate.?lim
 // A server that accepts the socket but never sends login/spawn is usually
 // still enforcing the same per-IP limiter. Treat it like a throttle so the
 // fleet backs off instead of retrying into the block.
-const JOIN_STALL_RE = /timed out waiting for spawn|before the bot became ready|no login confirmation|no register confirmation/i;
+const JOIN_STALL_RE = /timed out waiting for spawn|timed out.*waiting for protocol login|before the bot became ready|no login confirmation|no register confirmation/i;
 
 function isThrottleError(error) {
   return THROTTLE_RE.test(String(error || ''));

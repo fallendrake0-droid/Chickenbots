@@ -65,6 +65,22 @@ class MockBot extends BotAdapter {
     this.uptimeMs = 0;
     this.startedAt = Date.now();
     this._lastDamage = 0;
+    this.deaths = 0;
+    this.diedAt = null;
+    this.lastDeath = null;
+    this.lastDeathMessage = null;
+    this.lastAttacker = null;
+    this.lastDamageAmount = 0;
+    this.lastDamageAt = 0;
+    this.deathHistory = [];
+    this.lastSpawn = {
+      at: Date.now(),
+      respawned: false,
+      position: { ...this.position },
+      health: this.health,
+      food: this.food,
+      dimension: 'overworld'
+    };
     this._tickHandle = null;
     this.stats = { dug: 0, placed: 0, moved: 0, attacked: 0, eaten: 0, crafted: 0, fished: 0, deaths: 0, potions: 0, totemActivations: 0, damageDealt: 0, damageTaken: 0 };
     this.itemMeta = {};
@@ -504,11 +520,20 @@ class MockBot extends BotAdapter {
     return { ok: true, dropped };
   }
 
-  damage(amount, cause = 'mob') {
+  damage(amount, cause = 'mob', { attacker = null, message = null } = {}) {
     const before = this.health;
-    this.health = Math.max(0, this.health - amount);
-    this.stats.damageTaken += amount;
+    const damage = Math.max(0, Number(amount) || 0);
+    this.health = Math.max(0, this.health - damage);
+    this.stats.damageTaken += damage;
     this._lastDamage = Date.now();
+    this.lastDamageAt = this._lastDamage;
+    this.lastDamageAmount = Number((before - this.health).toFixed(2));
+    this.lastAttacker = attacker ? {
+      name: attacker.name || attacker.username || attacker.type || cause,
+      type: attacker.type || null,
+      distance: Number.isFinite(attacker.distance) ? Number(attacker.distance.toFixed(1)) : null
+    } : null;
+    if (message) this.lastDeathMessage = String(message).slice(0, 240);
     if (this.health <= 0 && this.getOffhand() === 'totem_of_undying' && this.countItem('totem_of_undying') > 0) {
       this.removeItem('totem_of_undying', 1);
       this.equipment.offhand = null;
@@ -524,19 +549,49 @@ class MockBot extends BotAdapter {
       this.deaths++;
       this.stats.deaths++;
       this.diedAt = { ...this.position };
-      return { dead: true };
+      const at = Date.now();
+      const causeLabel = this.lastAttacker
+        ? `${this.lastAttacker.name}${this.lastAttacker.distance !== null ? ` (${this.lastAttacker.distance}m)` : ''}`
+        : this.lastDeathMessage || cause || 'unknown damage source';
+      this.lastDeath = {
+        at,
+        position: { ...this.position },
+        cause: causeLabel,
+        healthBefore: before,
+        food: this.food,
+        lastDamageAt: this.lastDamageAt || null,
+        lastDamageAmount: this.lastDamageAmount || null,
+        attacker: this.lastAttacker || null,
+        message: this.lastDeathMessage || null,
+        dimension: this.dimension || 'overworld'
+      };
+      this.deathHistory.push(this.lastDeath);
+      if (this.deathHistory.length > 40) this.deathHistory.shift();
+      this.lastDeathMessage = null;
+      return { dead: true, death: this.lastDeath };
     }
     return { dead: false, health: this.health };
   }
 
   respawn(position = null) {
+    const firstSpawn = !this.lastSpawn;
     this.health = 20;
     this.food = 20;
     this.position = position || { x: 0, y: this.world.surfaceY(0, 0) + 1, z: 0 };
     this.isSleeping = false;
     this.inLava = false;
     this.onFire = false;
-    return { ok: true, position: this.position };
+    this.spawned = true;
+    this.lastSpawn = {
+      at: Date.now(),
+      respawned: !firstSpawn,
+      position: { ...this.position },
+      health: this.health,
+      food: this.food,
+      dimension: this.dimension || 'overworld'
+    };
+    this.deathHandled = true;
+    return { ok: true, position: this.position, lastSpawn: this.lastSpawn };
   }
 
   startTicking(intervalMs = 500) {

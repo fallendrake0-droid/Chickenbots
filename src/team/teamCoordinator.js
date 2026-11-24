@@ -179,14 +179,33 @@ class TeamCoordinator {
     return [...this.botStates.values()].filter((s) => s.connected !== false && s.spawned !== false && s.authenticated !== false && s.ready !== false && (s.health === undefined || s.health > 0));
   }
 
+  /** Release a bot's current work without marking the whole bot offline. */
+  releaseWork(name, reason = 'work released') {
+    const assignment = this.assignments.get(name);
+    if (!assignment) return { ok: true, released: false };
+    const task = this.board.getTask(assignment.taskId);
+    if (task && ['CLAIMED', 'ACTIVE'].includes(task.status) && task.claimedBy === name) {
+      this.board.release(task.id, name, reason);
+      this.comms.send('TASK_RELEASED', name, { taskId: task.id, reason });
+    }
+    this.assignments.delete(name);
+    this.roles.set(name, 'IDLE');
+    return { ok: true, released: true, taskId: assignment.taskId, reason };
+  }
+
   assignTask(name, taskId) {
-    const bot = this.botStates.get(name);
-    if (!bot) return { ok: false, error: 'unknown bot' };
+    // Operators may assign work before the first coordinator tick has produced
+    // a bot state; the roster is the authority, not the observation cache.
     if (!this.botNames.includes(name)) return { ok: false, error: 'unknown bot' };
-    const res = this.board.claim(taskId, name);
-    if (!res.ok) return res;
+    // Forced assignment must not silently orphan the previous task. Release it
+    // first so the board can hand it to another bot.
+    const previous = this.assignments.get(name);
+    const releasedPrevious = Boolean(previous && previous.taskId !== taskId);
+    if (releasedPrevious) this.releaseWork(name, 'reassigned by operator');
+    const res = this.board.claim(taskId, name, { force: true });
+    if (!res.ok) return { ...res, releasedPrevious };
     this._setAssignment(name, res.task);
-    return res;
+    return { ...res, releasedPrevious };
   }
 
   _setAssignment(name, task) {
@@ -317,7 +336,34 @@ class TeamCoordinator {
     this.ensureObjectives();
     for (const obj of this.board.listObjectives('ACTIVE')) this.board.refreshObjectiveProgress(obj.id);
 
-    // 6. Allocate work to idle bots.
+    // 6. Reconcile assignments before allocating new work. A task cancelled,
+    // completed elsewhere or expired out from under a bot used to leave the
+    // assignment map pointing at dead work forever, so that bot never received
+    // another task. Heartbeats also keep long actions from expiring mid-task.
+    for (const [name, assignment] of [...this.assignments]) {
+      const task = this.board.getTask(assignment.taskId);
+      const terminal = !task || ['COMPLETED', 'FAILED', 'CANCELLED', 'BLOCKED'].includes(task.status);
+      if (terminal || (task.claimedBy && task.claimedBy !== name)) {
+        this.assignments.delete(name);
+        this.roles.set(name, 'IDLE');
+        summary.released = summary.released || [];
+        summary.released.push({ bot: name, taskId: assignment.taskId, reason: terminal ? `task ${task ? task.status : 'missing'}` : `owner ${task.claimedBy}` });
+        continue;
+      }
+      if (['CLAIMED', 'ACTIVE'].includes(task.status)) this.board.heartbeat(task.id, name);
+    }
+
+    // Work that has burned its whole retry budget can never be claimed again;
+    // close it instead of leaving a PENDING row that the board can never move.
+    for (const task of this.board.listTasks({ status: 'PENDING' })) {
+      if (!task.claimedBy && task.attempts >= task.maxAttempts) {
+        this.board.fail(task.id, task.lastError || 'retry limit reached', { retry: false });
+        summary.failed = summary.failed || [];
+        summary.failed.push({ taskId: task.id, type: task.type, reason: 'retry limit reached' });
+      }
+    }
+
+    // 7. Allocate work to idle bots.
     const idle = this.activeBots()
       .filter((s) => !this.assignments.has(s.name) && !this.rescues.has(s.name))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -330,7 +376,7 @@ class TeamCoordinator {
       }
     }
 
-    // 7. Deadlock recovery.
+    // 8. Deadlock recovery.
     const resolutions = this.board.resolveDeadlocks();
     for (const res of resolutions) {
       this.comms.send('DEADLOCK_RESOLVED', 'system', res);
@@ -338,7 +384,7 @@ class TeamCoordinator {
       if (this.logger) this.logger.warn(`deadlock resolved: ${res.taskId} released from ${res.releasedFrom}`);
     }
 
-    // 8. Cleanup.
+    // 9. Cleanup.
     this.memory.cleanup();
     for (const [name, state] of this.botStates) {
       if (state.connected === false && now - state.lastUpdate > 10 * 60 * 1000) this.botStates.delete(name);

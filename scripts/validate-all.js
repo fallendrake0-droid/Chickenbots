@@ -48,7 +48,8 @@ function consistency() {
     return { ok: result.ok, detail: result.errors.length ? result.errors.join('; ') : `${result.warnings.length} warning(s)` };
   });
   check('AI disabled and keyless', () => ({ ok: config.autonomy.ai.enabled === false, detail: 'deterministic mode' }));
-  check('PvP disabled', () => ({ ok: config.autonomy.pvp === false, detail: 'false' }));
+  check('PvE enabled', () => ({ ok: config.autonomy.pve === true, detail: 'true' }));
+  check('PvP enabled (explicit targets only)', () => ({ ok: config.autonomy.pvp === true, detail: 'true' }));
   check('manifest exists and meets minimum', () => {
     const manifest = loadManifest();
     if (!manifest) return { ok: false, detail: 'run npm run schematics:generate' };

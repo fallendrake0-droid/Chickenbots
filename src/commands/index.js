@@ -41,6 +41,58 @@ function pickBot(services, name = null) {
   return bot;
 }
 
+/** Parse `key=value` / `--params <json>` task parameters without eval. */
+function parseTaskParams(args) {
+  const params = {};
+  const labelParts = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i]);
+    if (token === '--params') {
+      const raw = args[++i];
+      if (raw === undefined) throw new CommandError('--params requires a JSON object');
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch (_) { throw new CommandError('--params must be valid JSON'); }
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new CommandError('--params must be a JSON object');
+      Object.assign(params, parsed);
+      continue;
+    }
+    if (token.startsWith('{')) {
+      const raw = args.slice(i).join(' ');
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch (_) { throw new CommandError('task parameters must be valid JSON'); }
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new CommandError('task parameters must be a JSON object');
+      Object.assign(params, parsed);
+      break;
+    }
+    const match = token.match(/^([a-zA-Z][a-zA-Z0-9_]*)=(.*)$/);
+    if (match) {
+      const key = match[1];
+      let value = match[2];
+      if (/^-?\d+(?:\.\d+)?$/.test(value)) value = Number(value);
+      else if (value === 'true' || value === 'false') value = value === 'true';
+      else if (value === 'null') value = null;
+      params[key] = value;
+      continue;
+    }
+    labelParts.push(token);
+  }
+  return { params, label: labelParts.join(' ').trim() };
+}
+
+function validateTaskParams(type, params) {
+  if (type === 'TRANSFER_ITEMS') {
+    if (!params.item) throw new CommandError('TRANSFER_ITEMS requires item=<name>');
+    if (!params.to && !params.recipient) throw new CommandError('TRANSFER_ITEMS requires to=<bot>');
+  }
+  if (type === 'STORE_ITEMS' && !params.item && !params.containers) {
+    throw new CommandError('STORE_ITEMS requires item=<name> (deposit) or containers=<count> (place chests)');
+  }
+  if (type === 'BUILD_BLOCK' && !params.buildId) throw new CommandError('BUILD_BLOCK requires buildId=<id>');
+  if (type === 'EXCAVATE_REGION' && params.volume !== undefined && !Number.isFinite(Number(params.volume))) {
+    throw new CommandError('EXCAVATE_REGION volume must be a number');
+  }
+}
+
 function actionsFor(services, name) {
   if (!services.actions) throw new CommandError('action layer unavailable');
   const actions = services.actions.get(name);
@@ -205,9 +257,10 @@ function registerAll(services, registry) {
       const checks = [];
       checks.push({ name: 'roster', ok: JSON.stringify(config.team.names) === JSON.stringify(BOT_NAMES) && config.team.names.length === 5, detail: config.team.names.join(', ') });
       checks.push({ name: 'server-default', ok: config.server.host === 'cr3xlol.aternos.me' && config.server.port === 55742 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port} (${config.server.version})` });
-      checks.push({ name: 'pvp-disabled', ok: config.autonomy.pvp === false, detail: String(config.autonomy.pvp) });
+      checks.push({ name: 'pve-enabled', ok: config.autonomy.pve !== false, detail: String(config.autonomy.pve) });
+      checks.push({ name: 'pvp-explicit-only', ok: config.autonomy.pvp === true, detail: `${config.autonomy.pvp} (explicit target list still required)` });
       checks.push({ name: 'ai-disabled', ok: config.autonomy.ai.enabled === false, detail: 'deterministic local intelligence' });
-      checks.push({ name: 'dashboard-sandbox-bind', ok: config.dashboard.host === '0.0.0.0', detail: `${config.dashboard.host}:${config.dashboard.port}` });
+      checks.push({ name: 'dashboard-safe-bind', ok: ['127.0.0.1', '::1', 'localhost'].includes(String(config.dashboard.host).toLowerCase()) || Boolean(config.dashboard.token) || config.dashboard.allowInsecure === true, detail: `${config.dashboard.host}:${config.dashboard.port}${config.dashboard.token ? ' (token)' : config.dashboard.allowInsecure ? ' (explicit insecure opt-in)' : ''}` });
       const library = services.library;
       checks.push({ name: 'schematic-library', ok: Boolean(library && library.loaded && library.count >= config.schematics.minimumCount), detail: library && library.loaded ? `${library.count} designs` : 'not generated' });
       if (library && library.loaded) {
@@ -689,21 +742,32 @@ function registerAll(services, registry) {
       if (sub === 'add') {
         const type = String(args[1] || '').toUpperCase();
         if (!TASK_TYPES.has(type)) throw new CommandError(`invalid task type '${type}'`);
-        const label = args.slice(2).join(' ') || type;
-        const result = services.taskBoard.addTask({ type, label, priority: 50 });
-        return { ok: true, task: result.task };
+        const parsed = parseTaskParams(args.slice(2));
+        validateTaskParams(type, parsed.params);
+        const label = parsed.label || type;
+        const result = services.taskBoard.addTask({ type, label, priority: 50, params: parsed.params });
+        if (!result.ok) return result;
+        return { ok: true, task: result.task, params: result.task.params };
       }
       if (sub === 'assign') {
         const task = services.taskBoard.getTask(args[1]);
         if (!task) return { ok: false, error: 'unknown task' };
+        if (['COMPLETED', 'CANCELLED'].includes(task.status)) return { ok: false, error: `cannot assign a ${task.status.toLowerCase()} task` };
         const bot = pickBot(services, args[2]);
-        const claim = services.taskBoard.claim(task.id, bot.name, { force: true });
-        if (!claim.ok) return { ok: false, error: claim.error };
-        if (services.coordinator) services.coordinator.assignTask(bot.name, task.id);
-        return { ok: true, task: claim.task, assignedTo: bot.name };
+        const assigned = services.coordinator
+          ? services.coordinator.assignTask(bot.name, task.id)
+          : services.taskBoard.claim(task.id, bot.name, { force: true });
+        if (!assigned.ok) return { ok: false, error: assigned.error };
+        return { ok: true, task: assigned.task || task, assignedTo: bot.name, releasedPrevious: Boolean(assigned.releasedPrevious) };
       }
       if (sub === 'cancel') {
+        const task = services.taskBoard.getTask(args[1]);
         const result = services.taskBoard.cancel(args[1], 'cancelled by operator');
+        if (task && services.coordinator) {
+          for (const [name, assignment] of [...services.coordinator.assignments]) {
+            if (assignment.taskId === task.id) services.coordinator.clearAssignment(name);
+          }
+        }
         return { ok: result.ok !== false, ...result };
       }
       if (sub === 'priority') {
@@ -719,9 +783,26 @@ function registerAll(services, registry) {
       if (sub === 'retry') {
         const task = services.taskBoard.getTask(args[1]);
         if (!task) return { ok: false, error: 'unknown task' };
+        const owner = task.claimedBy;
+        if (['CLAIMED', 'ACTIVE'].includes(task.status) && owner) {
+          services.taskBoard.release(task.id, owner, 'operator retry');
+        }
         task.status = 'PENDING';
         task.claimedBy = null;
+        task.claimedAt = null;
+        task.claimExpiresAt = null;
+        task.completedAt = null;
         task.lastError = null;
+        task.verification = null;
+        task.attempts = 0;
+        task.stallCycles = 0;
+        task.noProgressSince = null;
+        task.lastProgressValue = task.units ? task.units.current : 0;
+        if (services.coordinator) {
+          for (const [name, assignment] of [...services.coordinator.assignments]) {
+            if (assignment.taskId === task.id || name === owner) services.coordinator.clearAssignment(name);
+          }
+        }
         return { ok: true, task };
       }
       if (sub === 'objective') {

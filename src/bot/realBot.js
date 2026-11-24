@@ -43,6 +43,8 @@ class RealBot extends BotAdapter {
     this.loginPassword = loginPassword;
     this.registerPassword = registerPassword;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.loginTimeoutMs = config.server.loginTimeoutMs;
+    this.spawnTimeoutMs = config.server.spawnTimeoutMs;
     this.authEnabled = authEnabled !== false;
     this.registerOnFirstJoin = registerOnFirstJoin;
     this.hasRegistered = false;
@@ -63,6 +65,20 @@ class RealBot extends BotAdapter {
     // Set only when a spawned session ends, never for a failed connect attempt.
     this.lastSessionEndedAt = 0;
     this.lastDeath = null;
+    this.lastDeathMessage = null;
+    this.lastDamageAt = 0;
+    this.lastDamageAmount = 0;
+    this.lastAttacker = null;
+    this.deathHistory = [];
+    this.lastSpawn = null;
+    this.respawnAttempts = 0;
+    this.lastRespawnAt = 0;
+    this._respawnTimer = null;
+    this._loginWaiters = new Set();
+    this.loginAt = 0;
+    this.spawnAt = 0;
+    this.connectStartedAt = 0;
+    this.stageTimings = { connectMs: null, loginMs: null, spawnMs: null, authMs: null };
     this.spawnPosition = null;
     this.worldView = null;
     this._chatLog = [];
@@ -230,6 +246,13 @@ class RealBot extends BotAdapter {
     this._authWaiters.clear();
   }
 
+  _failLoginWaiters(error) {
+    for (const waiter of this._loginWaiters) {
+      waiter.resolve({ ok: false, code: 'LOGIN_TIMEOUT', error: error || 'connection closed before login' });
+    }
+    this._loginWaiters.clear();
+  }
+
   _failSpawnWaiters(error) {
     if (!this._spawnWaiters.size) return;
     for (const waiter of this._spawnWaiters) {
@@ -312,7 +335,20 @@ class RealBot extends BotAdapter {
     }
     this.stats.connections++;
     this._attachEvents();
-    const result = await this.waitForSpawn({ timeoutMs });
+    this.connectStartedAt = Date.now();
+    this.loginAt = 0;
+    this.spawnAt = 0;
+    const login = await this.waitForLogin({ timeoutMs: Math.min(this.loginTimeoutMs, timeoutMs) });
+    this.stageTimings.connectMs = Date.now() - this.connectStartedAt;
+    if (!login.ok) {
+      this.lastError = login.error;
+      await this.disconnect('protocol login timed out');
+      return { ok: false, ...login, spawned: false, authenticated: false };
+    }
+    this.stageTimings.loginMs = this.loginAt - this.connectStartedAt;
+    const stageStart = Date.now();
+    const result = await this.waitForSpawn({ timeoutMs: Math.min(this.spawnTimeoutMs, timeoutMs) });
+    this.stageTimings.spawnMs = Date.now() - stageStart;
     if (!result.ok) {
       // Do not leave a half-open socket behind for the next retry.
       await this.disconnect('connect attempt failed');
@@ -321,7 +357,9 @@ class RealBot extends BotAdapter {
     if (result.ok) {
       this.startedAt = Date.now();
       this.uptimeMs = 0;
+      this.stageTimings.authMs = Date.now() - stageStart;
       const auth = await this._handleLoginCommands();
+      this.stageTimings.authMs = Date.now() - stageStart;
       if (auth.ok === false) {
         this.lastError = auth.error;
         this.authenticated = false;
@@ -349,6 +387,9 @@ class RealBot extends BotAdapter {
     bot.on('login', () => {
       if (this.bot !== bot) return;
       this._markEvent();
+      this.loginAt = Date.now();
+      for (const waiter of this._loginWaiters) waiter.resolve({ ok: true });
+      this._loginWaiters.clear();
       this.logger.info(`[${this.name}] TRACE login event (protocol=${bot.protocolVersion}, version=${bot.version}, physics=${bot.physicsEnabled}, passwordRequired=${this.passwordRequired})`);
       this._installClientTrace();
       if (this.passwordRequired) this._lockMovement();
@@ -362,6 +403,17 @@ class RealBot extends BotAdapter {
       const firstSpawn = !this.spawned;
       this.connected = true;
       this.spawned = true;
+      this.spawnAt = Date.now();
+      this.respawnAttempts = 0;
+      if (this._respawnTimer) { clearTimeout(this._respawnTimer); this._respawnTimer = null; }
+      this.lastSpawn = {
+        at: this.spawnAt,
+        respawned: !firstSpawn,
+        position: this._vec(bot.entity?.position),
+        health: bot.health,
+        food: bot.food,
+        dimension: bot.game?.dimension || 'overworld'
+      };
       this._applySpawnAuth();
       this.position = this._vec(bot.entity?.position);
       this.spawnPosition = { ...this.position };
@@ -388,6 +440,15 @@ class RealBot extends BotAdapter {
       if (bot.health > 0 && count < this._lastTotemCount) {
         this.recordCombatEvent({ at: new Date().toISOString(), type: 'totem_activated', bot: this.name, health: bot.health, detectedBy: 'health-transition' });
       }
+      if (Number.isFinite(this._lastHealth) && bot.health < this._lastHealth) {
+        this.lastDamageAt = Date.now();
+        this.lastDamageAmount = Number((this._lastHealth - bot.health).toFixed(2));
+        const near = Object.values(bot.entities || {})
+          .filter((entity) => entity && entity !== bot.entity && entity.position && entity.position.distanceTo
+            && bot.entity?.position && entity.position.distanceTo(bot.entity.position) <= 12)
+          .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0] || null;
+        this.lastAttacker = near ? { name: near.name || near.username || near.type || 'unknown', type: near.type || null, distance: Number(near.position.distanceTo(bot.entity.position).toFixed(1)) } : null;
+      }
       this._lastHealth = bot.health;
       this._lastTotemCount = count;
       this.health = bot.health;
@@ -401,8 +462,30 @@ class RealBot extends BotAdapter {
       this._deathCount++;
       this.stats.deaths++;
       this.deaths = this._deathCount;
-      this.lastDeath = { at: Date.now(), position: { ...this.position } };
-      this.logger.warn(`[${this.name}] died at ${this.position.x},${this.position.y},${this.position.z}`);
+      const at = Date.now();
+      const cause = this.lastAttacker
+        ? `${this.lastAttacker.name}${this.lastAttacker.distance !== undefined ? ` (${this.lastAttacker.distance}m)` : ''}`
+        : this.lastDeathMessage || 'unknown damage source';
+      this.lastDeath = {
+        at,
+        position: { ...this.position },
+        cause,
+        healthBefore: Number.isFinite(this._lastHealth) ? this._lastHealth : null,
+        food: this.food,
+        lastDamageAt: this.lastDamageAt || null,
+        lastDamageAmount: this.lastDamageAmount || null,
+        attacker: this.lastAttacker || null,
+        message: this.lastDeathMessage || null,
+        dimension: this.dimension || 'overworld'
+      };
+      this.deathHistory.push(this.lastDeath);
+      if (this.deathHistory.length > 40) this.deathHistory.shift();
+      this.lastDeathMessage = null;
+      this.logger.warn(`[${this.name}] died at ${this.position.x},${this.position.y},${this.position.z} (cause: ${cause})`);
+      // Mineflayer does not always send client_command on its own. Ask the
+      // server for the respawn screen once, then once more if the first packet
+      // was lost. The spawn handler clears the timer, so this cannot loop.
+      this._scheduleRespawn();
     });
     bot.on('kicked', (reason) => {
       if (this.bot !== bot) return;
@@ -418,6 +501,7 @@ class RealBot extends BotAdapter {
       this.logger.warn(`[${this.name}] kicked (${kick.label}): ${this.lastError}`);
       this._dumpTrace(`kicked: ${this.lastError}`);
       this._abortAuth(this.lastError);
+      this._failLoginWaiters(this.lastError);
       this._failSpawnWaiters(this.lastError);
       if (kick.pauseRetries) {
         this.logger.error(`[${this.name}] automatic retries paused after ${kick.kind} kick; an explicit dashboard reconnect is required`);
@@ -431,6 +515,7 @@ class RealBot extends BotAdapter {
       this.lastError = this._redact(err.message);
       this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${this.lastError}`);
       this._abortAuth(this.lastError);
+      this._failLoginWaiters(this.lastError);
       this._failSpawnWaiters(this.lastError);
     });
     if (bot._client && typeof bot._client.on === 'function') {
@@ -477,6 +562,7 @@ class RealBot extends BotAdapter {
       const detail = this.lastError && this.lastError !== reason ? `${reason || 'end'}: ${this.lastError}` : (reason || 'end');
       this.logger.warn(`[${this.name}] disconnected: ${this._redact(detail)}`);
       this._abortAuth(this.lastError || `connection closed (${reason || 'end'})`);
+      this._failLoginWaiters(this.lastError || `connection closed (${reason || 'end'})`);
       this._failSpawnWaiters(this.lastError || `connection closed (${reason || 'end'})`);
     });
     bot.on('message', (message) => {
@@ -484,6 +570,10 @@ class RealBot extends BotAdapter {
       this._markEvent();
       const text = message.toString();
       const safe = this._redact(text);
+      const plain = String(text || '').replace(/\u00a7./g, '').trim();
+      if (this.name && plain.includes(this.name) && /(slain|killed|shot|blown up|burned|burn|drowned|fell|withered|starved|suffocat|died|death|magic|fireball|pummeled|impaled|stung|frozen)/i.test(plain)) {
+        this.lastDeathMessage = plain.slice(0, 240);
+      }
       this.logger.debug(`[${this.name}] TRACE chat: ${safe}`);
       // Only the redacted text is retained. Auth listeners still receive the
       // raw chat line locally so login confirmation parsing keeps working.
@@ -491,6 +581,32 @@ class RealBot extends BotAdapter {
       if (this._chatLog.length > 200) this._chatLog.shift();
       for (const listener of this._chatListeners) listener(text);
     });
+  }
+
+  /**
+   * Ask for a respawn when the server leaves the bot on the death screen.
+   * Bounded to two attempts; a live spawn event cancels the timer.
+   */
+  _scheduleRespawn(delayMs = 1500) {
+    if (this._respawnTimer) clearTimeout(this._respawnTimer);
+    this._respawnTimer = setTimeout(async () => {
+      this._respawnTimer = null;
+      if (!this.bot || !this.connected || this.health > 0 || this.spawned && this.lastSpawn && this.lastSpawn.at > (this.lastDeath?.at || 0)) return;
+      if (this.respawnAttempts >= 2) {
+        this.logger.warn(`[${this.name}] still dead after ${this.respawnAttempts} respawn requests; waiting for the server`);
+        return;
+      }
+      this.respawnAttempts++;
+      this.lastRespawnAt = Date.now();
+      try {
+        const result = await this.respawn();
+        this.logger.info(`[${this.name}] requested respawn (attempt ${this.respawnAttempts})${result.ok === false ? `: ${result.error}` : ''}`);
+      } catch (err) {
+        this.logger.warn(`[${this.name}] respawn request failed: ${err.message}`);
+      }
+      if (this.health <= 0 && this.respawnAttempts < 2) this._scheduleRespawn(3000);
+    }, delayMs);
+    if (this._respawnTimer.unref) this._respawnTimer.unref();
   }
 
   _formatKickReason(reason) {
@@ -515,7 +631,20 @@ class RealBot extends BotAdapter {
     return { x: Number(position.x.toFixed(3)), y: Number(position.y.toFixed(3)), z: Number(position.z.toFixed(3)) };
   }
 
-  waitForSpawn({ timeoutMs = this.connectTimeoutMs } = {}) {
+  waitForLogin({ timeoutMs = this.loginTimeoutMs } = {}) {
+    if (this.loginAt) return Promise.resolve({ ok: true, already: true, loginAt: this.loginAt });
+    return new Promise((resolve) => {
+      const waiter = { resolve: null };
+      const timer = setTimeout(() => {
+        this._loginWaiters.delete(waiter);
+        resolve({ ok: false, code: 'LOGIN_TIMEOUT', error: `timed out after ${timeoutMs}ms waiting for protocol login` });
+      }, timeoutMs);
+      waiter.resolve = (value) => { clearTimeout(timer); resolve(value); };
+      this._loginWaiters.add(waiter);
+    });
+  }
+
+  waitForSpawn({ timeoutMs = this.spawnTimeoutMs } = {}) {
     if (this.ready) return Promise.resolve({ ok: true, spawned: true, authenticated: true });
     return new Promise((resolve) => {
       const waiter = { resolve: null };
@@ -1344,6 +1473,8 @@ class RealBot extends BotAdapter {
   }
 
   async disconnect(reason = 'shutdown') {
+    if (this._respawnTimer) { clearTimeout(this._respawnTimer); this._respawnTimer = null; }
+    this._failLoginWaiters(reason || 'disconnected');
     this._stopAntiAfk();
     this._unlockMovement();
     this._restoreClientTrace();
@@ -1374,6 +1505,12 @@ class RealBot extends BotAdapter {
       lastEventAt: this.lastEventAt,
       lastSessionEndedAt: this.lastSessionEndedAt,
       lastDeath: this.lastDeath,
+      lastDeathMessage: this.lastDeathMessage,
+      lastDamageAt: this.lastDamageAt,
+      lastAttacker: this.lastAttacker,
+      deathHistory: this.deathHistory.slice(-10),
+      lastSpawn: this.lastSpawn,
+      stageTimings: { ...this.stageTimings },
       uptimeMs: this.uptimeMs,
       stats: { ...this.stats },
       chatLog: this.chatLog.slice(-8)

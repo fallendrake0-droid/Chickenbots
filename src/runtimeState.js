@@ -105,6 +105,7 @@ function statusSnapshot(services) {
     },
     survival: actionStatus.map((a) => a.survival),
     combat: actionStatus.map((a) => a.combat),
+    recovery: actionStatus.map((a) => a.recovery).filter(Boolean),
     combatTeam: services.combatTeam ? services.combatTeam.status() : null,
     inventory: {
       ledger: services.ledger ? services.ledger.snapshot() : null,
@@ -160,7 +161,8 @@ function statusSnapshot(services) {
           joinJitterMs: config.server.joinJitterMs,
           rejoinDelayMs: config.server.rejoinDelayMs
         },
-        dashboard: { host: config.dashboard.host, port: config.dashboard.port },
+        dashboard: { host: config.dashboard.host, port: config.dashboard.port, allowInsecure: config.dashboard.allowInsecure, tokenRequired: Boolean(config.dashboard.token) },
+        pve: config.autonomy.pve,
         pvp: config.autonomy.pvp,
         ai: config.autonomy.ai.enabled
       },
@@ -197,7 +199,10 @@ function publicTask(task) {
   return {
     id: task.id, type: task.type, label: task.label, status: task.status, priority: task.priority,
     claimedBy: task.claimedBy, objectiveId: task.objectiveId, region: task.region, units: task.units, dependsOn: task.dependsOn,
-    attempts: task.attempts, lastError: task.lastError, verified: Boolean(task.verification)
+    attempts: task.attempts, maxAttempts: task.maxAttempts, lastError: task.lastError, verified: Boolean(task.verification),
+    claimedAt: task.claimedAt, claimExpiresAt: task.claimExpiresAt, startedAt: task.startedAt, completedAt: task.completedAt,
+    createdAt: task.createdAt, stallCycles: task.stallCycles || 0, noProgressSince: task.noProgressSince || null,
+    verification: task.verification || null, progressNote: task.progressNote || null
   };
 }
 

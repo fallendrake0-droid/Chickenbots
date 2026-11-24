@@ -12,6 +12,7 @@ const { ExplorationController } = require('./exploration');
 const { InventoryManager } = require('./inventory');
 const { FishingController } = require('./fishing');
 const { HomeBaseManager } = require('./homeBase');
+const { RecoveryManager } = require('./recovery');
 
 /**
  * Per-bot action layer. Wires every controller to the same adapter and routes
@@ -37,8 +38,11 @@ class BotActions {
     this.excavationManager = excavationManager;
     this.logger = logger || new Logger({ level: config.logging.level });
     this.home = home || { x: 0, y: 64, z: 0 };
+    this.recovery = new RecoveryManager({ botName: bot.name, logger: this.logger });
+    this._deathHandled = false;
+    this._lastRecoveryStepAt = 0;
     this.survival = new SurvivalController({ bot, memory, logger: this.logger });
-    this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp });
+    this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp, pve: config.autonomy.pve });
     this.mining = new MiningController({ bot, memory, ledger, logger: this.logger });
     this.woodcutting = new WoodcuttingController({ bot, memory, ledger, logger: this.logger });
     this.farming = new FarmingController({ bot, memory, home: this.home, logger: this.logger });
@@ -72,6 +76,7 @@ class BotActions {
       exploration: this.exploration.status(),
       inventory: this.inventory.status(),
       homeBase: this.homeBase.status(),
+      recovery: this.recovery.status(),
       lastAction: this.lastAction,
       lastActionAt: this.lastActionAt
     };
@@ -79,24 +84,117 @@ class BotActions {
 
   /** Survival first, then immediate threats. Safe to call every tick. */
   async safetyTick() {
-    if (this.bot.health <= 0) {
+    const bot = this.bot;
+    if (bot.health <= 0) {
+      this._recordDeath();
       this.combat.onDeath('health reached zero');
-      return { ok: false, dead: true };
+      // A dead bot still needs recovery bookkeeping, but cannot act.
+      this.recovery.update({ health: 0, food: bot.food, threats: 0 });
+      return { ok: false, dead: true, recovery: this.recovery.status() };
     }
-    if (this.combat.state === 'DEAD') this.combat.onRespawn();
+    if (this._deathHandled || this.combat.state === 'DEAD') {
+      this.combat.onRespawn();
+      const threatsNow = typeof bot.entitiesNear === 'function' ? bot.entitiesNear(16) : [];
+      this.recovery.recordSpawn({
+        position: bot.position,
+        threats: threatsNow,
+        health: bot.health,
+        food: bot.food
+      });
+      this._deathHandled = false;
+    }
+    const assessment = this.combat.assess(14);
+    this.recovery.update({
+      health: bot.health,
+      food: bot.food,
+      threats: assessment.threats.length,
+      spawnSafe: this.recovery.spawnSafety ? this.recovery.spawnSafety.safe : null
+    });
+    if (!this.recovery.canWork()) {
+      const recovery = await this._recover(assessment);
+      return { ok: true, recovering: true, recovery, threatCount: assessment.threats.length };
+    }
     const survival = await this.survival.tick();
     const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
-    const threats = this.combat.assess(14);
     let defence = null;
-    if (threats.threats.length && this.combat.armed) {
+    if (assessment.threats.length && this.combat.armed) {
       defence = await this.combat.defend({ maxAttacks: 6 });
     }
-    const result = { ok: true, survival, follow, defence, threatCount: threats.threats.length };
+    const result = { ok: true, survival, follow, defence, threatCount: assessment.threats.length, recovery: this.recovery.status() };
     if (survival.actions.length || defence) {
       this.lastAction = survival.actions.length ? survival.actions[survival.actions.length - 1].action : 'combat';
       this.lastActionAt = Date.now();
     }
     return result;
+  }
+
+  /** Capture death evidence exactly once, even if both the adapter and the
+   * runtime observed the same event. */
+  _recordDeath() {
+    if (this._deathHandled) return this.recovery.status();
+    const bot = this.bot;
+    const last = bot.lastDeath || {};
+    const threats = typeof bot.entitiesNear === 'function' ? bot.entitiesNear(18) : [];
+    const killer = threats
+      .filter((entity) => entity.hostile || entity.type === 'player')
+      .sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999))[0] || null;
+    this.recovery.recordDeath({
+      at: Number(last.at) || Date.now(),
+      position: last.position || bot.position,
+      cause: last.cause || (killer ? `${killer.name || killer.type}` : 'unknown'),
+      healthBefore: last.healthBefore ?? null,
+      food: last.food ?? bot.food,
+      threats,
+      lastDamageAt: last.lastDamageAt || bot.lastDamageAt || null,
+      deathMessage: last.message || bot.lastDeathMessage || null
+    });
+    this._deathHandled = true;
+    if (this.team && typeof this.team.releaseWork === 'function') {
+      this.team.releaseWork(bot.name, 'bot died');
+    }
+    return this.recovery.status();
+  }
+
+  /**
+   * Do the minimum needed to break a death loop: heal, re-equip and retreat
+   * towards home. This never claims a task and never attacks a player.
+   */
+  async _recover(assessment = null) {
+    const now = Date.now();
+    if (now - this._lastRecoveryStepAt < 2500) return this.recovery.status();
+    this._lastRecoveryStepAt = now;
+    const bot = this.bot;
+    const actions = [];
+    try {
+      const survival = await this.survival.tick();
+      if (survival.actions.length) actions.push(...survival.actions);
+    } catch (err) {
+      this.logger.warn(`[${bot.name}] recovery survival step failed: ${err.message}`);
+    }
+    try {
+      if (bot.health <= 14) {
+        const healed = await this.combat.heal({ emergency: true });
+        if (healed.did) actions.push({ action: 'recovery-heal', kind: healed.kind || 'heal' });
+      }
+    } catch (err) {
+      this.logger.warn(`[${bot.name}] recovery heal failed: ${err.message}`);
+    }
+    const threats = assessment && Array.isArray(assessment.threats) ? assessment.threats : [];
+    const farFromHome = Math.hypot(bot.position.x - this.home.x, bot.position.z - this.home.z) > 8;
+    // Retreat whenever a threat is near and the bot is away from home, even at
+    // full health: waiting for damage before moving is what fed the death loop.
+    if (threats.length && farFromHome) {
+      try {
+        const away = threats[0] && threats[0].position ? threats[0].position : this.home;
+        const retreat = await bot.goTo(this.home, { range: 3, timeoutMs: 10000 });
+        actions.push({ action: 'recovery-retreat', from: { ...away }, ok: retreat.ok !== false, error: retreat.error });
+      } catch (err) {
+        this.logger.warn(`[${bot.name}] recovery retreat failed: ${err.message}`);
+      }
+    }
+    this.lastAction = actions.length ? actions[actions.length - 1].action : 'recovery-hold';
+    this.lastActionAt = Date.now();
+    return { ...this.recovery.status(), actions };
   }
 
   /** Build the survival-base hut phase (shared anchor near home) with real blocks. */
@@ -402,11 +500,35 @@ class BotActions {
 
   /** Execute the coordinator's current assignment, if any. */
   async step({ coordinator = null, builder = null, bots = null, recipient = null } = {}) {
+    // Recovery replanning is consumed before any new work is claimed. This is
+    // the state transition that used to be missing after a death: the old
+    // assignment kept pointing at a task the bot could no longer survive.
+    if (this.recovery.needsReplanning()) {
+      const assignment = coordinator ? coordinator.getAssignment(this.bot.name) : null;
+      if (assignment) {
+        const old = this.taskBoard ? this.taskBoard.getTask(assignment.taskId) : null;
+        if (old && ['CLAIMED', 'ACTIVE'].includes(old.status)) {
+          this.taskBoard.release(old.id, this.bot.name, 'recovery re-plan');
+        }
+        coordinator.clearAssignment(this.bot.name);
+      }
+      this.recovery.consumeReplan();
+      return { ok: true, held: true, replanned: true, recovery: this.recovery.status() };
+    }
+    if (!this.recovery.canWork()) {
+      return { ok: false, blocked: true, error: 'bot is in recovery', recovery: this.recovery.status() };
+    }
     const assignment = coordinator ? coordinator.getAssignment(this.bot.name) : null;
     if (!assignment || !this.taskBoard) return { ok: true, idle: true };
     const task = this.taskBoard.getTask(assignment.taskId);
-    if (!task) return { ok: false, error: 'assigned task missing' };
-    if (task.status === 'COMPLETED' || task.status === 'CANCELLED') return { ok: true, idle: true };
+    if (!task) {
+      if (coordinator) coordinator.clearAssignment(this.bot.name);
+      return { ok: false, error: 'assigned task missing' };
+    }
+    if (task.status === 'COMPLETED' || task.status === 'CANCELLED' || task.status === 'FAILED') {
+      if (coordinator) coordinator.clearAssignment(this.bot.name, { completed: task.status === 'COMPLETED' });
+      return { ok: true, idle: true };
+    }
     if (!task.claimedBy) {
       const claim = this.taskBoard.claim(task.id, this.bot.name);
       if (!claim.ok) {
@@ -419,11 +541,32 @@ class BotActions {
         return { ok: false, error: claim.error };
       }
     }
+    if (task.claimedBy !== this.bot.name) {
+      // The claim expired or was preempted between coordinator ticks. Do not
+      // execute work owned by another bot.
+      if (coordinator) coordinator.clearAssignment(this.bot.name);
+      return { ok: false, error: `task is owned by ${task.claimedBy}` };
+    }
     if (task.status !== 'ACTIVE') {
       const started = this.taskBoard.start(task.id, this.bot.name);
       if (!started.ok) return { ok: false, error: started.error };
     }
-    const result = await this.performTask(task, { builder, bots, recipient });
+    // Keep the claim alive for the whole action. Long mining/farming actions
+    // routinely exceed the 45s claim TTL; without this heartbeat the board
+    // released the task mid-action and another bot could duplicate the work.
+    const heartbeat = setInterval(() => {
+      try { this.taskBoard.heartbeat(task.id, this.bot.name); } catch (_) { /* board stopped */ }
+    }, Math.max(5000, Math.floor((this.taskBoard.claimTtlMs || 45000) / 3)));
+    if (heartbeat.unref) heartbeat.unref();
+    let result;
+    try {
+      result = await this.performTask(task, { builder, bots, recipient });
+    } finally {
+      clearInterval(heartbeat);
+      // A final heartbeat also covers tasks that completed faster than the
+      // interval; it is harmless because the task is about to leave ACTIVE.
+      this.taskBoard.heartbeat(task.id, this.bot.name);
+    }
     let verified = result.verified === true;
     let progress = null;
     if (verified && task.units && task.units.target > 1) {
@@ -431,6 +574,33 @@ class BotActions {
       progress = Math.min(task.units.target, (task.units.current || 0) + produced);
       this.taskBoard.updateProgress(task.id, { current: progress });
       if (progress < task.units.target) verified = false;
+    }
+    // A search that finds nothing is allowed to keep looking, but not forever.
+    // After a bounded no-progress window the claim is handed back so another
+    // bot (or a fresh approach) can try instead of pinning one bot to a dead
+    // area indefinitely.
+    if (!verified) {
+      const now = Date.now();
+      if (!task.noProgressSince) task.noProgressSince = now;
+      if (progress !== null && progress > (task.lastProgressValue || 0)) {
+        task.lastProgressValue = progress;
+        task.noProgressSince = now;
+        task.stallCycles = 0;
+      } else {
+        task.stallCycles = (task.stallCycles || 0) + 1;
+      }
+      const stallMs = Number(config.team.taskStallMs) || 90000;
+      const stallCycles = Number(config.team.taskStallCycles) || 3;
+      if (result.ok !== false && task.stallCycles >= stallCycles && now - task.noProgressSince >= stallMs) {
+        const error = `no verified progress in ${Math.round(stallMs / 1000)}s; released for re-planning`;
+        this.taskBoard.fail(task.id, error, { by: this.bot.name, retry: true });
+        if (coordinator) coordinator.clearAssignment(this.bot.name);
+        return { ...result, verified: false, progress, stalled: true, error };
+      }
+    } else {
+      task.noProgressSince = null;
+      task.stallCycles = 0;
+      task.lastProgressValue = progress === null ? task.units.current : progress;
     }
     if (verified) {
       this.taskBoard.complete(task.id, { by: this.bot.name, verified: true, notes: `${task.type} verified` });

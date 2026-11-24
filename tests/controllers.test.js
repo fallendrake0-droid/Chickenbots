@@ -42,7 +42,8 @@ test('runtime snapshot exposes every dashboard section with live values', async 
     assert.equal(snapshot.overview.online, 5);
     assert.equal(snapshot.overview.total, 5);
     assert.ok(snapshot.schematics.stats.count >= 1100);
-    assert.equal(snapshot.diagnostics.config.pvp, false);
+    assert.equal(snapshot.diagnostics.config.pvp, true);
+    assert.equal(snapshot.diagnostics.config.pve, true);
     assert.deepEqual(snapshot.diagnostics.config.roster, ['________', '10101000', '01010100', '11001100', '00110000']);
   } finally {
     await runtime.shutdown('test');
