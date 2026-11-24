@@ -211,10 +211,10 @@ class RealBot extends BotAdapter {
     if (this._traceLog.length > 120) this._traceLog.shift();
     const pos = `${entry.x ?? '-'},${entry.y ?? '-'},${entry.z ?? '-'}`;
     const line = `[${this.name}] TRACE ${direction} ${name} pos=${pos} yaw=${entry.yaw ?? '-'} pitch=${entry.pitch ?? '-'} ground=${entry.onGround} flags=${JSON.stringify(entry.flags)} auth=${entry.auth} locked=${entry.locked}`;
-    // Held packets are logged at info so the diagnostic is visible even when
-    // LOG_LEVEL is not debug; after auth the per-tick stream is debug-only.
-    if (direction === 'held-out') this.logger.info(line);
-    else this.logger.debug(line);
+    // Per-packet lines are debug-only, and the logger keeps TRACE lines off
+    // unless MC_TRACE_PACKETS=true because a flooded terminal can stall the
+    // socket keepalive.
+    this.logger.debug(line);
   }
 
   _dumpTrace(reason) {
@@ -358,7 +358,7 @@ class RealBot extends BotAdapter {
     bot.on('spawn', () => {
       if (this.bot !== bot) return;
       this._markEvent();
-      this.logger.info(`[${this.name}] TRACE spawn event (position=${bot.entity?.position ? `${bot.entity.position.x.toFixed(3)},${bot.entity.position.y.toFixed(3)},${bot.entity.position.z.toFixed(3)}` : 'none'}, onGround=${bot.entity?.onGround}, locked=${this._movementLock})`);
+      this.logger.debug(`[${this.name}] TRACE spawn event (position=${bot.entity?.position ? `${bot.entity.position.x.toFixed(3)},${bot.entity.position.y.toFixed(3)},${bot.entity.position.z.toFixed(3)}` : 'none'}, onGround=${bot.entity?.onGround}, locked=${this._movementLock})`);
       const firstSpawn = !this.spawned;
       this.connected = true;
       this.spawned = true;
@@ -450,13 +450,13 @@ class RealBot extends BotAdapter {
           flags: packet.flags,
           teleportId: packet.teleportId
         };
-        this.logger.info(`[${this.name}] TRACE in position x=${packet.x} y=${packet.y} z=${packet.z} yaw=${packet.yaw} pitch=${packet.pitch} flags=${JSON.stringify(packet.flags)} teleportId=${packet.teleportId}`);
+        this.logger.debug(`[${this.name}] TRACE in position x=${packet.x} y=${packet.y} z=${packet.z} yaw=${packet.yaw} pitch=${packet.pitch} flags=${JSON.stringify(packet.flags)} teleportId=${packet.teleportId}`);
       });
       bot._client.on('respawn', () => {
-        if (this.bot === bot) this.logger.info(`[${this.name}] TRACE in respawn`);
+        if (this.bot === bot) this.logger.debug(`[${this.name}] TRACE in respawn`);
       });
       bot._client.on('update_health', (packet) => {
-        if (this.bot === bot) this.logger.info(`[${this.name}] TRACE in update_health health=${packet.health} food=${packet.food}`);
+        if (this.bot === bot) this.logger.debug(`[${this.name}] TRACE in update_health health=${packet.health} food=${packet.food}`);
       });
       bot._client.on('packet', (data, meta) => {
         if (this.bot !== bot) return;

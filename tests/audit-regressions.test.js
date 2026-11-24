@@ -314,3 +314,50 @@ test('the join queue spaces starts and backs off exponentially after a throttle'
     if (runtime.shutdownController) runtime.shutdownController.abort();
   }
 });
+
+test('the pre-join safety tick never overlaps itself while the autonomy gate is closed', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    runtime.running = true;
+    Object.defineProperty(runtime, 'autonomyAllowed', { configurable: true, get: () => false });
+    let calls = 0;
+    let active = 0;
+    let peak = 0;
+    runtime._safetyOnlyTick = async () => {
+      calls++;
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      active--;
+    };
+    const first = runtime._tick();
+    const second = runtime._tick();
+    await Promise.all([first, second]);
+    assert.equal(calls, 1, 'a second interval tick must not stack another safety pass');
+    assert.equal(peak, 1);
+    assert.equal(runtime.ticking, false, 'the guard must be released after the tick');
+  } finally {
+    await runtime.shutdown('test');
+  }
+});
+
+test('per-packet traces are opt-in and cannot flood stdout by default', () => {
+  const previous = process.env.MC_TRACE_PACKETS;
+  const logger = new Logger({ level: 'debug' });
+  const seen = [];
+  logger.addSink((entry) => seen.push(entry));
+  try {
+    delete process.env.MC_TRACE_PACKETS;
+    logger.debug('lifecycle detail is still visible');
+    logger.debug('[________] TRACE out position pos=1,64,1');
+    assert.equal(seen.length, 1);
+    assert.match(seen[0].msg, /lifecycle detail/);
+    process.env.MC_TRACE_PACKETS = 'true';
+    logger.debug('[________] TRACE out position pos=2,64,2');
+    assert.equal(seen.length, 2);
+    assert.match(seen[1].msg, /pos=2/);
+  } finally {
+    if (previous === undefined) delete process.env.MC_TRACE_PACKETS;
+    else process.env.MC_TRACE_PACKETS = previous;
+  }
+});

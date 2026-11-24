@@ -473,30 +473,36 @@ class TeamRuntime {
 
   async _tick() {
     if (!this.running || this.ticking) return;
-    if (this.allBotsReady) this.autonomyArmed = true;
-    this._syncBots();
-    if (this.paused) return;
-    // Connection supervision must run even while the autonomy gate is closed;
-    // otherwise a bot that fails after the initial retry budget is never restored.
-    if (!this.simulate && this.shouldConnect) {
-      this.supervisorTicks++;
-      if (this.supervisorTicks % 2 === 0 && !this.supervisorBusy) {
-        this.supervisorBusy = true;
-        this._recoverDisconnected()
-          .catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`))
-          .finally(() => { this.supervisorBusy = false; });
-      }
-    }
-    if (!this.autonomyAllowed) {
-      // A ready bot must still eat, flee or defend itself while the team waits
-      // for the remaining members; otherwise it stands still and is slain by
-      // the first zombie that finds it.
-      await this._safetyOnlyTick();
-      return;
-    }
+    // Hold the guard for the whole tick, including the pre-join safety path.
+    // Previously the gate-closed path returned before setting this.ticking, so
+    // the 750ms interval could stack dozens of overlapping safety ticks, each
+    // replacing the previous pathfinding goal and eventually starving the
+    // socket keepalive. That is what produced EPIPE / ECONNRESET storms while
+    // the fleet was still joining.
     this.ticking = true;
-    this.ticks++;
     try {
+      if (this.allBotsReady) this.autonomyArmed = true;
+      this._syncBots();
+      if (this.paused) return;
+      // Connection supervision must run even while the autonomy gate is closed;
+      // otherwise a bot that fails after the initial retry budget is never restored.
+      if (!this.simulate && this.shouldConnect) {
+        this.supervisorTicks++;
+        if (this.supervisorTicks % 2 === 0 && !this.supervisorBusy) {
+          this.supervisorBusy = true;
+          this._recoverDisconnected()
+            .catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`))
+            .finally(() => { this.supervisorBusy = false; });
+        }
+      }
+      if (!this.autonomyAllowed) {
+        // A ready bot must still eat, flee or defend itself while the team waits
+        // for the remaining members; otherwise it stands still and is slain by
+        // the first zombie that finds it.
+        await this._safetyOnlyTick();
+        return;
+      }
+      this.ticks++;
       for (const bot of this.bots.values()) {
         if (bot.ready && bot.connected !== false && bot.health <= 0) {
           const actions = this.actions && typeof this.actions.get === 'function' ? this.actions.get(bot.name) : null;
@@ -551,15 +557,19 @@ class TeamRuntime {
 
   async _safetyOnlyTick() {
     if (!this.actions) return;
-    for (const actions of this.actions.list()) {
+    // One safety pass per bot, all in parallel. Serialising five pathfinders
+    // could hold the only runtime tick for many seconds and delay the reconnect
+    // supervisor; the outer `ticking` guard still prevents another pass from
+    // stacking on top.
+    await Promise.allSettled(this.actions.list().map(async (actions) => {
       const bot = actions.bot;
-      if (!bot.ready || !bot.connected || !bot.spawned || bot.health <= 0) continue;
+      if (!bot.ready || !bot.connected || !bot.spawned || bot.health <= 0) return;
       try {
         await actions.safetyTick();
       } catch (err) {
         this.logger.warn(`[${bot.name}] pre-join safety tick failed: ${err.message}`);
       }
-    }
+    }));
   }
 
   /**

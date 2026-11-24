@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-const { config, BOT_NAMES, validateConfig } = require('./config');
+const fs = require('fs');
+const path = require('path');
+const { config, BOT_NAMES, validateConfig, ROOT } = require('./config');
 const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
 const { printStartupBanner } = require('./branding');
@@ -19,6 +21,39 @@ function parseArgs(argv) {
     else if (arg === '--help' || arg === '-h') args.help = true;
   }
   return args;
+}
+
+/**
+ * A second live runtime would log in with the same five usernames and make the
+ * server kick the first instance (duplicate login), which surfaces as a raw
+ * EPIPE/ECONNRESET rather than a readable kick message. Refuse to start twice.
+ */
+function acquireLiveLock() {
+  const dir = path.join(ROOT, 'data', 'runtime');
+  const file = path.join(dir, 'live.pid');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const pid = Number(String(fs.readFileSync(file, 'utf8')).trim());
+    if (Number.isFinite(pid) && pid > 0 && pid !== process.pid) {
+      try {
+        process.kill(pid, 0);
+        return { ok: false, pid };
+      } catch (err) {
+        if (err.code === 'EPERM') return { ok: false, pid };
+        if (err.code !== 'ESRCH') throw err;
+      }
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  fs.writeFileSync(file, String(process.pid));
+  const release = () => {
+    try {
+      if (String(fs.readFileSync(file, 'utf8')).trim() === String(process.pid)) fs.unlinkSync(file);
+    } catch (_) { /* already gone */ }
+  };
+  process.once('exit', release);
+  return { ok: true, release };
 }
 
 function usage() {
@@ -55,10 +90,18 @@ async function main() {
     process.stderr.write('\nRefusing to start with an invalid configuration. Fix the above and retry.\n');
     return 2;
   }
+  let liveLock = null;
+  if (!args.simulate && args.connect) {
+    liveLock = acquireLiveLock();
+    if (!liveLock.ok) {
+      logger.error(`another live runtime is already running (pid ${liveLock.pid}); stop it before starting a second one to avoid duplicate-login kicks`);
+      return 2;
+    }
+  }
   logger.info('runtime starting');
   logger.info(`roster: ${BOT_NAMES.join(', ')}`);
   logger.info(args.simulate ? 'mode: deterministic simulation' : `mode: live (${config.server.host}:${config.server.port}, version ${config.server.version})`);
-  logger.info(`logging: ${config.logging.level} (movement/auth/lifecycle tracing ${config.logging.level === 'debug' ? 'on' : 'partial; set LOG_LEVEL=debug for every packet'})`);
+  logger.info(`logging: ${config.logging.level} (per-packet traces ${config.logging.tracePackets ? 'on' : 'off; set MC_TRACE_PACKETS=true to enable'})`);
   if (!args.simulate) {
     const passwordConfigured = Boolean(config.server.loginPassword || config.server.registerPassword);
     logger.info(passwordConfigured ? 'password authentication: configured (value redacted)' : 'password authentication: not configured (MC_LOGIN_PASSWORD / MC_REGISTER_PASSWORD empty)');

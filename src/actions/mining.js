@@ -80,14 +80,24 @@ class MiningController {
   }
 
   status() {
+    const position = this.bot.position || { x: 0, y: 0, z: 0 };
+    const now = Date.now();
+    const moved = this._statusCache ? Math.hypot(position.x - this._statusCache.center.x, position.z - this._statusCache.center.z) : Infinity;
+    // `findOres` is a synchronous 3-D world scan. Doing it for every bot on
+    // every dashboard snapshot blocked the event loop long enough to miss
+    // server keepalives (EPIPE/ECONNRESET), so cache it like the farming,
+    // fishing and sleep panels already do.
+    if (!this._statusCache || moved > 6 || now - this._statusCache.at > 10000) {
+      this._statusCache = { center: { x: position.x, z: position.z }, at: now, ores: this.findOres({ radius: 10, limit: 8 }) };
+    }
     return {
       bot: this.bot.name,
-      position: { ...this.bot.position },
+      position: { ...position },
       pickaxe: this.bot.bestToolFor('pickaxe'),
       oresMined: { ...this.mined },
       stopped: Boolean(this.stopRequested),
       stats: { ...this.stats },
-      nearbyOres: this.findOres({ radius: 12, limit: 8 }).map((o) => ({ name: o.name, position: { x: o.x, y: o.y, z: o.z }, distance: Math.round(distance(this.bot.position, o)) }))
+      nearbyOres: this._statusCache.ores.map((o) => ({ name: o.name, position: { x: o.x, y: o.y, z: o.z }, distance: Math.round(distance(position, o)) }))
     };
   }
 

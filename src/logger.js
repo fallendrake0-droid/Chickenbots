@@ -30,6 +30,11 @@ class Logger {
 
   _log(level, msg, meta) {
     if (LEVELS[level] < this.level) return;
+    // Per-packet traces are the one log class that can stall a slow terminal
+    // (Node writes to a TTY synchronously). Keep them behind an explicit opt-in
+    // so LOG_LEVEL=debug still gives lifecycle detail without flooding stdout
+    // and blocking keepalive replies.
+    if (level === 'debug' && String(msg).includes('TRACE') && !packetTraceEnabled()) return;
     const entry = {
       ts: Date.now(),
       level,
@@ -57,6 +62,11 @@ class Logger {
   info(msg, meta) { this._log('info', msg, meta); }
   warn(msg, meta) { this._log('warn', msg, meta); }
   error(msg, meta) { this._log('error', msg, meta); }
+}
+
+function packetTraceEnabled() {
+  if (process.env.MC_TRACE_PACKETS !== undefined) return /^(1|true|yes|on)$/i.test(process.env.MC_TRACE_PACKETS);
+  try { return require('./config').config.logging.tracePackets === true; } catch (_) { return false; }
 }
 
 function safeJson(value) {

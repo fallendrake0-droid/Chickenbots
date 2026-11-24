@@ -260,3 +260,19 @@ test('inventory reserves, deposits, withdraws and shares real items', async () =
   assert.equal(bot.countItem('bread'), 5);
   assert.equal(ledger.pendingTransfers().length, 0);
 });
+
+test('mining status caches the expensive nearby-ore scan', () => {
+  const { bot } = flatBot('10101000', { iron_pickaxe: 1 });
+  const mining = new MiningController({ bot });
+  let scans = 0;
+  mining.findOres = () => {
+    scans++;
+    return [{ name: 'iron_ore', x: 1, y: 64, z: 1 }];
+  };
+  mining.status();
+  mining.status();
+  assert.equal(scans, 1, 'repeated dashboard snapshots must reuse the scan');
+  bot.position.x += 20;
+  mining.status();
+  assert.equal(scans, 2, 'moving far enough must refresh the cached scan');
+});

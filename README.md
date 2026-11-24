@@ -306,7 +306,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `DASHBOARD_HOST` | `0.0.0.0` | bind address (sandbox preview needs this) |
 | `DASHBOARD_LOCAL` | `false` | force `127.0.0.1` regardless of `DASHBOARD_HOST` |
 | `DASHBOARD_TOKEN` | *(empty)* | optional 16+ character control-plane password (HTTP Basic password or Bearer token); set it before exposing the dashboard beyond loopback |
-| `LOG_LEVEL` | `debug` | `debug` prints movement/auth/lifecycle traces; use `info` for quiet runs |
+| `LOG_LEVEL` | `info` | `info` prints lifecycle and errors; `debug` adds lifecycle detail |
+| `MC_TRACE_PACKETS` | `false` | opt-in per-packet movement/keepalive tracing. Leave off during normal live runs: a flooded terminal can block the event loop and drop the socket |
 | `AUTONOMY_ENABLED` | `true` | autonomy request; still gated on connection+auth+spawn |
 | `PvP_ENABLED` | `false` | PvP stays off unless explicitly enabled |
 | `SERVER_PVP_ENABLED` | `true` | set `false` when the Minecraft server itself has `pvp=false`; all PvP is then refused |
@@ -488,7 +489,9 @@ commissioning.
   Bots join **one socket at a time**, at least `MC_JOIN_INTERVAL_MS` (10s by default) apart, because
   Paper's `connection-throttle` is enforced per source IP and all five bots share the host's IP.
   A throttle or a socket that never reaches spawn pauses **every** join and doubles that pause on each
-  repeat (90s, 180s, … up to 10 minutes). If you control the server, set
+  repeat (90s, 180s, … up to 10 minutes). Only one live runtime may run per checkout: a PID lock
+  (`data/runtime/live.pid`) refuses a second instance, because duplicate logins make Aternos close the
+  first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
   `settings.connection-throttle: 0` in `bukkit.yml` (or a value below `MC_JOIN_INTERVAL_MS`) and restart
   it; otherwise keep the interval generous. A bot that drops re-enters the same queue after
   `MC_REJOIN_DELAY_MS`, and connected bots swing their arm every 45s so idle/AFK plugins do not kick
@@ -510,8 +513,10 @@ commissioning.
   real version instead of sending five bots into mineflayer's autoVersion crash path.
   The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy
   advertises a newer status name than the protocol it answered with, the protocol mapping wins.
-  `LOG_LEVEL=debug` (the default) prints each outgoing movement packet, each server position packet,
-  auth timing, spawn/respawn events, and a 40-event trace dump when a bot is kicked. Passwords are
+  `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail and auth timing. Per-packet
+  movement, keepalive and position traces stay off even then unless `MC_TRACE_PACKETS=true`: writing
+  that volume to a terminal can block the event loop and cost the socket its keepalive. A kicked bot
+  also gets a 40-event trace dump. Passwords are
   never printed; auth commands, echoed `/register`/`/login` chat, configured secret values and
   password/token-shaped metadata are redacted centrally before they reach the terminal, log store or
   dashboard. A control-plane token is optional for the sandbox demo but should always be set when the
