@@ -41,7 +41,7 @@ function consistency() {
     process.stdout.write(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}\n`);
   };
   check('roster is exactly ten fixed usernames', () => ({ ok: JSON.stringify(config.team.names) === JSON.stringify(['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001']) && config.team.names.length === 10, detail: config.team.names.join(', ') }));
-  check('default server preserved', () => ({ ok: config.server.host === 'empiresmp.aternos.me' && config.server.port === 32990 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port}` }));
+  check('default server preserved', () => ({ ok: config.server.host === 'EmpiSMP.aternos.me' && config.server.port === 32990 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port}` }));
   check('configuration validates', () => {
     const { validateConfig } = require('../src/config');
     const result = validateConfig(config);
