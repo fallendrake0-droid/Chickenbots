@@ -82,12 +82,12 @@ async function main() {
 
   check('server, PvP and AI defaults are safe', () => {
     const { config } = requireLocal('src/config.js');
-    assert(config.server.host === 'cr3xlol.aternos.me', `unexpected host ${config.server.host}`);
+    assert(config.server.host === 'empiresmp.aternos.me', `unexpected host ${config.server.host}`);
     assert(Number(config.server.port) === 55742, `unexpected port ${config.server.port}`);
     assert(config.autonomy.pve === true, 'PvE must be enabled by default');
     assert(config.autonomy.pvp === true, 'PvP feature must be enabled by default; PvpPolicy still requires explicit targets');
     assert(config.autonomy.ai.enabled === false, 'AI hook must stay disabled');
-    return 'cr3xlol.aternos.me:55742, PvE on, explicit-target PvP, AI off';
+    return 'empiresmp.aternos.me:55742, PvE on, explicit-target PvP, AI off';
   });
 
   check('V5 construction modules are present', () => {

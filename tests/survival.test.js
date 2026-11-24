@@ -28,7 +28,7 @@ function flatBot(name = '________', inventory = {}, y = 64) {
 test('configuration preserves the five usernames, server defaults and safety switches', () => {
   assert.deepEqual(config.team.names, ['________', '10101000', '01010100', '11001100', '00110000']);
   assert.deepEqual(BOT_NAMES, config.team.names);
-  assert.equal(config.server.host, 'cr3xlol.aternos.me');
+  assert.equal(config.server.host, 'empiresmp.aternos.me');
   assert.equal(config.server.port, 55742);
   assert.equal(config.server.version, 'auto');
   assert.equal(config.server.joinIntervalMs, 10000);

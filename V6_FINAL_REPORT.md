@@ -133,7 +133,7 @@ If the server still disconnects a bot, the next diagnostic export should settle 
 
 ## 9. Configuration/deployment
 
-- Default server remains `cr3xlol.aternos.me:55742`; five fixed usernames remain.
+- Default server remains `empiresmp.aternos.me:55742`; five fixed usernames remain.
 - No new required environment variable.
 - `MC_VIEW_DISTANCE=tiny` and `MC_INBOUND_YIELD=true` are defaults; lower the distance to 2–5 only if the event-loop metrics still show pressure.
 - `LOG_LEVEL=debug` remains opt-in; packet tracing remains separately gated.

@@ -41,7 +41,7 @@ function consistency() {
     process.stdout.write(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}\n`);
   };
   check('roster is exactly five fixed usernames', () => ({ ok: JSON.stringify(config.team.names) === JSON.stringify(['________', '10101000', '01010100', '11001100', '00110000']) && config.team.names.length === 5, detail: config.team.names.join(', ') }));
-  check('default server preserved', () => ({ ok: config.server.host === 'cr3xlol.aternos.me' && config.server.port === 55742 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port}` }));
+  check('default server preserved', () => ({ ok: config.server.host === 'empiresmp.aternos.me' && config.server.port === 55742 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port}` }));
   check('configuration validates', () => {
     const { validateConfig } = require('../src/config');
     const result = validateConfig(config);

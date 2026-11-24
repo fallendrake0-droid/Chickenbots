@@ -10,7 +10,7 @@ runtime; the optional AI hook exists as a disabled flag.
 
 ```
 roster (fixed):  ________   10101000   01010100   11001100   00110000
-server:          cr3xlol.aternos.me:55742   (MC_VERSION=auto, ViaVersion/ViaBackwards friendly)
+server:          empiresmp.aternos.me:55742   (MC_VERSION=auto, ViaVersion/ViaBackwards friendly)
 dashboard:       http://127.0.0.1:3000      (loopback by default; preview opts into 0.0.0.0)
 ```
 
@@ -318,7 +318,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 
 | variable | default | meaning |
 | --- | --- | --- |
-| `MC_HOST` | `cr3xlol.aternos.me` | server address |
+| `MC_HOST` | `empiresmp.aternos.me` | server address |
 | `MC_PORT` | `55742` | server port |
 | `MC_VERSION` | `auto` | protocol negotiation; Aternos ViaVersion handles the rest |
 | `MC_VERSION_PROBE_TIMEOUT_MS` | `8000` | validated status-ping timeout before opening login sockets |
