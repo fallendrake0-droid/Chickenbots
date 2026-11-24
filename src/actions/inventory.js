@@ -3,7 +3,7 @@
 const { Logger } = require('../logger');
 const { config } = require('../config');
 const { distance } = require('../util/vec');
-const { categoryOf, bestTool, FOODS } = require('../world/items');
+const { categoryOf, bestTool, FOODS, LOGS, PLANKS, inventorySlotUsage } = require('../world/items');
 const { findBlocks } = require('./common');
 
 const TOOL_MATERIALS = {
@@ -25,22 +25,27 @@ const TOOL_MATERIALS = {
  * teammates is a real toss (recorded as a ledger transfer).
  */
 class InventoryManager {
-  constructor({ bot, ledger = null, memory = null, logger = null } = {}) {
+  constructor({ bot, ledger = null, memory = null, logger = null, home = null } = {}) {
     if (!bot) throw new Error('InventoryManager requires a bot');
     this.bot = bot;
     this.ledger = ledger;
     this.memory = memory;
     this.logger = logger || new Logger({ level: 'warn' });
-    this.stats = { deposited: 0, withdrawn: 0, shared: 0, crafted: 0, junkDropped: 0 };
+    this.home = home ? { ...home } : null;
+    this.homeStorage = null;
+    this.stats = { deposited: 0, withdrawn: 0, shared: 0, crafted: 0, junkDropped: 0, overflowRuns: 0, overflowDropped: 0 };
   }
 
   snapshot() {
     const items = Object.entries(this.bot.inventory || {}).filter(([, count]) => count > 0)
       .map(([name, count]) => ({ name, count, category: categoryOf(name) }))
       .sort((a, b) => b.count - a.count);
+    const usage = this.slots();
     return {
       bot: this.bot.name,
-      slotsUsed: items.length,
+      slotsUsed: usage.used,
+      slotsFree: usage.free,
+      capacity: usage.capacity,
       totalItems: items.reduce((s, i) => s + i.count, 0),
       items,
       food: items.filter((i) => FOODS[i.name]).reduce((s, i) => s + i.count, 0),
@@ -49,6 +54,13 @@ class InventoryManager {
       full: this.bot.isInventoryFull ? this.bot.isInventoryFull() : false
     };
   }
+
+  slots(capacity = 36) {
+    if (typeof this.bot.inventorySlots === 'function') return this.bot.inventorySlots(capacity);
+    return inventorySlotUsage(this.bot.inventory, capacity);
+  }
+
+  updateHome(home) { this.home = home ? { ...home } : null; }
 
   reserveStatus() {
     const targets = { ...config.reserves };
@@ -165,6 +177,347 @@ class InventoryManager {
       return result;
     }
     return { ok: false, error: 'adapter does not support junk dropping' };
+  }
+
+  /**
+   * Tools, combat gear, food and light stay on the bot. Everything else is
+   * surplus that belongs in the home chest. Armour is normally equipped and
+   * therefore absent from the inventory, but keep it if it is carried.
+   */
+  protectedItem(name) {
+    if (!name) return true;
+    if (FOODS[name]) return true;
+    if (['torch', 'lantern', 'crafting_table', 'shield', 'water_bucket', 'bucket', 'fishing_rod', 'shears', 'flint_and_steel'].includes(name)) return true;
+    if (/_seeds$|_sapling$|_propagule$/.test(name) || ['bone_meal', 'sugar_cane', 'cocoa_beans', 'pitcher_pod'].includes(name)) return true;
+    if (categoryOf(name) === 'tools' || categoryOf(name) === 'armor' || categoryOf(name) === 'weapons') return true;
+    if (/potion$|_potion$/.test(name) || name === 'golden_apple' || name === 'enchanted_golden_apple' || name === 'totem_of_undying') return true;
+    if (/_helmet$|_chestplate$|_leggings$|_boots$|elytra/.test(name)) return true;
+    return false;
+  }
+
+  protectedItems() {
+    const kept = {};
+    for (const [name, count] of Object.entries(this.bot.inventory || {})) {
+      if (count > 0 && this.protectedItem(name)) kept[name] = count;
+    }
+    return kept;
+  }
+
+  _blockName(pos) {
+    const block = typeof this.bot.getBlock === 'function' ? this.bot.getBlock(pos) : null;
+    return block && block.name ? String(block.name).replace(/^minecraft:/, '') : null;
+  }
+
+  _chestsNear(home, radius = 7) {
+    if (!home) return [];
+    const origin = { x: Math.floor(home.x), y: Math.floor(home.y), z: Math.floor(home.z) };
+    const chests = [];
+    for (let y = origin.y - 3; y <= origin.y + 3; y++) {
+      for (let z = origin.z - radius; z <= origin.z + radius; z++) {
+        for (let x = origin.x - radius; x <= origin.x + radius; x++) {
+          const pos = { x, y, z };
+          const name = this._blockName(pos);
+          if (name === 'chest' || name === 'trapped_chest') chests.push({ ...pos, name });
+        }
+      }
+    }
+    return chests;
+  }
+
+  _findDoubleChest(home) {
+    const chests = this._chestsNear(home);
+    for (const chest of chests) {
+      for (const [dx, dz] of [[1, 0], [0, 1]]) {
+        const other = chests.find((entry) => entry.name === chest.name && entry.x === chest.x + dx && entry.y === chest.y && entry.z === chest.z + dz);
+        if (other) return [chest, other];
+      }
+    }
+    return null;
+  }
+
+  _freeChestSites(home, radius = 7) {
+    if (!home) return [];
+    const origin = { x: Math.floor(home.x), y: Math.floor(home.y), z: Math.floor(home.z) };
+    const sites = [];
+    for (let z = origin.z - radius; z <= origin.z + radius; z++) {
+      for (let x = origin.x - radius; x <= origin.x + radius; x++) {
+        const dx = x - origin.x;
+        const dz = z - origin.z;
+        const away = Math.hypot(dx, dz);
+        if (away < 2) continue;
+        const pos = { x, y: origin.y, z };
+        const here = this._blockName(pos);
+        const above = this._blockName({ x, y: origin.y + 1, z });
+        const floor = this._blockName({ x, y: origin.y - 1, z });
+        if (here !== 'air' && here !== 'cave_air') continue;
+        if (above !== 'air' && above !== 'cave_air') continue;
+        if (!floor || floor === 'air' || floor === 'cave_air' || /water|lava/.test(floor)) continue;
+        sites.push({ ...pos, distance: away });
+      }
+    }
+    return sites.sort((a, b) => a.distance - b.distance);
+  }
+
+  _chooseSitePair(home, reserved = []) {
+    const sites = this._freeChestSites(home).filter((site) => !reserved.some((r) => r.x === site.x && r.y === site.y && r.z === site.z));
+    for (const site of sites) {
+      const neighbour = sites.find((other) => {
+        if (other === site) return false;
+        if (other.y !== site.y) return false;
+        return (Math.abs(other.x - site.x) === 1 && other.z === site.z) || (Math.abs(other.z - site.z) === 1 && other.x === site.x);
+      });
+      if (neighbour) return [site, neighbour];
+    }
+    return null;
+  }
+
+  _adjacentFreeSite(chest, home, reserved = []) {
+    const candidates = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => ({ x: chest.x + dx, y: chest.y, z: chest.z + dz }));
+    for (const pos of candidates) {
+      if (reserved.some((r) => r.x === pos.x && r.y === pos.y && r.z === pos.z)) continue;
+      const here = this._blockName(pos);
+      const above = this._blockName({ x: pos.x, y: pos.y + 1, z: pos.z });
+      const floor = this._blockName({ x: pos.x, y: pos.y - 1, z: pos.z });
+      if ((here === 'air' || here === 'cave_air') && (above === 'air' || above === 'cave_air')
+        && floor && floor !== 'air' && floor !== 'cave_air' && !/water|lava/.test(floor)) {
+        return { ...pos, distance: distance(pos, home) };
+      }
+    }
+    return null;
+  }
+
+  _countPlanks() {
+    return Object.entries(this.bot.inventory || {}).reduce((sum, [name, count]) => sum + (PLANKS.has(name) ? count : 0), 0);
+  }
+
+  async _convertLogsToPlanks(needed) {
+    for (const [log, count] of Object.entries(this.bot.inventory || {})) {
+      if (!LOGS.has(log) || count <= 0) continue;
+      const planks = log.replace(/_log$|_wood$|_stem$/, '_planks');
+      if (!PLANKS.has(planks)) continue;
+      const batches = Math.min(count, Math.ceil(needed / 4));
+      const crafted = await this.bot.craft(planks, batches).catch((err) => ({ ok: false, error: err.message }));
+      if (!crafted.ok) return { ok: false, error: `could not mill ${log} into planks: ${crafted.error}` };
+      if (this._countPlanks() >= needed) return { ok: true, planks };
+    }
+    return { ok: this._countPlanks() >= needed, error: `need ${needed} planks, hold ${this._countPlanks()}` };
+  }
+
+  async _ensureCraftingTable(home, reserved = []) {
+    const existing = findBlocks(this.bot, ['crafting_table'], { near: home, radius: 6, limit: 1 });
+    if (existing.length) return { ok: true, existing: true, position: existing[0] };
+    if (this._countPlanks() < 4) await this._convertLogsToPlanks(4);
+    if (this._countPlanks() < 4) return { ok: false, error: 'need 4 planks for a crafting table' };
+    const crafted = await this.bot.craft('crafting_table', 1).catch((err) => ({ ok: false, error: err.message }));
+    if (!crafted.ok) return { ok: false, error: `cannot craft a crafting table: ${crafted.error}` };
+    const site = this._freeChestSites(home, 3).find((pos) => !reserved.some((r) => r.x === pos.x && r.y === pos.y && r.z === pos.z));
+    if (!site) return { ok: false, error: 'no free site for a crafting table' };
+    await this.bot.goTo(site, { range: 4, timeoutMs: 12000 });
+    const placed = await this.bot.placeBlock(site, 'crafting_table');
+    if (!placed.ok) return placed;
+    if (this._blockName(site) !== 'crafting_table') return { ok: false, error: 'crafting table placement was not visible' };
+    return { ok: true, position: site, placed: true };
+  }
+
+  async _craftChests(count) {
+    const before = this.bot.countItem('chest');
+    let have = before;
+    if (have >= count) return { ok: true, crafted: 0, have };
+    const needed = count - have;
+    if (this._countPlanks() < needed * 8) {
+      const milled = await this._convertLogsToPlanks(needed * 8);
+      if (!milled.ok) return { ok: false, error: milled.error };
+    }
+    for (let i = 0; i < needed; i++) {
+      let result = await this.bot.craft('chest', 1).catch((err) => ({ ok: false, error: err.message }));
+      if (!result.ok && /recipe|table|ingredient/i.test(String(result.error || '')) && this.home) {
+        const table = await this._ensureCraftingTable(this.home);
+        if (table.ok) {
+          if (this._countPlanks() < 8) await this._convertLogsToPlanks(8);
+          result = await this.bot.craft('chest', 1).catch((err) => ({ ok: false, error: err.message }));
+        }
+      }
+      if (!result.ok) return { ok: false, error: `could not craft chest ${i + 1}/${needed}: ${result.error}` };
+      this.stats.crafted++;
+    }
+    have = this.bot.countItem('chest');
+    return { ok: have >= count, crafted: have - before, have, error: have >= count ? undefined : `crafted ${have}/${count} chests` };
+  }
+
+  /** A full inventory can have no slot for crafting output. Free exactly one
+   * slot from surplus, never from tools/gear. This is the only lossy path and
+   * it is reported in the result. */
+  async _makeCraftingRoom({ plankCost = 0 } = {}) {
+    if (this.slots().free > 0) return { ok: true };
+    // A plank stack that is fully consumed by the recipe frees its slot, so
+    // no lossy fallback is needed in the common "16 planks" case.
+    const planks = this._countPlanks();
+    if (plankCost > 0 && planks >= plankCost && Math.ceil(planks / 64) > Math.ceil((planks - plankCost) / 64)) {
+      return { ok: true, freedBy: 'crafting' };
+    }
+    const candidates = Object.entries(this.bot.inventory || {})
+      .filter(([name, count]) => count > 0 && !this.protectedItem(name) && !PLANKS.has(name) && !LOGS.has(name) && name !== 'chest')
+      .sort((a, b) => b[1] - a[1]);
+    const pick = candidates[0];
+    if (!pick) return { ok: false, error: 'inventory is full of protected items; no slot to craft into' };
+    const tossed = await this.bot.tossItem(pick[0], 1).catch((err) => ({ ok: false, error: err.message }));
+    if (!tossed.ok) return { ok: false, error: `could not free a crafting slot: ${tossed.error}` };
+    this.stats.overflowDropped++;
+    return { ok: true, dropped: { item: pick[0], count: 1 } };
+  }
+
+  _registerHomeStorage(positions, contents) {
+    if (!this.ledger || !positions.length) return null;
+    const canonical = [...positions].sort((a, b) => (a.x - b.x) || (a.z - b.z))[0];
+    const id = `warehouse:home:${canonical.x},${canonical.y},${canonical.z}`;
+    const entry = { position: { ...canonical }, counts: { ...contents }, label: 'home overflow' };
+    this.ledger.updateStorage(id, entry);
+    this.homeStorage = { id, positions: positions.map((pos) => ({ ...pos })), capacity: positions.length * 27, counts: { ...contents } };
+    if (this.memory) this.memory.setFact('home_storage', { ...this.homeStorage, verifiedAt: Date.now() });
+    return this.homeStorage;
+  }
+
+  async _depositSurplusAt(position, { exclude = null } = {}) {
+    const move = await this.bot.goTo(position, { range: 3, timeoutMs: 15000 });
+    if (move && move.ok === false) return { ok: false, error: move.error };
+    const window = await this.bot.openContainer(position);
+    if (!window.ok) return window;
+    const before = { ...(this.bot.inventory || {}) };
+    const movedItems = {};
+    const failed = [];
+    let moved = 0;
+    try {
+      const entries = Object.entries(before)
+        .filter(([name, count]) => count > 0 && !this.protectedItem(name) && !(exclude && exclude.has(name)))
+        .sort((a, b) => b[1] - a[1]);
+      for (const [name, count] of entries) {
+        const result = await window.deposit(name, count);
+        if (result && result.ok) {
+          movedItems[name] = result.count;
+          moved += result.count;
+        } else {
+          failed.push({ item: name, error: result && result.error ? result.error : 'deposit failed' });
+        }
+      }
+      const contents = { ...window.items() };
+      const after = { ...(this.bot.inventory || {}) };
+      const verified = Object.entries(movedItems).every(([name, count]) => Number(before[name] || 0) - Number(after[name] || 0) >= count
+        && Number(contents[name] || 0) >= Number(before[name] || 0) - Number(after[name] || 0));
+      return { ok: moved > 0 && verified, moved, items: movedItems, failed, verified, contents, before, after };
+    } finally {
+      await window.close();
+    }
+  }
+
+  /** Pull construction materials back out of home storage before a build phase. */
+  async ensureMaterials(required = {}, position = null) {
+    const supplied = {};
+    const missing = {};
+    for (const [item, target] of Object.entries(required)) {
+      const need = Math.max(0, Number(target) || 0) - this.bot.countItem(item);
+      if (need <= 0) continue;
+      const source = position || (this.homeStorage && this.homeStorage.positions && this.homeStorage.positions[0]) || null;
+      const result = await this.withdraw(item, need, source);
+      if (result.ok) supplied[item] = result.count;
+      else missing[item] = { need, error: result.error };
+    }
+    return { ok: Object.keys(missing).length === 0, supplied, missing };
+  }
+
+  /**
+   * The requested survival behaviour: when a resource task fills the bot, walk
+   * home, place a real double chest beside the spawn point (crafting the chests
+   * from logs/planks when necessary), deposit everything except tools/gear/
+   * food/light, then return to the work site. The caller keeps its assignment;
+   * this method never touches the task board.
+   */
+  async makeRoomAtHome({ home = this.home, resumeAt = null, reason = 'inventory full' } = {}) {
+    const usage = this.slots();
+    if (usage.used < usage.capacity) {
+      return { attempted: false, ok: true, reason: 'inventory not full', slots: usage };
+    }
+    if (!home) return { attempted: false, ok: false, error: 'no home position to build storage at' };
+    const origin = resumeAt || (this.bot.position ? { ...this.bot.position } : null);
+    const report = {
+      attempted: true, reason, home: { ...home }, origin, slotsBefore: usage,
+      crafted: [], placed: [], dropped: [], deposit: null, doubleChest: false, resumed: false
+    };
+    this.stats.overflowRuns++;
+    try {
+      let pair = this._findDoubleChest(home);
+      if (!pair) {
+        const existing = this._chestsNear(home);
+        const anchor = existing[0] || null;
+        const need = anchor ? 1 : 2;
+        // A single existing chest can absorb enough surplus to free the slot
+        // needed for crafting its second half. If not, fall back to dropping
+        // one surplus item (never a tool) so the requested double chest can
+        // still be built.
+        if (anchor && this.slots().free === 0) {
+          const pre = await this._depositSurplusAt(anchor, { exclude: new Set([...PLANKS, ...LOGS, 'chest']) });
+          report.preDeposit = pre && pre.moved ? { moved: pre.moved, items: pre.items } : null;
+        }
+        if (this.slots().free === 0) {
+          const room = await this._makeCraftingRoom({ plankCost: need * 8 });
+          if (!room.ok) return { ...report, ok: false, error: room.error };
+          if (room.dropped) report.dropped.push(room.dropped);
+        }
+        const crafted = await this._craftChests(need);
+        if (!crafted.ok) return { ...report, ok: false, error: crafted.error };
+        if (crafted.crafted > 0) report.crafted.push({ item: 'chest', count: crafted.crafted });
+
+        if (anchor) {
+          const site = this._adjacentFreeSite(anchor, home);
+          if (!site) return { ...report, ok: false, error: 'no free block beside the existing home chest' };
+          const move = await this.bot.goTo(site, { range: 4, timeoutMs: 15000 });
+          if (move && move.ok === false) return { ...report, ok: false, error: move.error };
+          const placed = await this.bot.placeBlock(site, 'chest');
+          if (!placed.ok) return { ...report, ok: false, error: placed.error };
+          if (this._blockName(site) !== 'chest') return { ...report, ok: false, error: 'chest placement was not visible in the world' };
+          report.placed.push({ ...site });
+        } else {
+          const chosen = this._chooseSitePair(home);
+          if (!chosen) return { ...report, ok: false, error: 'no clear ground beside home for a double chest' };
+          for (const site of chosen) {
+            const move = await this.bot.goTo(site, { range: 4, timeoutMs: 15000 });
+            if (move && move.ok === false) return { ...report, ok: false, error: move.error };
+            const placed = await this.bot.placeBlock(site, 'chest');
+            if (!placed.ok) return { ...report, ok: false, error: placed.error };
+            if (this._blockName(site) !== 'chest') return { ...report, ok: false, error: 'chest placement was not visible in the world' };
+            report.placed.push({ ...site });
+          }
+        }
+        pair = this._findDoubleChest(home);
+        if (!pair) {
+          // One half is still real storage; use it rather than losing the trip.
+          const single = this._chestsNear(home)[0];
+          if (!single) return { ...report, ok: false, error: 'placed chest was not found in the world' };
+          pair = [single];
+        }
+      }
+      report.doubleChest = pair.length === 2;
+      const deposit = await this._depositSurplusAt(pair[0]);
+      report.deposit = deposit;
+      if (!deposit.ok && !deposit.moved) {
+        return { ...report, ok: false, error: deposit.error || 'could not deposit surplus' };
+      }
+      const storage = this._registerHomeStorage(pair, deposit.contents || {});
+      if (deposit.items) this.stats.deposited += Object.values(deposit.items).reduce((sum, count) => sum + count, 0);
+      report.storage = storage;
+      report.slotsAfter = this.slots();
+      report.kept = this.protectedItems();
+      if (origin && this.bot.position && distance(origin, this.bot.position) > 4) {
+        const back = await this.bot.goTo(origin, { range: 3, timeoutMs: 20000 });
+        report.resumed = !(back && back.ok === false);
+        report.resumeError = back && back.ok === false ? back.error : undefined;
+      } else {
+        report.resumed = true;
+      }
+      this.logger.info(`[${this.bot.name}] home storage: ${report.doubleChest ? 'double chest' : 'single chest'} at ${pair[0].x},${pair[0].y},${pair[0].z}; deposited ${deposit.moved} items, kept ${Object.keys(report.kept).length} protected stacks`);
+      return { ...report, ok: true };
+    } catch (err) {
+      return { ...report, ok: false, error: err.message };
+    }
   }
 
   status() {

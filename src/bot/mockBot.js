@@ -4,7 +4,7 @@ const { BotAdapter } = require('./adapter');
 const { MockWorld, DROPS } = require('./mockWorld');
 const { delay, CancelledError } = require('../util/async');
 const { distance, key } = require('../util/vec');
-const { BED_NAMES, FOODS } = require('../world/items');
+const { BED_NAMES, FOODS, inventorySlotUsage } = require('../world/items');
 const { config } = require('../config');
 
 const PICK_REQUIRED = {
@@ -335,6 +335,7 @@ class MockBot extends BotAdapter {
     const state = descriptor && descriptor.properties ? { ...descriptor.properties } : (properties ? { ...properties } : {});
     this.removeItem(itemName, 1);
     this.world.setBlock(pos, name, state);
+    if (['chest', 'trapped_chest'].includes(name)) this._mergeChestStorage(pos);
     if (companion && companion.position) {
       const target = this.getBlock(companion.position);
       if (!target || target.name === 'air' || target.name === wanted) {
@@ -455,12 +456,58 @@ class MockBot extends BotAdapter {
 
   async wake() { this.isSleeping = false; return { ok: true }; }
 
+  /** Both halves of a double chest share one storage key. */
+  _chestStorageKey(pos) {
+    const block = this.getBlock(pos);
+    if (!block || !['chest', 'trapped_chest'].includes(block.name)) return key(pos);
+    let best = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) };
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const other = { x: best.x + dx, y: best.y, z: best.z + dz };
+      const otherBlock = this.getBlock(other);
+      if (!otherBlock || otherBlock.name !== block.name) continue;
+      if (other.x < best.x || (other.x === best.x && other.z < best.z)) best = other;
+    }
+    return key(best);
+  }
+
+  _doubleChest(pos) {
+    const block = this.getBlock(pos);
+    if (!block || !['chest', 'trapped_chest'].includes(block.name)) return false;
+    return [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => {
+      const other = this.getBlock({ x: Math.floor(pos.x) + dx, y: Math.floor(pos.y), z: Math.floor(pos.z) + dz });
+      return other && other.name === block.name;
+    });
+  }
+
+  /** Fold contents of both halves under the canonical (lowest x/z) key. */
+  _mergeChestStorage(pos) {
+    const block = this.getBlock(pos);
+    if (!block || !['chest', 'trapped_chest'].includes(block.name)) return;
+    const parts = [pos];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const other = { x: Math.floor(pos.x) + dx, y: Math.floor(pos.y), z: Math.floor(pos.z) + dz };
+      const otherBlock = this.getBlock(other);
+      if (otherBlock && otherBlock.name === block.name) parts.push(other);
+    }
+    if (parts.length < 2) return;
+    const canonical = this._chestStorageKey(pos);
+    const merged = {};
+    for (const part of parts) {
+      const existing = this.containers.get(key(part));
+      if (!existing) continue;
+      for (const [name, count] of Object.entries(existing)) merged[name] = (merged[name] || 0) + count;
+      this.containers.delete(key(part));
+    }
+    this.containers.set(canonical, merged);
+  }
+
   async openContainer(pos) {
     const block = this.getBlock(pos);
     if (!block || !['chest', 'barrel', 'trapped_chest', 'shulker_box'].includes(block.name)) return { ok: false, error: 'no container there' };
-    const k = key(pos);
+    const k = this._chestStorageKey(pos);
     if (!this.containers.has(k)) this.containers.set(k, {});
     const contents = this.containers.get(k);
+    const capacity = this._doubleChest(pos) ? 54 : 27;
     const self = this;
     return {
       ok: true,
@@ -477,8 +524,11 @@ class MockBot extends BotAdapter {
       },
       deposit: async (itemName, count = 1) => {
         const have = self.countItem(itemName);
-        const put = Math.min(have, count);
-        if (put <= 0) return { ok: false, error: 'not in inventory' };
+        if (have <= 0) return { ok: false, error: 'not in inventory' };
+        const fits = (n) => inventorySlotUsage({ ...contents, [itemName]: (contents[itemName] || 0) + n }, capacity).used <= capacity;
+        let put = Math.min(have, count);
+        while (put > 0 && !fits(put)) put--;
+        if (put <= 0) return { ok: false, error: 'container is full' };
         self.removeItem(itemName, put);
         contents[itemName] = (contents[itemName] || 0) + put;
         return { ok: true, item: itemName, count: put };

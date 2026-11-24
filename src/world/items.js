@@ -75,6 +75,53 @@ const BUILDING = new Set(['cobblestone', 'stone', 'stone_bricks', 'deepslate_bri
 const UTILITY = new Set(['torch', 'lantern', 'water_bucket', 'lava_bucket', 'bucket', 'flint_and_steel', 'crafting_table', 'furnace', 'blast_furnace', 'smoker', 'chest', 'trapped_chest', 'barrel', 'ender_chest', 'bed', 'white_bed', 'red_bed', 'blue_bed', 'shulker_box', 'anvil', 'enchanting_table', 'brewing_stand', 'cauldron', 'composter', 'hoe', 'shears', 'fishing_rod', 'lead', 'saddle', 'name_tag', 'oak_sapling', 'birch_sapling', 'spruce_sapling', 'jungle_sapling', 'acacia_sapling', 'dark_oak_sapling', 'cherry_sapling', 'pale_oak_sapling', 'mangrove_propagule', 'bone_meal', 'wheat_seeds', 'beetroot_seeds', 'melon_seeds', 'pumpkin_seeds', 'carrot', 'potato', 'sugar_cane', 'cocoa_beans', 'hay_block', 'slime_block', 'cobweb', 'boat', 'oak_boat', 'scaffolding', 'ladder']);
 const VALUABLE = new Set(['diamond', 'emerald', 'netherite_ingot', 'netherite_scrap', 'enchanted_golden_apple', 'golden_apple', 'ancient_debris', 'diamond_pickaxe', 'diamond_sword', 'diamond_axe', 'diamond_shovel', 'netherite_pickaxe', 'netherite_sword', 'elytra', 'trident', 'shulker_box', 'totem_of_undying', 'name_tag', 'saddle', 'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots']);
 
+// Vanilla stack sizes. A bot's inventory is not "number of item types": 36
+// storage slots can hold at most 64 (or 1 for tools) of an item each. Anything
+// that decides "is the inventory full" must use these, not distinct names.
+const ONE_PER_SLOT = new Set([
+  ...Object.keys(ARMOR), ...Object.keys(PICKAXES), ...Object.keys(AXES),
+  ...Object.keys(SHOVELS), ...Object.keys(SWORDS), ...Object.keys(HOES),
+  'bow', 'crossbow', 'trident', 'shield', 'elytra', 'totem_of_undying',
+  'bucket', 'water_bucket', 'lava_bucket', 'milk_bucket',
+  'minecart', 'chest_minecart', 'furnace_minecart', 'hopper_minecart', 'tnt_minecart',
+  'oak_boat', 'birch_boat', 'spruce_boat', 'jungle_boat', 'acacia_boat', 'dark_oak_boat',
+  'mangrove_boat', 'cherry_boat', 'pale_oak_boat', 'oak_chest_boat', 'birch_chest_boat',
+  'spruce_chest_boat', 'jungle_chest_boat', 'acacia_chest_boat', 'dark_oak_chest_boat',
+  'mangrove_chest_boat', 'cherry_chest_boat', 'pale_oak_chest_boat',
+  'saddle', 'name_tag', 'enchanted_book', 'written_book', 'writable_book', 'cake'
+]);
+const SIXTEEN_PER_SLOT = new Set([
+  'snowball', 'egg', 'ender_pearl', 'honey_bottle', 'armor_stand',
+  'oak_sign', 'oak_hanging_sign', 'white_banner', 'banner'
+]);
+const STACK_LIMIT_OVERRIDES = {
+  ...Object.fromEntries([...ONE_PER_SLOT].map((name) => [name, 1])),
+  ...Object.fromEntries([...SIXTEEN_PER_SLOT].map((name) => [name, 16]))
+};
+
+function maxStackSize(name) {
+  if (!name) return 64;
+  if (STACK_LIMIT_OVERRIDES[name] !== undefined) return STACK_LIMIT_OVERRIDES[name];
+  // Every potion variant stacks to one; banners/signs stack to sixteen.
+  if (/potion/.test(name)) return 1;
+  if (/_banner$/.test(name) || /_sign$/.test(name)) return 16;
+  if (/_boat$|_minecart$|_bucket$/.test(name)) return 1;
+  if (/^music_disc_/.test(name)) return 1;
+  if (ARMOR[name] || /_helmet$|_chestplate$|_leggings$|_boots$/.test(name)) return 1;
+  if (/_pickaxe$|_axe$|_shovel$|_sword$|_hoe$/.test(name)) return 1;
+  return 64;
+}
+
+/** Slots consumed by an aggregate inventory map ({item: count}). */
+function inventorySlotUsage(inventory = {}, capacity = 36) {
+  let used = 0;
+  for (const [name, count] of Object.entries(inventory || {})) {
+    if (!(count > 0)) continue;
+    used += Math.ceil(count / maxStackSize(name));
+  }
+  return { used, free: Math.max(0, capacity - used), capacity, overflow: Math.max(0, used - capacity) };
+}
+
 const BED_NAMES = new Set(['white_bed', 'orange_bed', 'magenta_bed', 'light_blue_bed', 'yellow_bed', 'lime_bed', 'pink_bed', 'gray_bed', 'light_gray_bed', 'cyan_bed', 'purple_bed', 'blue_bed', 'brown_bed', 'green_bed', 'red_bed', 'black_bed']);
 const CROP_BLOCKS = new Set(['wheat', 'carrots', 'potatoes', 'beetroots', 'sugar_cane', 'pumpkin', 'melon', 'cocoa', 'torchflower_crop', 'pitcher_crop']);
 const SAPLING_NAMES = new Set(['oak_sapling', 'birch_sapling', 'spruce_sapling', 'jungle_sapling', 'acacia_sapling', 'dark_oak_sapling', 'cherry_sapling', 'pale_oak_sapling', 'mangrove_propagule']);
@@ -213,5 +260,5 @@ module.exports = {
   SAPLING_NAMES, CATEGORY_ALIASES,
   isLog, isPlank, isOre, isFood, isBed, isSapling, isCrop, toolTier, bestTool,
   bestFood, armorPoints, bestArmorForSlot, categoryOf, keepPriority,
-  matchesCategory, sumCategory
+  maxStackSize, inventorySlotUsage, matchesCategory, sumCategory
 };

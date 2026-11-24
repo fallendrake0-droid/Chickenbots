@@ -3,7 +3,7 @@
 const { distance } = require('../util/vec');
 const {
   bestTool, bestFood, PICKAXES, AXES, SHOVELS, SWORDS, armorPoints,
-  BED_NAMES, categoryOf, sumCategory
+  BED_NAMES, categoryOf, sumCategory, inventorySlotUsage
 } = require('../world/items');
 
 /**
@@ -101,7 +101,10 @@ class BotAdapter {
 
   distinctItems() { return Object.keys(this.inventory).filter((k) => this.inventory[k] > 0).length; }
 
-  isInventoryFull(limit = 36) { return this.distinctItems() >= limit; }
+  /** Slots, not distinct item names: 36 slots of 64 cobblestone is full. */
+  isInventoryFull(limit = 36) { return this.inventorySlots(limit).used >= limit; }
+
+  inventorySlots(capacity = 36) { return inventorySlotUsage(this.inventory, capacity); }
 
   hostileNear(position = this.position, radius = 16) {
     return this.entitiesNear(radius, position).filter((e) => e.hostile);

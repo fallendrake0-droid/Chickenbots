@@ -152,6 +152,7 @@ function statusSnapshot(services) {
     },
     homeBase: {
       home: services.runtime ? services.runtime.home : null,
+      source: services.runtime ? services.runtime.homeSource : null,
       builds: builds.filter((b) => String(b.buildId).startsWith('home-')),
       perBot: actionStatus.map((a) => ({ bot: a.bot, ...a.homeBase }))
     },

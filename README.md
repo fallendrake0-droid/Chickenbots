@@ -152,6 +152,13 @@ tests/                      team, excavation, construction, schematics, builder,
   liquid ceilings and unsupported floors, lights tunnels, records ore discoveries.
 * Woodcutting chops trunks top-down, clears attached leaves, collects saplings and replants on the
   original soil. Farming harvests crops, replants seeds, and feeds animals where the adapter supports it.
+* Inventory fullness uses real storage slots (36, stack-aware, and the live
+  window slots when Mineflayer exposes them), never a count of distinct item names. When a mining,
+  chopping, farming or excavation run fills a bot, it walks to the team's spawn-anchored home,
+  crafts two chests from planks/logs if needed, places and verifies a double chest, deposits every
+  non-tool/non-gear/non-food/non-light stack, then returns to the same work site and resumes the same
+  board assignment. The chest is registered in the resource ledger as 54-slot `home overflow` storage;
+  build phases withdraw their materials back out instead of failing with an empty inventory.
 * Sleep reserves a bed through the shared task board (TTL lock) so two bots cannot claim one bed.
 
 ### Combat engine (V6)

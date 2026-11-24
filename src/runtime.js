@@ -65,6 +65,8 @@ class TeamRuntime {
     this.commands = null;
     this.dashboard = null;
     this.home = { x: 0, y: 64, z: 0 };
+    this.homeSource = 'provisional';
+    this.homeAnchored = false;
     this.paused = false;
     this.running = false;
     this.ticking = false;
@@ -122,7 +124,15 @@ class TeamRuntime {
         const bot = new MockBot({ name, world: this.world, inventory: { ...STARTER_KIT }, position: { x: -2 + i, y: surface + 1, z: 2 }, logger: this.logger });
         this.bots.set(name, bot);
       }
-      this.home = { x: 0, y: this.world.surfaceY(0, 0) + 1, z: 0 };
+      // Home is the team's spawn point, not an arbitrary 0,0 datum: all bots
+      // spawn at z=2, so the shared home is the centre of those spawn cells.
+      const spawned = [...this.bots.values()];
+      const spawn = spawned[0] && spawned[0].position ? spawned[0].position : { x: 0, y: this.world.surfaceY(0, 2) + 1, z: 2 };
+      const cx = Math.round(spawned.reduce((sum, bot) => sum + (bot.position ? bot.position.x : 0), 0) / Math.max(1, spawned.length));
+      const cz = Math.round(spawned.reduce((sum, bot) => sum + (bot.position ? bot.position.z : 0), 0) / Math.max(1, spawned.length));
+      this.home = { x: cx, y: spawn.y, z: cz };
+      this.homeSource = 'spawn';
+      this.homeAnchored = true;
     } else {
       for (const name of BOT_NAMES) {
         const bot = new RealBot({ name, logger: this.logger });
@@ -143,6 +153,13 @@ class TeamRuntime {
       this.ledger.updateBotInventory(bot.name, bot.inventory);
     }
     this.memory.setHome({ position: this.home, setAt: Date.now() });
+    // Region excavation is outside the action task loop, so give it the same
+    // home-chest overflow handler as the normal mining/chopping assignments.
+    this.excavation.setInventoryHandler(async ({ botName, bot }) => {
+      const actions = this.actions ? this.actions.get(botName) : null;
+      if (!actions || !bot || !bot.position) return { ok: false, attempted: false, error: 'no action layer for excavation bot' };
+      return actions.inventory.makeRoomAtHome({ home: this.home, resumeAt: { ...bot.position }, reason: 'excavation inventory full' });
+    });
     this.coordinator.enable();
     this.combatTeam = new TeamCombatCoordinator({
       controllers: this.actions.list().map((actions) => actions.combat),
@@ -171,16 +188,32 @@ class TeamRuntime {
     return this;
   }
 
-  setHome(position) {
+  setHome(position, { source = 'operator', snapToSurface = true } = {}) {
     this.home = { x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) };
-    if (this.world && typeof this.world.getBlock === 'function') {
+    if (snapToSurface && this.world && typeof this.world.getBlock === 'function') {
       const ground = this.bots.values().next().value;
       if (ground && typeof ground.surfaceAt === 'function') this.home.y = ground.surfaceAt(this.home.x, this.home.z) + 1;
     }
-    this.memory.setHome({ position: this.home, setAt: Date.now() });
+    this.homeSource = source;
+    this.homeAnchored = true;
+    this.memory.setHome({ position: this.home, setAt: Date.now(), reportedBy: source });
     if (this.construction) this.construction.home = this.home;
     for (const actions of this.actions ? this.actions.list() : []) actions.updateHome(this.home);
     return { ok: true, home: this.home };
+  }
+
+  /**
+   * First successful spawn defines the shared home until an operator moves it.
+   * Called once per process after a real connection; respawns/reconnects keep
+   * the anchored position instead of drifting with the death location.
+   */
+  _anchorHomeToSpawn(bot) {
+    if (this.homeAnchored || !bot) return false;
+    const spawn = bot.spawnPosition || bot.position;
+    if (!spawn || !Number.isFinite(spawn.x) || !Number.isFinite(spawn.z)) return false;
+    const result = this.setHome(spawn, { source: 'spawn', snapToSurface: false });
+    this.logger.info(`home anchored to ${bot.name}'s spawn at ${this.home.x},${this.home.y},${this.home.z}`);
+    return Boolean(result.ok);
   }
 
   async start() {
@@ -400,6 +433,7 @@ class TeamRuntime {
           this.throttleStrikes = Math.max(0, this.throttleStrikes - 1);
         }
         this.logger.info(`[${bot.name}] ready (attempt ${attempt}, ${elapsed}ms)`);
+        this._anchorHomeToSpawn(bot);
         return result;
       }
       if (result.ok && !bot.ready) {

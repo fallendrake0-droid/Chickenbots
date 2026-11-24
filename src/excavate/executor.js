@@ -24,6 +24,7 @@ class ExcavationExecutor {
     comms = null,
     logger = null,
     options = {},
+    inventoryHandler = null,
     now = () => Date.now()
   }) {
     this.botName = botName;
@@ -34,6 +35,7 @@ class ExcavationExecutor {
     this.comms = comms;
     this.logger = logger;
     this.now = now;
+    this.inventoryHandler = inventoryHandler;
     this.options = {
       secondsPerBlock: 1.15,
       threatRadius: 8,
@@ -59,6 +61,7 @@ class ExcavationExecutor {
       torchesPlaced: 0,
       moved: 0,
       threatPauses: 0,
+      inventoryOffloads: 0,
       startedAt: null,
       finishedAt: null,
       lastError: null
@@ -263,6 +266,14 @@ class ExcavationExecutor {
         }
         if (this.stats.attempted % 12 === 0 && !(await this._handleThreats())) break;
         if (this.bot.isInventoryFull && this.bot.isInventoryFull()) {
+          // Offload to the home double chest and continue this same region.
+          if (this.inventoryHandler) {
+            const offload = await this.inventoryHandler({ botName: this.botName, bot: this.bot, region: this.region });
+            if (offload && offload.ok && offload.slotsAfter && offload.slotsAfter.free > 0) {
+              this.stats.inventoryOffloads++;
+              continue;
+            }
+          }
           this.status = 'inventory-full';
           if (this.comms) this.comms.send('RESOURCE_NEEDED', this.botName, { bot: this.botName, need: 'storage', region: this.region.id });
           break;

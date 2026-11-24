@@ -970,6 +970,31 @@ class RealBot extends BotAdapter {
     return value ? String(value).replace(/^minecraft:/, '') : null;
   }
 
+  /**
+   * Mineflayer knows the real slot layout. The aggregate inventory map cannot
+   * distinguish one full stack from two partial ones, so use the window slots
+   * when they are available (9..44 are the 36 storage slots).
+   */
+  isInventoryFull(limit = 36) {
+    const slots = this.bot && this.bot.inventory ? this.bot.inventory.slots : null;
+    if (Array.isArray(slots)) {
+      let used = 0;
+      for (let i = 9; i < 45; i++) if (slots[i]) used++;
+      if (used > 0) return used >= limit;
+    }
+    return super.isInventoryFull(limit);
+  }
+
+  inventorySlots(capacity = 36) {
+    const slots = this.bot && this.bot.inventory ? this.bot.inventory.slots : null;
+    if (Array.isArray(slots)) {
+      let used = 0;
+      for (let i = 9; i < 45; i++) if (slots[i]) used++;
+      return { used, free: Math.max(0, capacity - used), capacity, overflow: Math.max(0, used - capacity) };
+    }
+    return super.inventorySlots(capacity);
+  }
+
   _syncInventory() {
     if (!this.bot || !this.bot.inventory) return;
     const counts = {};

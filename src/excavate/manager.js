@@ -29,12 +29,14 @@ class ExcavationManager {
     this.excavations = new Map();
     this.executors = new Map(); // taskId -> executor
     this.adapters = new Map(); // botName -> adapter
+    this.inventoryHandler = null; // optional: offload a full bot instead of stopping
     this.seq = 0;
     this.history = [];
   }
 
   attachBot(name, adapter) { this.adapters.set(name, adapter); return this; }
   detachBot(name) { this.adapters.delete(name); }
+  setInventoryHandler(handler) { this.inventoryHandler = typeof handler === 'function' ? handler : null; return this; }
 
   _planOptions(opts) {
     return {
@@ -384,6 +386,7 @@ class ExcavationManager {
       taskBoard: this.coordinator ? this.coordinator.board : null,
       comms: this.coordinator ? this.coordinator.comms : null,
       logger: this.logger,
+      inventoryHandler: this.inventoryHandler,
       now: this.now
     });
     if (exc.paused) executor.pause('excavation paused');

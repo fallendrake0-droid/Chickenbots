@@ -49,16 +49,18 @@ class BotActions {
     this.sleep = new SleepController({ bot, memory, taskBoard, home: this.home, logger: this.logger });
     this.fishing = new FishingController({ bot, memory, ledger, logger: this.logger });
     this.exploration = new ExplorationController({ bot, memory, home: this.home, logger: this.logger, teamIndex: index });
-    this.inventory = new InventoryManager({ bot, ledger, memory, logger: this.logger });
+    this.inventory = new InventoryManager({ bot, ledger, memory, logger: this.logger, home: this.home });
     this.homeBase = new HomeBaseManager({ bots: [bot], world, memory, taskBoard, ledger, library, logger: this.logger });
     this.lastAction = null;
     this.lastActionAt = 0;
+    this._lastOverflowAttempt = 0;
   }
 
   updateHome(home) {
     this.home = home;
     if (this.sleep) this.sleep.home = home ? { ...home } : null;
     if (this.farming) this.farming.home = home ? { ...home } : null;
+    if (this.inventory) this.inventory.updateHome(home);
     this.exploration.home = home;
     this.homeBase.setHome(home);
   }
@@ -294,6 +296,13 @@ class BotActions {
     else if (phaseName === 'PERIMETER') { positions = perimeter; material = 'cobblestone'; }
     else { positions = [{ x: anchor.x, y: anchor.y + 1, z: anchor.z }]; material = 'oak_planks'; }
 
+    // Resource tasks now deposit their surplus at home; pull the phase's
+    // material back out instead of failing with an empty inventory.
+    const toSupply = positions.filter((pos) => {
+      const existing = this.bot.getBlock(pos);
+      return !existing || existing.name !== material;
+    }).length;
+    const supply = await this.inventory.ensureMaterials({ [material]: toSupply });
     const missing = [];
     let placed = 0;
     for (const pos of positions) {
@@ -319,7 +328,7 @@ class BotActions {
       return block.name !== material;
     });
     const ok = absent.length === 0;
-    return { ok, phase: phaseName, material, anchor, placed, total: positions.length, missing: absent.map((p) => ({ ...p, reason: missing.find((m) => m.x === p.x && m.y === p.y && m.z === p.z)?.reason || 'not placed' })) };
+    return { ok, phase: phaseName, material, anchor, supplied: supply.supplied, placed, total: positions.length, missing: absent.map((p) => ({ ...p, reason: missing.find((m) => m.x === p.x && m.y === p.y && m.z === p.z)?.reason || 'not placed' })) };
   }
 
   /**
@@ -714,6 +723,41 @@ class BotActions {
       try { this.taskBoard.heartbeat(task.id, this.bot.name); } catch (_) { /* board stopped */ }
     }, Math.max(5000, Math.floor((this.taskBoard.claimTtlMs || 45000) / 3)));
     if (heartbeat.unref) heartbeat.unref();
+    // A full inventory stops chopping/mining from collecting anything. Offload
+    // the surplus into a real double chest at home before continuing the same
+    // assignment. This returns pending and keeps the claim; the next tick
+    // resumes the task at the saved work site.
+    const RESOURCE_TASKS = new Set(['CHOP_WOOD', 'MINE_ORE', 'MINE_BLOCK', 'FARM_CROP', 'FISH', 'EXCAVATE_REGION', 'COLLECT_RESOURCE']);
+    if (RESOURCE_TASKS.has(task.type) && typeof this.bot.isInventoryFull === 'function' && this.bot.isInventoryFull()) {
+      const now = Date.now();
+      if (now - this._lastOverflowAttempt >= 15000) {
+        this._lastOverflowAttempt = now;
+        const resumeAt = this.bot.position ? { ...this.bot.position } : null;
+        let storage;
+        try {
+          storage = await this.inventory.makeRoomAtHome({ home: this.home, resumeAt, reason: `inventory full before ${task.type}` });
+        } catch (err) {
+          clearInterval(heartbeat);
+          try { this.taskBoard.heartbeat(task.id, this.bot.name); } catch (_) { /* board stopped */ }
+          throw err;
+        }
+        if (storage.attempted && storage.ok) {
+          clearInterval(heartbeat);
+          try { this.taskBoard.heartbeat(task.id, this.bot.name); } catch (_) { /* board stopped */ }
+          this.lastAction = 'home-storage';
+          this.lastActionAt = Date.now();
+          return { ok: true, pending: true, storing: true, storage, taskId: task.id, quantity: 0, verified: false };
+        }
+        if (storage.attempted) {
+          // Do not wedge the bot on an impossible storage run (e.g. no wood and
+          // no slot). Let the task proceed so the normal no-progress timer can
+          // release or re-plan it; storage is retried after the cooldown.
+          this.lastAction = 'home-storage-failed';
+          this.lastActionAt = Date.now();
+          this.logger.warn(`[${this.bot.name}] home storage failed: ${storage.error}`);
+        }
+      }
+    }
     let result;
     try {
       result = await this.performTask(task, { builder, bots, recipient });
