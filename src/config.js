@@ -86,7 +86,7 @@ const config = {
   },
   server: {
     host: env('MC_HOST', 'empiresmp.aternos.me'),
-    port: envInt('MC_PORT', 55742),
+    port: envInt('MC_PORT', 32990),
     version: env('MC_VERSION', 'auto'),
     // Resolve 'auto' with a validated status ping before any login socket is
     // opened. A sleeping Aternos server can report protocol -1; retrying that

@@ -29,7 +29,7 @@ test('configuration preserves the five usernames, server defaults and safety swi
   assert.deepEqual(config.team.names, ['________', '10101000', '01010100', '11001100', '00110000']);
   assert.deepEqual(BOT_NAMES, config.team.names);
   assert.equal(config.server.host, 'empiresmp.aternos.me');
-  assert.equal(config.server.port, 55742);
+  assert.equal(config.server.port, 32990);
   assert.equal(config.server.version, 'auto');
   assert.equal(config.server.joinIntervalMs, 10000);
   assert.equal(config.server.joinJitterMs, 0);

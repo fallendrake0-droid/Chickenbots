@@ -522,7 +522,7 @@ test('stage-specific timeouts are classified as join stalls, while TCP failures 
   assert.equal(isJoinStallError('timed out after 30000ms in handshake stage waiting for protocol login'), true);
   assert.equal(isJoinStallError('timed out after 15000ms in configuration stage waiting for protocol login'), true);
   assert.equal(isJoinStallError('timed out after 45000ms waiting for spawn'), true);
-  assert.equal(isJoinStallError('timed out after 45000ms establishing TCP to empiresmp.aternos.me:55742'), false);
+  assert.equal(isJoinStallError('timed out after 45000ms establishing TCP to empiresmp.aternos.me:32990'), false);
 });
 
 test('the runtime scheduler reads a controllable clock and counts one strike for four bot failures', async () => {

@@ -257,7 +257,7 @@ function registerAll(services, registry) {
     execute: async () => {
       const checks = [];
       checks.push({ name: 'roster', ok: JSON.stringify(config.team.names) === JSON.stringify(BOT_NAMES) && config.team.names.length === 5, detail: config.team.names.join(', ') });
-      checks.push({ name: 'server-default', ok: config.server.host === 'empiresmp.aternos.me' && config.server.port === 55742 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port} (${config.server.version})` });
+      checks.push({ name: 'server-default', ok: config.server.host === 'empiresmp.aternos.me' && config.server.port === 32990 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port} (${config.server.version})` });
       checks.push({ name: 'pve-enabled', ok: config.autonomy.pve !== false, detail: String(config.autonomy.pve) });
       checks.push({ name: 'pvp-explicit-only', ok: config.autonomy.pvp === true, detail: `${config.autonomy.pvp} (explicit target list still required)` });
       checks.push({ name: 'ai-disabled', ok: config.autonomy.ai.enabled === false, detail: 'deterministic local intelligence' });
