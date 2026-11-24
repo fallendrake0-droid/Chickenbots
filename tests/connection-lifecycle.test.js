@@ -433,7 +433,12 @@ test('a dead transport refuses later writes instead of raising EPIPE', async () 
   assert.equal(connectionStatus(real).online, false, 'a dead transport must not report online');
   bot._client.write('chat_message', { message: 'should not be sent' });
   assert.equal(bot._client.writes.length, before, 'a dead socket must not receive another packet');
+  const stale = await real.disconnect('stale cleanup', { generation: 999 });
+  assert.equal(stale.stale, true, 'an old generation cannot close the current session');
+  assert.equal(real.bot, bot, 'a stale cleanup must leave the new session intact');
   await real.disconnect('test complete');
+  const again = await real.disconnect('test complete');
+  assert.equal(again.already, true, 'cleanup for a generation runs exactly once');
 });
 
 test('a kick captures the ready state before cleanup resets it', async () => {

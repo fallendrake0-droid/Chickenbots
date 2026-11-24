@@ -107,8 +107,14 @@ test('a single bot login stall does not trigger the fleet-wide join pause', () =
   runtime._registerJoinBackoff = (kind, error) => backs.push({ kind, error });
   runtime.logger = { info() {}, warn() {}, error() {}, debug() {} };
   const bot = { name: '10101000' };
+  const healthy = ['________', '01010100', '11001100', '00110000'].map((name) => ({
+    name, ready: true, connected: true, spawned: true, authenticated: true
+  }));
+  runtime.bots = new Map([[bot.name, bot], ...healthy.map((entry) => [entry.name, entry])]);
   assert.equal(runtime._registerJoinFailure(bot, { ok: false, error: 'timed out after 30000ms waiting for protocol login' }), 'stalled');
   assert.deepEqual(backs, [], 'a login timeout must stay per-bot');
+  assert.equal(runtime.joinCooldownUntil, 0, 'one bot stalling must not close the fleet join queue');
+  assert.ok(healthy.every((entry) => entry.ready && entry.connected), 'the other four sessions remain untouched');
   assert.equal(runtime._registerJoinFailure(bot, { ok: false, error: 'Connection throttled! Please wait before reconnecting' }), 'throttled');
   assert.equal(backs.length, 1);
   assert.equal(backs[0].kind, 'throttled');

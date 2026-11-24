@@ -356,7 +356,17 @@ class RealBot extends BotAdapter {
             this.logger.info(`[${this.name}] client_tick_end loop active at ${this._clientTicker ? this._clientTicker.tickRate : 20} tps (1.21.2+ requirement)`);
           }
         }
-        original(name, packet);
+        this.lastClientPacket = { name, at: Date.now() };
+        try {
+          original(name, packet);
+        } catch (err) {
+          // A timer callback must not throw EPIPE into the process. Stop the
+          // loop and let the ordinary end/kick path own the reconnect.
+          this._transportDead = true;
+          this.lastError = this._redact(err.message || 'tick write failed');
+          this.logger.warn(`[${this.name}] client tick write failed (${err.code || err.name || 'error'}): ${this.lastError}`);
+          this._stopClientTicker('client write failed');
+        }
       }
     });
     this._clientTicker.start();
