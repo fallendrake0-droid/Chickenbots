@@ -100,3 +100,17 @@ test('the supervisor only claims it restored a bot that had a previous session',
   assert.ok(logs.some((line) => line.includes('reconnect supervisor restored')), 'a real reconnect is reported');
   runtime.eventLoopDelay.disable();
 });
+
+test('a single bot login stall does not trigger the fleet-wide join pause', () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const backs = [];
+  runtime._registerJoinBackoff = (kind, error) => backs.push({ kind, error });
+  runtime.logger = { info() {}, warn() {}, error() {}, debug() {} };
+  const bot = { name: '10101000' };
+  assert.equal(runtime._registerJoinFailure(bot, { ok: false, error: 'timed out after 30000ms waiting for protocol login' }), 'stalled');
+  assert.deepEqual(backs, [], 'a login timeout must stay per-bot');
+  assert.equal(runtime._registerJoinFailure(bot, { ok: false, error: 'Connection throttled! Please wait before reconnecting' }), 'throttled');
+  assert.equal(backs.length, 1);
+  assert.equal(backs[0].kind, 'throttled');
+  runtime.eventLoopDelay.disable();
+});

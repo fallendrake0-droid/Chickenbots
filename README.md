@@ -629,14 +629,18 @@ commissioning.
   a movement packet, and it does not send `player_loaded` itself because Mineflayer already does. If
   protocol kicks continue, set `MC_VERSION` to the server's exact version instead of `auto`.
   The client-requested view distance also matters: Mineflayer's default `far` asks the server for
-  up to 625 chunks per bot, and `minecraft-protocol` decompresses those packets synchronously on the
-  event loop. Five joins (even staggered) can therefore freeze timers for tens of seconds, miss the
-  server's keep-alive deadline and surface as `EPIPE` right after the block clears. Bots request
-  `MC_VIEW_DISTANCE=tiny` (6) by default; the 17:25 run still blocked for 40s at `short`, so use
-  2–5 on a slow host, and only raise the distance when the dashboard's live event-loop delay shows
-  the host can absorb the chunk burst. The inbound socket also yields between kernel reads
-  (`MC_INBOUND_YIELD=true`). The Connections page reports mean/p99/max delay from
-  `monitorEventLoopDelay`.
+  up to 625 chunks per bot. `minecraft-protocol` 1.68.0 decompresses each compressed frame with
+  synchronous `zlib.unzipSync` inside its stream transform, so a five-bot chunk burst can freeze
+  timers for tens of seconds, miss the server's 30s keep-alive deadline and surface as `EPIPE`
+  right after the block clears. Chickenbots now replaces that transform with an async `zlib.unzip`
+  step as the library is loaded, so decompression no longer holds the event loop. Bots also request
+  `MC_VIEW_DISTANCE=tiny` (6) by default and the inbound socket yields between kernel reads
+  (`MC_INBOUND_YIELD=true`) as defence in depth. The 17:25 live run blocked for 40s at `short` before
+  this patch, so keep 2–5 on a slow host and only raise the distance when the dashboard's live
+  event-loop delay shows the host can absorb the chunk burst. The Connections page reports
+  mean/p99/max delay from `monitorEventLoopDelay`. The pre-teardown snapshot also records the last
+  inbound/outbound packet name, pending socket bytes and the last valid state, and
+  `/api/diagnostics/export` downloads a redacted state + log bundle for support.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
   real version instead of sending five bots into mineflayer's autoVersion crash path. While the probe

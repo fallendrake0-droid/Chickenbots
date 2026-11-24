@@ -207,6 +207,21 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     }
   });
 
+  app.get('/api/diagnostics/export', (req, res) => {
+    try {
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        note: 'Credentials are redacted by the logger and the dashboard state builder.',
+        state: snapshot(true),
+        logs: logStore.recent({ limit: 500 })
+      };
+      res.setHeader('Content-Disposition', 'attachment; filename="chickenbots-diagnostics.json"');
+      res.type('application/json').send(JSON.stringify(payload, null, 2));
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/api/logs', (req, res) => {
     const { limit = 120, level = null, scope = null, q = null, since = 0 } = req.query;
     const logs = logStore.recent({ limit, level, scope, q, since });

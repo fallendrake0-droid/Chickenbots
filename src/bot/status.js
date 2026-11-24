@@ -38,6 +38,12 @@ function connectionStatus(bot, { now = Date.now(), staleAfterMs = config.server.
   // authoritative answer. The booleans below are only a compatibility
   // fallback for MockBot and for constructors that have never connected.
   const machine = bot.connection && typeof bot.connection.snapshot === 'function' ? bot.connection.snapshot(now) : null;
+  // An EPIPE/end callback can arrive before the lifecycle close transition.
+  // The socket is already unusable, so do not report the bot online merely
+  // because the previous READY state has not been projected away yet.
+  if (bot._transportDead) {
+    return result('offline', 'Transport closed; awaiting session cleanup', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError, machine });
+  }
   if (machine && machine.generation > 0) {
     const stale = Boolean(machine.state === 'ready' && lastEventAt && lastEventAgeMs > staleAfterMs);
     if (stale) {

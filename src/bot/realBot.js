@@ -7,6 +7,7 @@ const { redactString } = require('../util/redact');
 const { classifyKick, sleep } = require('./connection');
 const { ConnectionStateMachine, STATES, TERMINAL } = require('./connectionState');
 const { ClientTickScheduler, MOVEMENT_PACKETS } = require('./clientTicker');
+const { installAsyncDecompression } = require('../protocol/asyncDecompress');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
 const { FOODS, BED_NAMES, toolTier } = require('../world/items');
@@ -122,6 +123,8 @@ class RealBot extends BotAdapter {
     this._tickEndSent = false;
     this._lastTickEndAt = 0;
     this._lastInboundPacketAt = 0;
+    this._lastValidState = null;
+    this._transportDead = false;
     this._keepAlive = { received: 0, replies: 0, lastReceivedAt: 0, lastReplyAt: 0, maxGapMs: 0, warnings: 0, lastWarningAt: 0 };
     this.lastDisconnect = null;
     this._antiAfkTimer = null;
@@ -202,7 +205,7 @@ class RealBot extends BotAdapter {
       // A queued Mineflayer physics callback from an old socket must never
       // write into the replacement socket after a reconnect. The generation is
       // owned by the lifecycle state machine, not by this closure.
-      if (this.bot !== owner || !this.connection.isCurrent(generation)) return true;
+      if (this.bot !== owner || !this.connection.isCurrent(generation) || this._transportDead) return true;
       const socket = client.socket;
       if (socket && (socket.destroyed || socket.readyState === 'closed')) return true;
       if (movement.has(name)) {
@@ -219,7 +222,18 @@ class RealBot extends BotAdapter {
           return true;
         }
       }
-      const result = original(name, packet);
+      this.lastClientPacket = { name, at: Date.now() };
+      let result;
+      try {
+        result = original(name, packet);
+      } catch (err) {
+        // A synchronous EPIPE/EBADF must not escape a timer and crash the
+        // process. Mark the transport dead so no later callback writes again.
+        this._transportDead = true;
+        this.lastError = this._redact(err.message || 'socket write failed');
+        this.logger.warn(`[${this.name}] socket write failed (${err.code || err.name || 'error'}): ${this.lastError}`);
+        return true;
+      }
       // Count the library's own automatic reply only after its write call
       // returns, so a failed write cannot look like a verified keep-alive.
       if (name === 'keep_alive') this._noteKeepAliveReply();
@@ -280,6 +294,21 @@ class RealBot extends BotAdapter {
     // sense that matters: no credential exchange is pending.
     if (snapshot.state === STATES.AWAITING_SPAWN && !this.passwordRequired) this.authenticated = true;
     if (TERMINAL.has(snapshot.state)) this.authenticated = false;
+    // Remember the last state in which the server had actually accepted this
+    // session. Error/end handlers can fire after another callback has already
+    // projected the terminal booleans; the diagnostic must retain the evidence.
+    if (!TERMINAL.has(snapshot.state) && snapshot.open && snapshot.spawned) {
+      this._lastValidState = {
+        generation: snapshot.generation,
+        at: this.now(),
+        state: snapshot.state,
+        stage: snapshot.stage,
+        connected: true,
+        spawned: true,
+        authenticated: Boolean(this.authenticated),
+        ready: snapshot.state === STATES.READY || snapshot.state === STATES.RESPAWNING
+      };
+    }
     if (snapshot.generation !== this._connectionGeneration) {
       this._connectionGeneration = snapshot.generation;
       this._clientGeneration = snapshot.generation;
@@ -317,7 +346,7 @@ class RealBot extends BotAdapter {
       logger: this.logger,
       now: this.now,
       write: (name, packet) => {
-        if (this.bot !== owner || !this.connection.isCurrent(generation)) return;
+        if (this.bot !== owner || !this.connection.isCurrent(generation) || this._transportDead) return;
         const socket = client.socket;
         if (socket && (socket.destroyed || socket.readyState === 'closed')) return;
         if (name === 'tick_end') {
@@ -387,17 +416,27 @@ class RealBot extends BotAdapter {
 
   _captureDisconnectSnapshot(reason) {
     const at = this.now();
+    const generation = this.connection.generation;
+    // If cleanup has already projected the terminal booleans, keep the last
+    // state the lifecycle actually reached. Without this a READY session can
+    // be reported as authenticated=false/spawned=false and hide the evidence.
+    const lastValid = this._lastValidState && this._lastValidState.generation === generation
+      ? this._lastValidState
+      : null;
+    const recover = Boolean(lastValid && (!this.connected || !this.spawned || !this.authenticated || !this.ready));
     const snapshot = {
       at,
       reason: this._redact(String(reason || 'connection ended')),
-      generation: this.connection.generation,
+      generation,
       state: this.connection.state,
       label: this.connection.label,
       stage: this.connection.stage,
-      connected: Boolean(this.connected),
-      spawned: Boolean(this.spawned),
-      authenticated: Boolean(this.authenticated),
-      ready: Boolean(this.ready),
+      connected: Boolean(this.connected || (recover && lastValid.connected)),
+      spawned: Boolean(this.spawned || (recover && lastValid.spawned)),
+      authenticated: Boolean(this.authenticated || (recover && lastValid.authenticated)),
+      ready: Boolean(this.ready || (recover && lastValid.ready)),
+      lastValidState: lastValid,
+      stateSource: recover ? 'last-valid' : 'live',
       lastError: this.lastError,
       kickKind: this.kickKind,
       position: this.position ? { ...this.position } : null,
@@ -408,6 +447,9 @@ class RealBot extends BotAdapter {
       ticker: this._clientTicker ? this._clientTicker.snapshot() : null,
       lastEventAt: this.lastEventAt || null,
       lastEventAgeMs: this.lastEventAt ? Math.max(0, at - this.lastEventAt) : null,
+      lastInboundPacket: this.lastInboundPacket,
+      lastClientPacket: this.lastClientPacket,
+      pendingBytes: this.bot && this.bot._client && this.bot._client.socket ? this.bot._client.socket.writableLength : null,
       loginAt: this.loginAt || null,
       spawnAt: this.spawnAt || null,
       clientState: this.bot && this.bot._client ? this.bot._client.state : null,
@@ -513,6 +555,9 @@ class RealBot extends BotAdapter {
 
   _loadMineflayer() {
     if (this._createBot) return this._createBot;
+    // Inflate inbound packets off the event loop before mineflayer builds its
+    // client pipeline. Without this a chunk burst blocks tick_end/keepalive.
+    installAsyncDecompression();
     // Lazily require so the deterministic simulator/tests never need a socket.
     const mineflayer = this._mineflayer || require('mineflayer');
     this._mineflayer = mineflayer;
@@ -553,6 +598,11 @@ class RealBot extends BotAdapter {
     this._tickEndSent = false;
     this._lastTickEndAt = 0;
     this._lastInboundPacketAt = 0;
+    this._lastValidState = null;
+    this.lastInboundPacket = null;
+    this.lastClientPacket = null;
+    this._transportDead = false;
+    this._cleanupGeneration = 0;
     this._serverTickingState = null;
     this._tcpConnected = false;
     this._tcpAt = 0;
@@ -750,7 +800,7 @@ class RealBot extends BotAdapter {
     this.connection.fail(code, this.lastError, { stage, details: { ...details, snapshotAt: snapshot.at } });
     this._keepAlive = this._keepAlive || {};
     this._dumpTrace(`${code}: ${message}`, snapshot);
-    await this.disconnect(`${code}: ${message}`);
+    await this.disconnect(`${code}: ${message}`, { generation: snapshot.generation });
     return {
       ok: false,
       code,
@@ -979,6 +1029,7 @@ class RealBot extends BotAdapter {
     });
     bot.on('kicked', (reason) => {
       if (!owns()) return;
+      this._transportDead = true;
       this.lastError = this._redact(this._formatKickReason(reason));
       const kick = classifyKick(this.lastError);
       this.kickKind = kick.kind;
@@ -1008,6 +1059,7 @@ class RealBot extends BotAdapter {
     });
     bot.on('error', (err) => {
       if (!owns()) return;
+      this._transportDead = true;
       this.lastError = this._redact(err.message);
       this._pendingConnectionError = { error: this.lastError, code: err.code || 'CONNECTION_ERROR', at: this.now() };
       this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${this.lastError}`);
@@ -1143,6 +1195,7 @@ class RealBot extends BotAdapter {
           this.logger.warn(`[${this.name}] inbound packet gap ${now - this._lastInboundPacketAt}ms before ${meta && meta.name ? meta.name : 'unknown'} (${buffer ? buffer.length : 0} bytes)`);
         }
         this._lastInboundPacketAt = now;
+        this.lastInboundPacket = { name: meta && meta.name ? meta.name : null, at: now, bytes: buffer ? buffer.length : 0 };
         this._markEvent();
         if (!meta) return;
         if (['kick_disconnect', 'system_chat', 'player_loaded', 'start_configuration', 'login'].includes(meta.name)) {
@@ -1152,6 +1205,7 @@ class RealBot extends BotAdapter {
     }
     bot.on('end', (reason) => {
       if (!owns()) return;
+      this._transportDead = true;
       if (this.spawned && this.authenticated) this.lastSessionEndedAt = this.now();
       this._stopAntiAfk();
       this._stopClientTicker(`end: ${reason || 'end'}`);
@@ -2321,7 +2375,14 @@ class RealBot extends BotAdapter {
     this._antiAfkJumpTimer = null;
   }
 
-  async disconnect(reason = 'shutdown') {
+  async disconnect(reason = 'shutdown', { generation: expectedGeneration = null } = {}) {
+    const generation = this.connection.generation;
+    if (expectedGeneration !== null && expectedGeneration !== generation) {
+      return { ok: true, stale: true, generation };
+    }
+    if (this._cleanupGeneration === generation) return { ok: true, already: true };
+    this._cleanupGeneration = generation;
+    this._transportDead = true;
     // Capture before any cleanup changes the state the operator is trying to
     // diagnose. The first capture for a generation is the one kept.
     const snapshot = this._captureDisconnectSnapshot(reason || 'disconnected');

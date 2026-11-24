@@ -192,6 +192,11 @@ test('dashboard serves the operations console, state, commands and schematic dow
     assert.ok(tokens.body.includes('--accent'));
     const logs = await httpGet(port, '/api/logs?limit=5');
     assert.equal(JSON.parse(logs.body).ok, true);
+    const exported = await httpGet(port, '/api/diagnostics/export');
+    const bundle = JSON.parse(exported.body);
+    assert.equal(Array.isArray(bundle.logs), true);
+    assert.equal(bundle.state.bots.length, 5);
+    assert.equal(/loginPassword|registerPassword|MC_LOGIN_PASSWORD/.test(exported.body), false, 'diagnostics export must not expose credentials');
     const settings = await httpGet(port, '/api/settings');
     assert.equal(JSON.parse(settings.body).ok, true);
     const botState = await httpGet(port, '/api/bot/________/state', 'POST', {});

@@ -647,7 +647,7 @@ export const connectionsPage = {
       <div class="page">
         ${pageHeader({
           eyebrow: 'Fleet', title: 'Connection Management', description: 'Inspect authentication, spawn state and connection errors for each bot, then reconnect or disconnect individual sessions.',
-          actions: `<button class="button" type="button" id="reconnect-all">${icon('refresh')} Reconnect all</button><button class="button button--primary" type="button" data-command-palette>${icon('terminal')} Command</button>`
+          actions: `<a class="button" href="/api/diagnostics/export" download>${icon('download')} Export diagnostics</a><button class="button" type="button" id="reconnect-all">${icon('refresh')} Reconnect all</button><button class="button button--primary" type="button" data-command-palette>${icon('terminal')} Command</button>`
         })}
         ${server.versionError ? `<div class="callout callout--danger">${icon('alert')}<div><strong>Server version unresolved.</strong> <span class="mono">${esc(server.versionError)}</span> No bot login sockets are opened until a valid version is resolved.</div></div>` : ''}
         <div class="callout callout--info">${icon('shield')}<div><strong>Connection gate.</strong> The runtime currently reports <span class="mono">${runtime.autonomyAllowed ? 'autonomy allowed' : 'autonomy gated'}</span>. Bots join one at a time, <span class="mono">${esc(((config.server && config.server.joinIntervalMs) || 10000) / 1000)}s</span> apart, at <span class="mono">${esc(server.host || '—')}:${esc(server.port || '—')}</span> (${esc(server.resolvedVersion || server.version || 'version unknown')}). Reconnect and disconnect are real runtime actions.</div></div>
@@ -692,6 +692,7 @@ export const connectionsPage = {
               const keep = row.keepAlive || {};
               const ticker = row.ticker || {};
               const last = row.lastDisconnect || null;
+              const retry = row.retry || null;
               return `<section class="card card--inset">
                 <div class="card-header"><div class="card-title">${esc(row.name)} ${badge(c.label || row.statusLabel || 'Unknown', stateTone)}</div><span class="mono tiny">session ${esc(c.generation ?? '—')}</span></div>
                 <div class="card-body card-body--tight">
@@ -703,6 +704,7 @@ export const connectionsPage = {
                     ['Client ticks', ticker.tickEnds != null ? `${num(ticker.tickEnds)} tick_end · ${ticker.tickRate || 20} tps${ticker.frozen ? ' · frozen' : ''}` : 'not active'],
                     ['Last inbound', c.lastEventAgeMs != null ? `${duration(c.lastEventAgeMs)} ago` : '—'],
                     ['Last failure', c.failure ? esc(`${c.failure.code} in ${c.failure.stage}: ${c.failure.error}`) : '—'],
+                    ['Retry', retry ? `attempt ${num(retry.attempt || 0)}${retry.nextRetryAt ? ` · next in ${duration(Math.max(0, retry.nextRetryAt - Date.now()))}` : ''}${retry.lastError ? ` · ${esc(String(retry.lastError).slice(0, 120))}` : ''}` : '—'],
                     ['Last disconnect', last ? esc(`${last.reason} · ${last.state} · spawned=${last.spawned} auth=${last.authenticated} · ${new Date(last.at).toLocaleTimeString()}`) : '—']
                   ])}
                   <div class="timeline" style="margin-top:8px">

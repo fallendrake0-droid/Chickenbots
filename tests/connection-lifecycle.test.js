@@ -393,6 +393,49 @@ test('a join-time respawn packet while auth is pending is not called a respawn',
   await pending.catch(() => null);
 });
 
+test('a disconnect snapshot keeps the last valid ready state after cleanup', async () => {
+  const { real, fake } = newReal();
+  const pending = real.connect({ timeoutMs: 500 });
+  await new Promise((resolve) => setImmediate(resolve));
+  const bot = fake();
+  bot._client.emit('connect');
+  bot.emit('login');
+  bot.emit('spawn');
+  assert.equal((await pending).ok, true);
+  const generation = real.connection.generation;
+
+  // Simulate a teardown callback having already projected the terminal flags.
+  real.connected = false;
+  real.spawned = false;
+  real.authenticated = false;
+  real.connection.close('test cleanup won the race');
+  const snapshot = real._captureDisconnectSnapshot('after cleanup');
+  assert.equal(snapshot.generation, generation);
+  assert.equal(snapshot.authenticated, true, 'the snapshot must retain the authenticated session');
+  assert.equal(snapshot.spawned, true);
+  assert.equal(snapshot.ready, true);
+  assert.equal(snapshot.stateSource, 'last-valid');
+  assert.equal(snapshot.lastValidState.generation, generation);
+  await real.disconnect('test complete');
+});
+
+test('a dead transport refuses later writes instead of raising EPIPE', async () => {
+  const { real, fake } = newReal();
+  const pending = real.connect({ timeoutMs: 500 });
+  await new Promise((resolve) => setImmediate(resolve));
+  const bot = fake();
+  bot._client.emit('connect');
+  bot.emit('login');
+  bot.emit('spawn');
+  assert.equal((await pending).ok, true);
+  const before = bot._client.writes.length;
+  real._transportDead = true;
+  assert.equal(connectionStatus(real).online, false, 'a dead transport must not report online');
+  bot._client.write('chat_message', { message: 'should not be sent' });
+  assert.equal(bot._client.writes.length, before, 'a dead socket must not receive another packet');
+  await real.disconnect('test complete');
+});
+
 test('a kick captures the ready state before cleanup resets it', async () => {
   const { real, fake } = newReal();
   const pending = real.connect({ timeoutMs: 500 });

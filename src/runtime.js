@@ -109,6 +109,7 @@ class TeamRuntime {
     this.eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
     this.eventLoopDelay.enable();
     this._eventLoopWarnedMax = 0;
+    this.retryMeta = new Map();
     this._eventLoopLastWarnAt = 0;
   }
 
@@ -398,6 +399,24 @@ class TeamRuntime {
     return record;
   }
 
+  /**
+   * Only an explicit server throttle is a fleet-wide event. A single bot's TCP
+   * or protocol-login timeout gets its own retry backoff and must not pause
+   * four healthy sessions behind a 90s global cooldown.
+   */
+  _registerJoinFailure(bot, result) {
+    if (!result || result.ok) return null;
+    if (isThrottleError(result.error)) {
+      this._registerJoinBackoff('throttled', result.error);
+      return 'throttled';
+    }
+    if (isJoinStallError(result.error)) {
+      this.logger.info(`[${bot.name}] join stall is scoped to this bot; the fleet join queue stays open`);
+      return 'stalled';
+    }
+    return null;
+  }
+
   async _connectWithRetry(bot) {
     let attempt = 0;
     while (!this.shutdownRequested && !bot.ready) {
@@ -416,6 +435,7 @@ class TeamRuntime {
         }
       }
       attempt++;
+      this.retryMeta.set(bot.name, { attempt, nextRetryAt: null, lastError: null, since: Date.now() });
       // Aternos throttles an immediate rejoin after a real session ends. Wait
       // behind the hold-down *before* taking the join slot, so the server never
       // sees the rejected attempt and a waiting bot does not block the queue.
@@ -438,11 +458,7 @@ class TeamRuntime {
         release();
       }
       const elapsed = Date.now() - startedAt;
-      if (!result.ok && isThrottleError(result.error)) {
-        this._registerJoinBackoff('throttled', result.error);
-      } else if (!result.ok && isJoinStallError(result.error)) {
-        this._registerJoinBackoff('join stalled', result.error);
-      }
+      this._registerJoinFailure(bot, result);
       if (this.intentionalDisconnects.has(bot.name)) {
         return { ok: false, error: 'disconnected by operator', stopped: true };
       }
@@ -467,6 +483,7 @@ class TeamRuntime {
       if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
         this.retryPausedBots.delete(bot.name);
+        this.retryMeta.delete(bot.name);
         // A ready session proves this outage episode is over. The join
         // scheduler retains the strike level for a future outage and resets it
         // after a genuinely quiet ten minutes.
@@ -502,6 +519,7 @@ class TeamRuntime {
       const effectiveDelay = Math.max(delay, cooldownWait);
       const reason = isThrottleError(result.error) ? 'server join throttle' : stalled ? 'join stalled before spawn' : 'connection failed';
       this.logger.warn(`[${bot.name}] ${reason} after ${elapsed}ms${result.code ? ` [${result.code}${result.stage ? `/${result.stage}` : ''}]` : ''}: ${result.error}; retrying in ${(effectiveDelay / 1000).toFixed(1)}s`);
+      this.retryMeta.set(bot.name, { attempt, nextRetryAt: Date.now() + effectiveDelay, lastError: result.error || null, since: Date.now() });
       await sleep(delay, this.shutdownController.signal);
     }
     return { ok: bot.ready };
@@ -873,6 +891,7 @@ class TeamRuntime {
           online: status.online, status: status.status, statusLabel: status.statusLabel, statusDetail: status.statusDetail,
           health: bot.health, deaths: bot.deaths || 0, lastSpawn: bot.lastSpawn || null,
           stageTimings: bot.stageTimings || null,
+          retry: this.retryMeta.get(bot.name) || null,
           connection: connection ? {
             generation: connection.generation, state: connection.state, label: connection.label, detail: connection.detail,
             stage: connection.stage, stageLabel: connection.stageLabel, stageElapsedMs: connection.stageElapsedMs,
