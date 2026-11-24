@@ -120,3 +120,15 @@ test('a single bot login stall does not trigger the fleet-wide join pause', () =
   assert.equal(backs[0].kind, 'throttled');
   runtime.eventLoopDelay.disable();
 });
+
+test('the dashboard state exposes the per-bot retry attempt without a fleet pause', () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const bot = { name: '10101000', ready: false, connected: false, spawned: false, authenticated: false };
+  runtime.bots = new Map([[bot.name, bot]]);
+  const retry = { attempt: 3, nextRetryAt: Date.now() + 30000, lastError: 'timed out after 30000ms waiting for protocol login', since: Date.now() };
+  runtime.retryMeta.set(bot.name, retry);
+  const row = runtime.state().bots.find((entry) => entry.name === bot.name);
+  assert.deepEqual(row.retry, retry);
+  assert.equal(runtime.joinCooldownUntil, 0);
+  runtime.eventLoopDelay.disable();
+});

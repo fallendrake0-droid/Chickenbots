@@ -98,7 +98,7 @@ The dashboard Connections page renders lifecycle/retry information and a link to
 
 ## 7. Tests
 
-Current suite: **267 passed, 0 failed**. Lint: **PASSED (146 files)**. Validation: **PASSED**, consistency **10/10**, secret check passed, 1120 schematics.
+Current suite: **268 passed, 0 failed**. Lint: **PASSED (146 files)**. Validation: **PASSED**, consistency **10/10**, secret check passed, 1120 schematics.
 
 The 20 requested scenarios are covered by the lifecycle/runtime/protocol/controller tests, including:
 
@@ -143,7 +143,7 @@ If the server still disconnects a bot, the next diagnostic export should settle 
 
 ```text
 npm run lint        PASSED (146 files)
-npm test            267/267 passed
+npm test            268/268 passed
 npm run validate    PASSED (secret + lint + tests + 1120 schematics + consistency 10/10)
 git checkout -- data/schematics/validation-report.json   # report reverted
 ```
