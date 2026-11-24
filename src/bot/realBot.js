@@ -886,7 +886,17 @@ class RealBot extends BotAdapter {
 
   getBlock(pos) {
     const block = this._blockAt(pos);
-    return block ? { name: block.name, position: { x: pos.x, y: pos.y, z: pos.z } } : { name: 'air', position: { x: pos.x, y: pos.y, z: pos.z } };
+    // An unloaded chunk is unknown, not air. Reporting it as air would let a
+    // build engine plan placements against terrain it has never seen.
+    if (!block) return { name: 'unloaded', properties: {}, position: { x: pos.x, y: pos.y, z: pos.z } };
+    let properties = {};
+    try {
+      if (typeof block.getProperties === 'function') properties = block.getProperties() || {};
+      else if (block.properties) properties = { ...block.properties };
+    } catch (err) { properties = {}; }
+    let stateId = null;
+    try { if (typeof block.getStateId === 'function') stateId = block.getStateId(); } catch (err) { stateId = null; }
+    return { name: block.name, properties, stateId, position: { x: pos.x, y: pos.y, z: pos.z } };
   }
 
   get entities() {
@@ -1146,40 +1156,58 @@ class RealBot extends BotAdapter {
     return { ok: true, block: block.name, drops: {} };
   }
 
-  async placeBlock(pos, itemName) {
+  async placeBlock(pos, itemName, { descriptor = null, strategy = null } = {}) {
     const check = this._assertReady();
     if (check) return check;
     const item = this._findItem(itemName);
     if (!item) return { ok: false, error: `no ${itemName}` };
     const target = this._blockAt(pos);
-    if (target && target.name !== 'air' && target.name !== 'water') return { ok: false, error: 'space occupied' };
-    const offsets = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
-    let reference = null;
-    let face = null;
-    for (const [dx, dy, dz] of offsets) {
-      const refPos = { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz };
-      const block = this._blockAt(refPos);
-      if (block && block.name !== 'air' && block.boundingBox === 'block') {
-        reference = block;
-        face = this._vec3(-dx, -dy, -dz);
-        break;
-      }
+    // A door's upper half or a bed's head is created by the server when its
+    // companion is placed. Treat an already-correct target as success.
+    if (target && target.name !== 'air' && target.name !== 'water') {
+      let properties = {};
+      try { properties = typeof target.getProperties === 'function' ? target.getProperties() : {}; } catch (err) { properties = {}; }
+      const matches = !descriptor || (target.name === descriptor.name
+        && Object.entries(descriptor.properties || {}).every(([key, value]) => String(properties[key]) === String(value)));
+      if (matches) return { ok: true, position: { ...pos }, item: itemName, alreadyPresent: true };
+      return { ok: false, error: 'space occupied' };
     }
-    if (!reference) return { ok: false, error: 'no support block to place against' };
+    const offsets = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
+    let references = offsets.map(([dx, dy, dz]) => ({ dx, dy, dz }))
+      .map((entry) => ({ ...entry, block: this._blockAt({ x: pos.x + entry.dx, y: pos.y + entry.dy, z: pos.z + entry.dz }) }))
+      .filter((entry) => entry.block && entry.block.name !== 'air' && entry.block.boundingBox === 'block');
+    if (strategy && Array.isArray(strategy.attach)) {
+      const [dx, dy, dz] = strategy.attach;
+      references.sort((a, b) => (Math.abs(a.dx - dx) + Math.abs(a.dy - dy) + Math.abs(a.dz - dz))
+        - (Math.abs(b.dx - dx) + Math.abs(b.dy - dy) + Math.abs(b.dz - dz)));
+    } else if (strategy && strategy.clickFace === 'above') {
+      references.sort((a, b) => (b.dy - a.dy) || (Math.abs(b.dy) - Math.abs(a.dy)));
+    }
+    if (!references.length) return { ok: false, error: 'no support block to place against' };
     if (distance(this.position, pos) > 5) {
       const move = await this.goTo(pos, { range: 4 });
       if (move.ok === false) return { ok: false, error: move.error || 'cannot reach build position' };
     }
-    try {
-      await this.bot.equip(item, 'hand');
-      await this.bot.placeBlock(reference, face);
-    } catch (err) {
-      return { ok: false, error: err.message };
+    let lastError = null;
+    for (const reference of references.slice(0, 3)) {
+      try {
+        if (strategy && (strategy.yaw !== null || strategy.pitch !== null)) {
+          const yaw = strategy.yaw === null ? this.bot.entity.yaw : strategy.yaw * Math.PI / 180;
+          const pitch = strategy.pitch === null ? this.bot.entity.pitch : strategy.pitch * Math.PI / 180;
+          await this.bot.look(yaw, pitch, true);
+        }
+        await this.bot.equip(item, 'hand');
+        const face = this._vec3(-reference.dx, -reference.dy, -reference.dz);
+        await this.bot.placeBlock(reference.block, face);
+        this._blockCache.delete(`${pos.x},${pos.y},${pos.z}`);
+        this.stats.placed++;
+        this._syncInventory();
+        return { ok: true, position: { ...pos }, item: itemName };
+      } catch (err) {
+        lastError = err.message;
+      }
     }
-    this._blockCache.delete(`${pos.x},${pos.y},${pos.z}`);
-    this.stats.placed++;
-    this._syncInventory();
-    return { ok: true, position: { ...pos }, item: itemName };
+    return { ok: false, error: lastError || 'placement failed' };
   }
 
   async fish({ timeoutMs = 20000 } = {}) {

@@ -54,7 +54,9 @@ function statusSnapshot(services) {
   });
   const leader = services.coordinator ? services.coordinator.leader : null;
   const library = services.library && services.library.loaded ? services.library.stats() : null;
-  const builds = [...(services.builders ? services.builders.values() : [])].map((b) => b.status());
+  const buildValues = [...(services.builders ? services.builders.values() : [])];
+  const builds = buildValues.map((b) => b.status());
+  const firstEngine = buildValues.find((b) => b.engine)?.engine || null;
   const excavationStatus = services.excavation ? services.excavation.status() : null;
   const board = services.taskBoard;
   const runtime = services.runtime ? services.runtime.state() : null;
@@ -131,7 +133,22 @@ function statusSnapshot(services) {
     schematics: {
       stats: library,
       categories: services.library && services.library.loaded ? services.library.categories().slice(0, 30) : [],
-      recent: services.library && services.library.loaded ? services.library.manifest.generatedAt : null
+      recent: services.library && services.library.loaded ? services.library.manifest.generatedAt : null,
+      custom: services.library && services.library.customStore ? services.library.customStore.statsSummary() : null
+    },
+    building: {
+      config: config.building,
+      registry: firstEngine ? firstEngine.registry.describe() : null,
+      builds: buildValues.map((builder) => ({
+        id: builder.id,
+        name: builder.schematic.name,
+        state: builder.status().state,
+        percent: builder.status().percentComplete,
+        statuses: builder.engine ? builder.engine.statusCounts() : null,
+        verification: builder.engine ? builder.engine.auditSummary() : null
+      })),
+      custom: services.library && services.library.customStore ? services.library.customStore.statsSummary() : null,
+      projects: services.construction ? services.construction.list() : []
     },
     homeBase: {
       home: services.runtime ? services.runtime.home : null,

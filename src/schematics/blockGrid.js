@@ -1,5 +1,7 @@
 'use strict';
 
+const { parseBlock, placementItem } = require('../building/blockStates');
+
 const PHASES = ['FOUNDATION', 'FLOORS', 'WALLS', 'STAIRS', 'ROOF', 'TOWERS', 'INTERIOR', 'DECORATION', 'LIGHTING', 'TERRAIN'];
 const PHASE_ORDER = Object.fromEntries(PHASES.map((p, i) => [p, i]));
 
@@ -81,7 +83,10 @@ class BlockGrid {
 
   materials() {
     const out = {};
-    for (const name of this.cells.values()) out[name] = (out[name] || 0) + 1;
+    for (const name of this.cells.values()) {
+      const bare = placementItem(parseBlock(name));
+      out[bare] = (out[bare] || 0) + 1;
+    }
     return out;
   }
 

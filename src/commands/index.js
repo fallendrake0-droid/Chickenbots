@@ -7,7 +7,8 @@ const { config, BOT_NAMES } = require('../config');
 const { SchematicLibrary } = require('../schematics/library');
 const { SchematicBuilder } = require('../builder/builder');
 const { validateLibrary, formatValidationReport } = require('../schematics/validate');
-const { toSpongeSchematic, toLegacySchematic, toJSON, fromSpongeSchematic, fromJSON } = require('../schematics/format');
+const { toSpongeSchematic, toLegacySchematic, toJSON } = require('../schematics/format');
+const { exportSchematic } = require('../building/schematicIO');
 const { statusSnapshot } = require('../runtimeState');
 const { botWorldView } = require('../construction/constants');
 
@@ -1014,14 +1015,18 @@ function registerBuild(registry, services) {
           if (!ctx.confirmed) return { ok: false, error: 'build planning can create cooperative tasks; append confirm', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
           return manager.runPhase('BUILD_PLAN');
         }
-        if (sub === 'verify') return manager.quality();
+        if (sub === 'verify') {
+          const builder = project.builderId ? services.builders.get(project.builderId) : null;
+          if (!builder) return { ok: false, error: 'no active builder for this project' };
+          return { ok: true, verification: builder.verify({ includeExtras: true }), tripleCheck: builder.tripleCheck(), statuses: builder.engine.statusCounts() };
+        }
         if (sub === 'repair') {
           if (!ctx.confirmed) return { ok: false, error: 'repair work requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
           const builder = project.builderId ? services.builders.get(project.builderId) : null;
           if (!builder) return { ok: false, error: 'no active builder for this project' };
           builder.resume();
-          const repair = await builder.run({ maxIterations: args[2] ? intArg(args[2], 'steps', { min: 1, max: 500 }) : 120 });
-          return { ok: repair.status.state !== 'FAILED', repair, verification: builder.verify() };
+          const repair = await builder.repair(null, { includeExtras: args.includes('extras'), allowExtraRemoval: args.includes('extras') });
+          return { ok: repair.complete, repair, verification: builder.verify({ includeExtras: true }) };
         }
         if (sub === 'finish') {
           if (!ctx.confirmed) return { ok: false, error: 'project handover requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
@@ -1162,8 +1167,15 @@ function registerSchematics(registry, services) {
         const design = resolveDesign(services, args[1]);
         const format = (args[2] || 'schem').toLowerCase();
         const schematic = library().build(design.id);
-        const dir = config.paths.schematics;
+        const dir = config.paths.exports;
         fs.mkdirSync(dir, { recursive: true });
+        const modern = { litematic: 'litematic', nbt: 'vanilla-structure', structure: 'vanilla-structure', schem: 'sponge-schem', sponge: 'sponge-schem' }[format];
+        if (modern) {
+          const exported = exportSchematic(schematic, modern);
+          const file = path.join(dir, `${design.id}${exported.extension}`);
+          fs.writeFileSync(file, exported.buffer);
+          return { ok: true, file, bytes: exported.buffer.length, format: modern, design: design.id, warnings: exported.warnings || [] };
+        }
         if (format === 'schem' || format === 'sponge') {
           const file = path.join(dir, `${design.id}.schem`);
           fs.writeFileSync(file, toSpongeSchematic(schematic));
@@ -1183,21 +1195,47 @@ function registerSchematics(registry, services) {
         return { ok: false, error: `unknown export format '${format}'` };
       }
       if (sub === 'import') {
-        if (!args[1]) return { ok: false, error: 'import requires a file under schematics/' };
-        const dir = path.resolve(config.paths.schematics);
+        if (!args[1]) return { ok: false, error: 'import requires a .schem/.litematic/.schematic/.nbt/.json file' };
+        const store = library().customStore;
+        if (!store) return { ok: false, error: 'custom schematic catalogue is disabled' };
         const file = path.resolve(args[1]);
-        if (!file.startsWith(dir + path.sep)) return { ok: false, error: 'imports are restricted to the schematics/ directory' };
         if (!fs.existsSync(file)) return { ok: false, error: `file not found: ${file}` };
-        const buffer = fs.readFileSync(file);
-        let schematic;
-        if (file.endsWith('.json')) schematic = fromJSON(JSON.parse(buffer.toString('utf8')));
-        else if (file.endsWith('.schem')) schematic = fromSpongeSchematic(buffer);
-        else return { ok: false, error: 'only .schem and .json imports are supported (legacy import is exposed through the API only)' };
-        if (!schematic.blocks || !schematic.blocks.length) return { ok: false, error: 'imported schematic has no blocks' };
-        const id = `imported-${path.basename(file, path.extname(file))}`;
-        schematic.id = id;
-        services.imported.set(id, schematic);
-        return { ok: true, id, name: schematic.name, dimensions: schematic.dimensions, blocks: schematic.blocks.length, materials: Object.keys(schematic.materials).length, geometryHash: schematic.geometryHash };
+        const name = args.slice(2).join(' ') || null;
+        const result = store.importFile(file, { filename: path.basename(file), name, licence: 'UNKNOWN', source: 'cli' });
+        if (!result.ok) return { ok: false, error: result.error || result.reason, duplicate: Boolean(result.duplicate), existing: result.existing || null };
+        return {
+          ok: true, id: result.entry.id, name: result.entry.name, format: result.entry.format,
+          dimensions: result.entry.dimensions, blocks: result.entry.blocks,
+          materials: Object.keys(result.entry.materials || {}).length,
+          geometryHash: result.entry.geometryHash, validated: result.entry.validated,
+          warnings: result.entry.warnings || [], buildWith: `build ${result.entry.id}`
+        };
+      }
+      if (sub === 'custom') {
+        const store = library().customStore;
+        if (!store) return { ok: false, error: 'custom schematic catalogue is disabled' };
+        const action = (args[1] || 'list').toLowerCase();
+        if (action === 'scan') return { ok: true, ...store.scan({ persist: true }) };
+        if (action === 'list') return { ok: true, count: store.count, stats: store.statsSummary(), designs: store.list({ limit: 200 }) };
+        if (action === 'info') {
+          const entry = store.get(args[2]);
+          if (!entry) return { ok: false, error: `unknown custom schematic ${args[2] || ''}` };
+          return { ok: true, design: entry, files: store.exportFormats || ['sponge-schem', 'litematic', 'vanilla-structure'] };
+        }
+        if (action === 'rename') return store.rename(args[2], args.slice(3).join(' '));
+        if (action === 'tag') return store.tag(args[2], args.slice(3));
+        if (action === 'licence' || action === 'license') return store.setLicence(args[2], args.slice(3).join(' '));
+        if (action === 'duplicate') return store.duplicate(args[2], { name: args.slice(3).join(' ') || null });
+        if (action === 'remove' || action === 'delete') return store.remove(args[2]);
+        if (action === 'export') {
+          const result = store.export(args[2], args[3] || 'sponge-schem');
+          if (!result.ok) return result;
+          fs.mkdirSync(config.paths.exports, { recursive: true });
+          const file = path.join(config.paths.exports, `${args[2]}${result.extension}`);
+          fs.writeFileSync(file, result.buffer);
+          return { ok: true, file, bytes: result.buffer.length, format: args[3] || 'sponge-schem' };
+        }
+        return { ok: false, error: `unknown custom action '${action}'` };
       }
       return { ok: false, error: `unknown schematics subcommand '${sub}'` };
     }

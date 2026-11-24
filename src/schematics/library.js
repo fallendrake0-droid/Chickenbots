@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { createSpec, generateSchematic, titleCase } = require('./generator');
 const { config } = require('../config');
+const { CustomSchematicStore } = require('../building/customLibrary');
 
 const CATEGORY_LISTS = {
   beginner: ['shelter', 'cabin', 'farm_shed', 'watchtower', 'well', 'garden', 'dock', 'bridge', 'shrine', 'mine_entrance'],
@@ -169,47 +170,107 @@ function loadManifest(file = MANIFEST_PATH) {
 }
 
 class SchematicLibrary {
-  constructor({ manifest = null, minCount = config.schematics.minimumCount } = {}) {
+  constructor({ manifest = null, minCount = config.schematics.minimumCount, custom = undefined, enableCustom = null } = {}) {
     this.manifest = manifest || loadManifest();
     this.minCount = minCount;
     this.cache = new Map();
     this.byId = new Map();
     if (this.manifest) for (const d of this.manifest.designs) this.byId.set(d.id, d);
+    this.custom = custom || null;
+    this._customEnabled = enableCustom === null ? Boolean(config.building?.customSchematics) : Boolean(enableCustom);
+  }
+
+  get customStore() {
+    if (this.custom === false) return null;
+    if (!this.custom && this._customEnabled) {
+      this.custom = new CustomSchematicStore({
+        dir: config.building?.customDir,
+        enabled: true,
+        watch: false,
+        registry: null
+      });
+      this.custom.scan({ persist: true });
+    }
+    return this.custom || null;
   }
 
   get loaded() { return Boolean(this.manifest); }
-  get count() { return this.manifest ? this.manifest.designs.length : 0; }
+  get count() {
+    const base = this.manifest ? this.manifest.designs.length : 0;
+    const store = this.customStore;
+    return base + (store ? store.count : 0);
+  }
 
   list(filter = {}) {
-    if (!this.manifest) return [];
-    let designs = this.manifest.designs;
+    let designs = this.manifest ? this.manifest.designs.slice() : [];
     if (filter.tier) designs = designs.filter((d) => d.tier.toLowerCase() === String(filter.tier).toLowerCase());
     if (filter.category) designs = designs.filter((d) => d.category === filter.category);
     if (filter.style) designs = designs.filter((d) => d.style === filter.style);
     if (filter.maxWidth) designs = designs.filter((d) => d.dimensions.width <= filter.maxWidth);
     if (filter.q) {
       const q = String(filter.q).toLowerCase();
-      designs = designs.filter((d) => d.id.toLowerCase().includes(q) || d.name.toLowerCase().includes(q) || d.tags.some((t) => t.includes(q)));
+      designs = designs.filter((d) => d.id.toLowerCase().includes(q) || d.name.toLowerCase().includes(q) || (d.tags || []).some((t) => t.includes(q)));
     }
+    const store = this.customStore;
+    if (store && !filter.excludeCustom) {
+      const customEntries = store.list({
+        q: filter.q, category: filter.category, tag: filter.tag,
+        format: filter.format, limit: Number.MAX_SAFE_INTEGER
+      }).map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        tier: 'custom',
+        category: entry.category,
+        style: entry.format,
+        dimensions: entry.dimensions,
+        difficulty: 0,
+        blocks: entry.blocks,
+        custom: true,
+        format: entry.format,
+        licence: entry.licence,
+        tags: entry.tags,
+        source: entry.source,
+        warnings: entry.warnings,
+        validated: entry.validated
+      }));
+      designs = [...customEntries, ...designs];
+    }
+    if (filter.sort === 'blocks') designs.sort((a, b) => (a.blocks || 0) - (b.blocks || 0));
+    else if (filter.sort === 'name') designs.sort((a, b) => a.name.localeCompare(b.name));
+    const offset = Math.max(0, Number(filter.offset) || 0);
     const limit = filter.limit === undefined ? 100 : filter.limit;
-    return designs.slice(0, limit).map((d) => ({
+    const page = Number.isFinite(limit) ? designs.slice(offset, offset + limit) : designs.slice(offset);
+    return page.map((d) => ({
       id: d.id, name: d.name, tier: d.tier, category: d.category, style: d.style,
-      dimensions: d.dimensions, difficulty: d.difficulty, blocks: Object.values(d.materials).reduce((s, n) => s + n, 0)
+      dimensions: d.dimensions, difficulty: d.difficulty,
+      blocks: d.blocks !== undefined ? d.blocks : Object.values(d.materials || {}).reduce((s, n) => s + n, 0),
+      custom: Boolean(d.custom), format: d.format || null, licence: d.licence || null,
+      tags: d.tags || [], validated: d.validated !== false, warnings: d.warnings || []
     }));
   }
 
   get(id) {
     const entry = this.byId.get(id);
-    if (!entry) return null;
-    return { ...this.manifest.designs.find((d) => d.id === id) };
+    if (entry) return { ...this.manifest.designs.find((d) => d.id === id) };
+    const store = this.customStore;
+    const custom = store ? store.get(id) : null;
+    if (!custom) return null;
+    return { ...custom, custom: true, tier: 'custom', style: custom.format };
   }
 
-  /** Regenerate full block data for a design. */
+  /** Regenerate full block data for a design, or load a custom one lazily. */
   build(id) {
     if (this.cache.has(id)) return this.cache.get(id);
     const entry = this.get(id);
     if (!entry) return null;
-    const schematic = generateSchematic(entry.spec, { id: entry.id, name: entry.name });
+    let schematic;
+    if (entry.custom) {
+      const store = this.customStore;
+      schematic = store ? store.build(id) : null;
+      if (!schematic) return null;
+    } else {
+      schematic = generateSchematic(entry.spec, { id: entry.id, name: entry.name });
+    }
     if (this.cache.size > 32) this.cache.delete(this.cache.keys().next().value);
     this.cache.set(id, schematic);
     return schematic;
@@ -222,12 +283,18 @@ class SchematicLibrary {
     for (const d of (this.manifest ? this.manifest.designs : [])) {
       map.set(d.category, (map.get(d.category) || 0) + 1);
     }
+    const store = this.customStore;
+    if (store) for (const entry of store.list({ limit: Number.MAX_SAFE_INTEGER })) {
+      map.set(entry.category, (map.get(entry.category) || 0) + 1);
+    }
     return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([category, count]) => ({ category, count }));
   }
 
   stats() {
     if (!this.manifest) return { loaded: false, count: 0 };
     const designs = this.manifest.designs;
+    const store = this.customStore;
+    const customStats = store ? store.statsSummary() : null;
     const blockCounts = designs.map((d) => Object.values(d.materials).reduce((s, n) => s + n, 0));
     const materialTotals = {};
     for (const d of designs) for (const [name, n] of Object.entries(d.materials)) materialTotals[name] = (materialTotals[name] || 0) + n;
@@ -255,7 +322,9 @@ class SchematicLibrary {
       },
       generatedAt: this.manifest.generatedAt,
       generationMs: this.manifest.generationMs,
-      rejected: designs.length === 0 ? 0 : (this.manifest.rejected || []).length
+      rejected: designs.length === 0 ? 0 : (this.manifest.rejected || []).length,
+      custom: customStats,
+      totalIncludingCustom: designs.length + (customStats ? customStats.count : 0)
     };
   }
 }

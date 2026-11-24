@@ -509,15 +509,30 @@ async function openSchematic(id) {
             ['Dimensions', esc(`${design.dimensions.width} × ${design.dimensions.length} × ${design.dimensions.height}`)],
             ['Phases', num((design.phases || []).length)],
             ['Seed', esc(design.seed), true],
-            ['Version', esc(String(design.versionCompatibility || '—'))]
+            ['Version', esc(String(design.versionCompatibility || '—'))],
+            ...(design.custom ? [
+              ['Format', esc(design.format)],
+              ['Licence', esc(design.licence || 'UNKNOWN')],
+              ['Source', esc(design.source && design.source.kind ? design.source.kind : 'local')],
+              ['Validated', design.validated === false ? 'no — unknown blocks present' : 'yes']
+            ] : [])
           ])}
+          ${(design.warnings || []).length ? `<div class="callout callout--warn">${icon('alert')}<div>${esc((design.warnings || []).map((warning) => warning.detail || warning.kind).join(' · '))}</div></div>` : ''}
           <div class="divider"></div>
           <div class="tiny muted" style="margin-bottom:6px">Top materials</div>
           <div class="table-wrap"><table class="table table--compact"><thead><tr><th>Block</th><th>Count</th></tr></thead><tbody>${result.materials.slice(0, 14).map(([name, count]) => `<tr><td class="mono tiny">${esc(name)}</td><td class="mono">${num(count)}</td></tr>`).join('')}</tbody></table></div>
           <div class="row gap-2" style="margin-top:12px">
             <button class="button button--primary" type="button" data-use-design="${esc(design.id)}">${icon('hammer')} Use in builder</button>
             <a class="button" href="/api/schematics/${encodeURIComponent(design.id)}/download.schem">${icon('download')} Download .schem</a>
+            ${design.custom ? `<a class="button" href="/api/schematics/${encodeURIComponent(design.id)}/export?format=litematic">${icon('download')} .litematic</a><a class="button" href="/api/schematics/${encodeURIComponent(design.id)}/export?format=vanilla-structure">${icon('download')} .nbt</a>` : ''}
           </div>
+          ${design.custom ? `<div class="row gap-2" style="margin-top:8px;flex-wrap:wrap">
+            <button class="button button--sm" type="button" data-custom-rename="${esc(design.id)}">${icon('edit')} Rename</button>
+            <button class="button button--sm" type="button" data-custom-tag="${esc(design.id)}">${icon('flag')} Add tag</button>
+            <button class="button button--sm" type="button" data-custom-licence="${esc(design.id)}">${icon('file')} Licence</button>
+            <button class="button button--sm" type="button" data-custom-duplicate="${esc(design.id)}">${icon('copy')} Duplicate</button>
+            <button class="button button--sm button--danger-ghost" type="button" data-custom-delete="${esc(design.id)}">${icon('trash')} Delete</button>
+          </div>` : ''}
         </div>
       </div>`;
     const use = body.querySelector('[data-use-design]');
@@ -525,6 +540,41 @@ async function openSchematic(id) {
       builderDesign = design.id;
       close();
       location.hash = '#/builder';
+    });
+    const customAction = async (action, promptText, field) => {
+      const value = window.prompt(promptText);
+      if (value === null) return;
+      try {
+        const result = await api.customAction(design.id, action, { [field]: value });
+        toast({ type: 'success', title: `Schematic ${action} complete`, message: result.entry ? result.entry.name : design.id });
+        close();
+        legacyLibraryReset();
+        await api.state();
+      } catch (err) {
+        toast({ type: 'error', title: `Could not ${action}`, message: err.message });
+      }
+    };
+    const rename = body.querySelector('[data-custom-rename]');
+    if (rename) rename.addEventListener('click', () => customAction('rename', 'New display name', 'name'));
+    const tag = body.querySelector('[data-custom-tag]');
+    if (tag) tag.addEventListener('click', () => {
+      const value = window.prompt('Tag to add');
+      if (!value) return;
+      api.customAction(design.id, 'tag', { tags: [value] }).then(() => { toast({ type: 'success', title: 'Tag added', message: value }); close(); legacyLibraryReset(); return api.state(); })
+        .catch((err) => toast({ type: 'error', title: 'Tag failed', message: err.message }));
+    });
+    const licence = body.querySelector('[data-custom-licence]');
+    if (licence) licence.addEventListener('click', () => customAction('licence', 'Licence / attribution', 'licence'));
+    const duplicate = body.querySelector('[data-custom-duplicate]');
+    if (duplicate) duplicate.addEventListener('click', () => {
+      api.customAction(design.id, 'duplicate', {}).then((result) => { toast({ type: 'success', title: 'Duplicate imported', message: result.entry.name }); close(); legacyLibraryReset(); return api.state(); })
+        .catch((err) => toast({ type: 'error', title: 'Duplicate failed', message: err.message }));
+    });
+    const remove = body.querySelector('[data-custom-delete]');
+    if (remove) remove.addEventListener('click', () => {
+      if (!window.confirm(`Delete ${design.name} from the custom catalogue? The original file is not removed.`)) return;
+      api.customDelete(design.id).then(() => { toast({ type: 'success', title: 'Removed from catalogue', message: design.name }); close(); legacyLibraryReset(); return api.state(); })
+        .catch((err) => toast({ type: 'error', title: 'Delete failed', message: err.message }));
     });
   } catch (err) {
     const modal = document.querySelector('.modal');
@@ -652,5 +702,190 @@ export const projectHistoryPage = {
           <div class="log-list">${events.length ? events.map((log) => `<div class="log-line"><span class="log-time mono">${esc(new Date(log.ts).toLocaleTimeString('en-GB'))}</span><span class="log-level log-level--${log.level}">${esc(log.level)}</span><span class="log-scope mono">${esc(log.scope)}</span><span class="log-msg">${esc(log.msg)}</span></div>`).join('') : emptyState('No builder events', 'Builder activity will stream here as builds progress.', 'list')}</div>
         </section>
       </div>`;
+  }
+};
+
+/**
+ * Building workspace: catalogue + custom imports + live per-block evidence and
+ * controls. Every button calls a real API or command endpoint.
+ */
+export const buildingPage = {
+  title: 'Building',
+  render() {
+    const snap = state.snapshot || {};
+    const building = snap.building || {};
+    const custom = building.custom || (snap.schematics && snap.schematics.custom) || {};
+    const lib = (snap.schematics && snap.schematics.stats) || {};
+    const registry = building.registry || {};
+    const builds = building.builds || [];
+    const compatible = registry.compatibility === 'EXACT';
+    return `
+      <div class="page">
+        ${pageHeader({
+          eyebrow: 'Construction', title: 'Building workspace',
+          description: 'Validated catalogue, custom schematics, exact block-state placement evidence and build controls. Unsupported versions or blocks are reported, never guessed.',
+          actions: `<a class="button" href="#/schematics">${icon('book-open')} Full library</a><a class="button button--primary" href="#/builder">${icon('hammer')} Start build</a>`
+        })}
+        <div class="grid grid--stats">
+          ${statCard({ label: 'Catalogue', value: num(lib.count || 0), iconName: 'book-open', tone: 'info', context: `${num(lib.uniqueGeometry || 0)} unique geometries` })}
+          ${statCard({ label: 'Custom schematics', value: num(custom.count || 0), iconName: 'folder', tone: custom.count ? 'accent' : 'neutral', context: `${num(custom.validated || 0)} validated · ${num(custom.duplicates || 0)} duplicates rejected` })}
+          ${statCard({ label: 'Block registry', value: registry.version || '—', iconName: 'database', tone: compatible ? 'success' : 'warning', context: compatible ? 'Exact requested version' : (registry.requestedVersion && registry.requestedVersion !== 'auto' ? `Requested ${registry.requestedVersion} · nearest known` : 'Requested version auto') })}
+          ${statCard({ label: 'Active builds', value: num(builds.filter((build) => !['COMPLETE', 'FAILED', 'CANCELLED'].includes(build.state)).length), iconName: 'hammer', tone: 'accent', context: `${num(builds.length)} builder registrations` })}
+        </div>
+        ${!compatible ? `<div class="callout callout--warn">${icon('alert')}<div>${esc(registry.fallbackReason || 'Block registry version is not exact. Blueprint validation uses the nearest known minecraft-data version; live placement still uses the server’s own state ids.')}</div></div>` : ''}
+        <div class="grid grid--main-side">
+          <div class="stack gap-4">
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('upload')} Import a schematic</div><span class="badge badge--outline">.schem v1–v3 · .litematic · .schematic · .nbt</span></div>
+              <div class="card-body">
+                <form data-import-form>
+                  <div class="form-grid form-grid--2">
+                    <div class="field"><label class="field-label" for="import-file">File</label><input class="input" id="import-file" type="file" accept=".schem,.litematic,.schematic,.nbt,.json" required></div>
+                    <div class="field"><label class="field-label" for="import-name">Display name (optional)</label><input class="input" id="import-name" placeholder="Defaults to the file name"></div>
+                    <div class="field"><label class="field-label" for="import-licence">Licence / attribution</label><input class="input" id="import-licence" placeholder="e.g. CC-BY-4.0, own work" value="UNKNOWN"></div>
+                    <div class="field"><label class="field-label" for="import-source">Source</label><input class="input" id="import-source" placeholder="Where did this file come from?" value="local"></div>
+                  </div>
+                  <button class="button button--primary" type="submit" style="margin-top:10px">${icon('upload')} Import and validate</button>
+                  <p class="tiny muted" style="margin:10px 0 0">Imports are indexed, not built. Identical content and duplicate geometry are rejected; block states and unknown blocks are reported honestly.</p>
+                </form>
+                <div class="divider"></div>
+                <div class="row gap-2">
+                  <button class="button button--sm" type="button" data-custom-scan>${icon('refresh-cw')} Rescan folder</button>
+                  <span class="tiny muted">Watching: ${custom.watching ? 'yes' : 'no'} · ${esc(custom.dir || '')}</span>
+                </div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('list')} Builds and evidence</div><span class="tiny muted">${builds.length}</span></div>
+              <div class="card-body" data-building-builds>
+                ${builds.length ? `<div class="table-wrap"><table class="table table--compact"><thead><tr><th>Build</th><th>State</th><th>Verified</th><th>Missing / wrong</th><th>Controls</th></tr></thead><tbody>${builds.map((build) => {
+                  const verification = build.verification || {};
+                  return `<tr>
+                    <td><a class="link" href="#/projects/${encodeURIComponent(build.id)}">${esc(build.name || build.id)}</a><div class="tiny muted mono">${esc(build.id)}</div></td>
+                    <td>${badge(build.state || '—', buildStateTone(build.state))}</td>
+                    <td class="mono">${num(verification.placed || 0)} / ${num(verification.total || 0)}</td>
+                    <td class="mono">${num(verification.missingCount || 0)} / ${num(verification.wrongCount || 0)}</td>
+                    <td><div class="row gap-1">
+                      ${!['COMPLETE', 'CANCELLED', 'FAILED'].includes(build.state) ? `<button class="button button--sm" type="button" data-build-action="pause" data-build-id="${esc(build.id)}">${icon('pause')} Pause</button><button class="button button--sm" type="button" data-build-action="resume" data-build-id="${esc(build.id)}">${icon('play')} Resume</button>` : ''}
+                      <button class="button button--sm" type="button" data-build-action="verify" data-build-id="${esc(build.id)}">${icon('shield-check')} Verify</button>
+                      <button class="button button--sm" type="button" data-build-action="repair" data-build-id="${esc(build.id)}">${icon('wrench')} Repair</button>
+                      <button class="button button--sm button--danger-ghost" type="button" data-build-action="cancel" data-build-id="${esc(build.id)}" data-danger="true">${icon('square')} Stop</button>
+                      <button class="button button--sm" type="button" data-block-evidence="${esc(build.id)}">${icon('layers')} Blocks</button>
+                    </div></td>
+                  </tr>`;
+                }).join('')}</tbody></table></div>` : emptyState('No builds yet', 'Start a build from the library and its per-block evidence will appear here.', 'hammer', '<a class="button button--primary" href="#/builder">Start a build</a>')}
+              </div>
+            </section>
+          </div>
+          <aside class="stack gap-4">
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('settings')} Building policy</div></div>
+              <div class="card-body">${kvRows([
+                ['Verification', String(building.config?.verification ?? true)],
+                ['Triple check', String(building.config?.tripleCheck ?? true)],
+                ['Auto-repair', String(building.config?.autoRepair ?? false)],
+                ['Deterministic placement', String(building.config?.deterministic ?? true)],
+                ['Random placement', String(building.config?.randomPlacement ?? false)],
+                ['Explosives', String(building.config?.allowExplosives ?? false)],
+                ['Custom schematics', String(building.config?.customSchematics ?? true)],
+                ['Library target', num(building.config?.libraryTarget ?? 10000)]
+              ])}</div>
+            </section>
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('alert')} Honest limitations</div></div>
+              <div class="card-body">
+                <div class="callout callout--info">${icon('info')}<div>Construction correctness does not prove redstone logic or farm productivity. Those require a separate live functional test.</div></div>
+                <div class="callout callout--warn">${icon('database')}<div>${esc(registry.compatibility === 'EXACT' ? 'The requested block registry is installed. Server-side mods may still add blocks that are not in it.' : (registry.fallbackReason || 'No block registry loaded. Unknown blocks cannot be validated.'))}</div></div>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>`;
+  },
+  mount(root) {
+    const form = root.querySelector('[data-import-form]');
+    if (form) form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const file = form.querySelector('#import-file').files[0];
+      if (!file) return;
+      const button = form.querySelector('button[type="submit"]');
+      setButtonLoading(button, true);
+      try {
+        const query = new URLSearchParams({
+          filename: file.name,
+          licence: form.querySelector('#import-licence').value || 'UNKNOWN',
+          source: form.querySelector('#import-source').value || 'local'
+        });
+        const name = form.querySelector('#import-name').value.trim();
+        if (name) query.set('name', name);
+        const response = await fetch(`/api/schematics/upload?${query.toString()}`, {
+          method: 'POST', body: file, credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name }
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || 'import failed');
+        toast({ type: 'success', title: 'Schematic imported', message: `${payload.entry.name} (${payload.entry.format}, ${num(payload.entry.blocks)} blocks)` });
+        if ((payload.warnings || []).length) toast({ type: 'warn', title: 'Import warning', message: payload.warnings[0].detail || payload.warnings[0].kind, duration: 12000 });
+        form.reset();
+        await api.state();
+      } catch (err) {
+        toast({ type: 'error', title: 'Import rejected', message: err.message, duration: 12000 });
+      } finally {
+        setButtonLoading(button, false);
+      }
+    });
+    const scan = root.querySelector('[data-custom-scan]');
+    if (scan) scan.addEventListener('click', async () => {
+      try {
+        const result = await api.customScan();
+        toast({ type: 'info', title: 'Custom folder scanned', message: `${num(result.imported || 0)} imported, ${num(result.rejected || 0)} rejected` });
+        await api.state();
+      } catch (err) {
+        toast({ type: 'error', title: 'Scan failed', message: err.message });
+      }
+    });
+    root.querySelectorAll('[data-build-action]').forEach((button) => button.addEventListener('click', async () => {
+      const id = button.getAttribute('data-build-id');
+      const action = button.getAttribute('data-build-action');
+      if (action === 'cancel' && !window.confirm('Cancel this build? Pending tasks stop and no further blocks are placed.')) return;
+      setButtonLoading(button, true);
+      try {
+        const result = await api.buildAction(id, action);
+        const message = resultMessage(result);
+        toast({ type: message.type, title: message.title, message: message.message });
+        await api.state();
+      } catch (err) {
+        toast({ type: 'error', title: `Build ${action} failed`, message: err.message });
+      } finally {
+        setButtonLoading(button, false);
+      }
+    }));
+    root.querySelectorAll('[data-block-evidence]').forEach((button) => button.addEventListener('click', async () => {
+      const id = button.getAttribute('data-block-evidence');
+      setButtonLoading(button, true);
+      try {
+        const detail = await api.build(id);
+        const statuses = detail.verification?.blockStatuses || {};
+        const entries = (detail.blocks && detail.blocks.entries) || [];
+        const close = openModal({
+          title: `Per-block evidence · ${detail.build?.name || id}`,
+          description: 'Each row is read back from the world and compared against the exact name and properties.',
+          wide: true,
+          body: `<div class="row gap-2" style="flex-wrap:wrap;margin-bottom:10px">${Object.entries(statuses).filter(([, count]) => count > 0).map(([status, count]) => badge(`${status} ${count}`, status === 'VERIFIED' ? 'ok' : status === 'FAILED' || status === 'REPAIR_REQUIRED' ? 'danger' : 'warn')).join('')}</div>
+            <div class="callout callout--info">${icon('shield-check')}<div>${detail.tripleCheck?.ok ? 'Triple check passed: blueprint, placements and independent world audit agree.' : 'Triple check has not passed. See missing/wrong counts and block rows below.'}</div></div>
+            <div class="table-wrap" style="max-height:55vh;overflow:auto"><table class="table table--compact"><thead><tr><th>Position</th><th>Expected</th><th>Observed</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+            <tbody>${entries.length ? entries.slice(0, 500).map((block) => `<tr><td class="mono tiny">${block.world.x}, ${block.world.y}, ${block.world.z}</td><td class="mono tiny">${esc(block.block)}</td><td class="mono tiny">${esc(block.observed || '—')}</td><td>${badge(block.status, block.status === 'VERIFIED' ? 'ok' : block.status === 'FAILED' || block.status === 'REPAIR_REQUIRED' ? 'danger' : 'warn')}</td><td class="mono">${num(block.attempts)}</td><td class="tiny">${esc(block.error || '')}</td></tr>`).join('') : '<tr><td colspan="6">No block rows returned.</td></tr>'}</tbody></table></div>`,
+          label: 'Per-block evidence'
+        });
+        const footer = document.querySelector('.modal-footer');
+        if (footer) footer.innerHTML = `<button class="button" type="button" data-close-modal>${icon('x')} Close</button>`;
+        const closer = document.querySelector('[data-close-modal]');
+        if (closer) closer.addEventListener('click', close);
+      } catch (err) {
+        toast({ type: 'error', title: 'Evidence unavailable', message: err.message });
+      } finally {
+        setButtonLoading(button, false);
+      }
+    }));
   }
 };

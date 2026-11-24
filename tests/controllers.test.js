@@ -253,7 +253,9 @@ test('RealBot refuses autonomy until login and spawn are both verified', async (
   assert.equal(second.ready, true);
   assert.equal(second.authenticated, true);
   assert.equal(second.spawned, true);
-  assert.equal(second.getBlock({ x: 1, y: 64, z: 1 }).name, 'air');
+  // A null mineflayer block is an unloaded/unknown chunk, never air. Treating
+  // it as air would let build/vision code plan against unseen terrain.
+  assert.equal(second.getBlock({ x: 1, y: 64, z: 1 }).name, 'unloaded');
 
   const teammate = await second.attack({ id: 99, username: '________' });
   assert.equal(teammate.ok, false);

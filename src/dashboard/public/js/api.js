@@ -70,6 +70,12 @@ export const api = {
     return request(`/api/schematics?${query.toString()}`, { timeoutMs: 20000 });
   },
   schematic: (id) => request(`/api/schematics/${encodeURIComponent(id)}`, { timeoutMs: 30000 }),
+  building: () => request('/api/building', { timeoutMs: 30000 }),
+  build: (id) => request(`/api/builds/${encodeURIComponent(id)}`, { timeoutMs: 30000 }),
+  buildAction: (id, action, extra = {}) => request(`/api/builds/${encodeURIComponent(id)}/action`, { method: 'POST', body: { action, ...extra }, timeoutMs: 120000 }),
+  customScan: () => request('/api/schematics/scan', { method: 'POST', body: {}, timeoutMs: 120000 }),
+  customAction: (id, action, body = {}) => request(`/api/schematics/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, { method: 'POST', body, timeoutMs: 60000 }),
+  customDelete: (id) => request(`/api/schematics/${encodeURIComponent(id)}`, { method: 'DELETE', timeoutMs: 30000 }),
   botAction: (name, action) => request(`/api/bot/${encodeURIComponent(name)}/${encodeURIComponent(action)}`, { method: 'POST', body: {}, timeoutMs: 120000 }),
   queue: () => request('/api/queue', { timeoutMs: 10000 }),
   queueAction: (action) => request(`/api/queue/${encodeURIComponent(action)}`, { method: 'POST', body: {}, timeoutMs: 120000 })

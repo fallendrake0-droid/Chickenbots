@@ -4,6 +4,7 @@ const { BlockGrid, PHASES } = require('./blockGrid');
 const { paletteFor } = require('./palettes');
 const { Rng } = require('../util/rng');
 const { geometryHash, exactHash, specHash } = require('./designHash');
+const { parseBlock } = require('../building/blockStates');
 const P = require('./primitives');
 
 const TITLE = {
@@ -699,7 +700,7 @@ function infrastructureArchetype(spec, palette, rng) {
       grid.set(width - 2, y, 5, 'oak_log', 'DECORATION');
     }
     for (let x = width - 2; x >= width - 6; x--) grid.set(x, baseY + 5, 2, 'oak_fence', 'DECORATION');
-    grid.set(width - 6, baseY + 4, 2, 'chain', 'DECORATION');
+    grid.set(width - 6, baseY + 4, 2, 'iron_bars', 'DECORATION');
     const wh = houseArchetype({ ...spec, w: Math.max(7, Math.floor(width * 0.8)), l: 8, floors: 1, shape: 'rect', towers: [], wings: [], decor: { ...spec.decor, trees: 0, garden: false }, roofType: 'gable', tier: Math.min(spec.tier, 4) }, palette, rng);
     grid.merge(wh, width + 2, 0, 2);
     return grid;
@@ -1091,6 +1092,101 @@ const BUILDERS = {
 };
 
 /** Generate one complete schematic from a structural spec. */
+
+/**
+ * Fix physically impossible standing torches before a schematic is emitted.
+ * A torch needs a solid block below; a torch that has a solid horizontal
+ * neighbour instead becomes the correct wall-torch block state. If neither
+ * exists the blueprint is defective and generation fails rather than shipping
+ * a floating light.
+ */
+
+/** Add the post/ground a generated decoration needs to be physically valid. */
+function ensureVerticalSupports(grid) {
+  const isFence = (name) => {
+    const parsed = parseBlock(name);
+    return parsed.name.endsWith('_fence') || parsed.name.endsWith('_fence_gate') || parsed.name.endsWith('_wall');
+  };
+  const solid = (x, y, z) => {
+    const name = grid.get(x, y, z);
+    if (!name) return false;
+    const parsed = parseBlock(name);
+    return !['air', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'oak_leaves', 'birch_leaves', 'spruce_leaves'].includes(parsed.name);
+  };
+  const fenceCells = [...grid.cells.entries()].filter(([, name]) => isFence(name));
+  for (const [key, name] of fenceCells) {
+    const [x, y, z] = key.split(',').map(Number);
+    if (solid(x, y - 1, z)) continue;
+    for (let cursor = y - 1; cursor >= 0; cursor--) {
+      const existing = grid.get(x, cursor, z);
+      if (existing && solid(x, cursor, z)) break;
+      grid.set(x, cursor, z, cursor === 0 ? 'dirt_path' : name, grid.phaseOf.get(key) || 'DECORATION');
+      if (cursor === 0) break;
+    }
+  }
+  const groundPlants = new Set(['short_grass', 'grass', 'fern', 'large_fern', 'dandelion', 'poppy', 'blue_orchid',
+    'allium', 'azure_bluet', 'oxeye_daisy', 'cornflower', 'lily_of_the_valley', 'oak_sapling', 'birch_sapling',
+    'spruce_sapling', 'jungle_sapling', 'acacia_sapling', 'dark_oak_sapling', 'cherry_sapling', 'dead_bush',
+    'brown_mushroom', 'red_mushroom', 'end_rod', 'lantern', 'soul_lantern', 'white_bed', 'red_bed', 'blue_bed',
+    'chest', 'barrel', 'furnace', 'crafting_table', 'campfire']);
+  for (const [key, name] of [...grid.cells]) {
+    const parsed = parseBlock(name);
+    if (!groundPlants.has(parsed.name)) continue;
+    if (parsed.properties?.hanging === true) continue;
+    const [x, y, z] = key.split(',').map(Number);
+    if (solid(x, y - 1, z)) continue;
+    if (y > 0) {
+      const support = ['short_grass', 'grass', 'fern', 'large_fern', 'dandelion', 'poppy', 'blue_orchid', 'allium',
+        'azure_bluet', 'oxeye_daisy', 'cornflower', 'lily_of_the_valley', 'oak_sapling', 'birch_sapling',
+        'spruce_sapling', 'jungle_sapling', 'acacia_sapling', 'dark_oak_sapling', 'cherry_sapling', 'dead_bush',
+        'brown_mushroom', 'red_mushroom'].includes(parsed.name) ? 'grass_block' : 'dirt_path';
+      grid.set(x, y - 1, z, support, grid.phaseOf.get(key) || 'DECORATION');
+    } else if (!grid.get(x, y, z) || parsed.name === 'end_rod') {
+      throw new Error(`floating ${parsed.name} at ${key} has no support`);
+    }
+  }
+}
+
+function normalizeAttachments(grid) {
+  const solids = new Set(['stone', 'cobblestone', 'stone_bricks', 'deepslate', 'deepslate_bricks', 'oak_planks', 'spruce_planks',
+    'birch_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'pale_oak_planks',
+    'bricks', 'sandstone', 'smooth_stone', 'terracotta', 'nether_bricks', 'blackstone', 'quartz_block', 'prismarine', 'andesite',
+    'diorite', 'granite', 'tuff', 'calcite', 'mud_bricks', 'packed_mud', 'copper_block', 'iron_block', 'bookshelf', 'barrel', 'crafting_table']);
+  const isSolid = (x, y, z) => {
+    const name = grid.get(x, y, z);
+    if (!name) return false;
+    const parsed = parseBlock(name);
+    return solids.has(parsed.name) || parsed.name.endsWith('_log') || parsed.name.endsWith('_wood') || parsed.name.endsWith('_planks')
+      || parsed.name.endsWith('_bricks') || parsed.name.endsWith('_block') && !parsed.name.endsWith('_leaves');
+  };
+  const directions = [
+    { name: 'north', dx: 0, dz: -1 }, { name: 'south', dx: 0, dz: 1 },
+    { name: 'east', dx: 1, dz: 0 }, { name: 'west', dx: -1, dz: 0 }
+  ];
+  for (const [key, name] of [...grid.cells]) {
+    const parsed = parseBlock(name);
+    if (!['torch', 'soul_torch', 'redstone_torch'].includes(parsed.name)) continue;
+    const [x, y, z] = key.split(',').map(Number);
+    if (isSolid(x, y - 1, z)) continue;
+    let fixed = null;
+    for (const dir of directions) {
+      if (!isSolid(x + dir.dx, y, z + dir.dz)) continue;
+      // Wall torch `facing` points away from its supporting wall.
+      const facing = dir.name === 'north' ? 'south' : dir.name === 'south' ? 'north' : dir.name === 'east' ? 'west' : 'east';
+      fixed = `${parsed.name.replace(/_?torch$/, '')}${parsed.name === 'torch' ? 'wall_torch' : parsed.name.replace('torch', 'wall_torch')}[facing=${facing}]`;
+      break;
+    }
+    if (!fixed) {
+      // No wall to attach to. Give the torch a real floor mount instead of
+      // emitting a floating light; if even that is impossible, fail loudly.
+      if (y <= 0) throw new Error(`floating ${parsed.name} at ${key} has no support`);
+      grid.set(x, y - 1, z, 'cobblestone', 'DECORATION');
+      continue;
+    }
+    grid.set(x, y, z, fixed, grid.phaseOf.get(key) || 'LIGHTING');
+  }
+}
+
 function generateSchematic(spec, { id, name } = {}) {
   const rng = new Rng(`${spec.seed}:build:${spec.variant}`);
   const palette = paletteFor(spec.style, (list) => rng.pick(list));
@@ -1098,6 +1194,8 @@ function generateSchematic(spec, { id, name } = {}) {
   const result = builder(spec, palette, rng);
   const grid = result && result.grid ? result.grid : result;
   if (!grid || !grid.cells.size) throw new Error(`generator produced no blocks for ${spec.archetype}`);
+  ensureVerticalSupports(grid);
+  normalizeAttachments(grid);
   grid.shiftToOrigin();
   const bounds = grid.bounds();
   if (!bounds || bounds.width > 400 || bounds.length > 400 || bounds.height > 400) throw new Error('generated structure out of bounds');

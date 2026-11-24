@@ -294,6 +294,18 @@ class MockBot extends BotAdapter {
     const speedFactor = tool ? 1 - tool.tier * 0.1 : 1;
     await this._wait(baseMs * speedFactor);
     this.world.setBlock(pos, 'air');
+    // Server-side multi-block companions disappear with their partner.
+    if (block.name.endsWith('_door') && block.properties) {
+      const other = block.properties.half === 'upper' ? pos.y - 1 : pos.y + 1;
+      if (other >= 0) this.world.setBlock({ x: pos.x, y: other, z: pos.z }, 'air');
+    }
+    if (block.name.endsWith('_bed') && block.properties) {
+      const facing = block.properties.facing || 'north';
+      const dx = facing === 'east' ? 1 : facing === 'west' ? -1 : 0;
+      const dz = facing === 'south' ? 1 : facing === 'north' ? -1 : 0;
+      const sign = block.properties.part === 'head' ? -1 : 1;
+      this.world.setBlock({ x: pos.x + dx * sign, y: pos.y, z: pos.z + dz * sign }, 'air');
+    }
     this.stats.dug++;
     const drops = {};
     const drop = DROPS[block.name] === undefined ? block.name : DROPS[block.name];
@@ -307,19 +319,31 @@ class MockBot extends BotAdapter {
     return { ok: true, block: block.name, drops };
   }
 
-  async placeBlock(pos, itemName, { token = null } = {}) {
+  async placeBlock(pos, itemName, { token = null, descriptor = null, properties = null, companion = null } = {}) {
     if (token && token.cancelled) throw new CancelledError(token.reason);
     if (!this.countItem(itemName)) return { ok: false, error: `no ${itemName}` };
     const existing = this.getBlock(pos);
-    if (existing && existing.name !== 'air' && existing.name !== 'water') return { ok: false, error: 'space occupied' };
+    // A door/bed companion may already exist because the server placed it.
+    const wanted = descriptor && descriptor.name ? descriptor.name : null;
+    if (existing && existing.name !== 'air' && existing.name !== 'water') {
+      if (!wanted || existing.name !== wanted) return { ok: false, error: 'space occupied' };
+    }
     if (distance(this.position, pos) > 6) return { ok: false, error: 'too far to place' };
     // Buckets place their fluid, not a solid bucket block.
     const placedName = itemName === 'water_bucket' ? 'water' : itemName === 'lava_bucket' ? 'lava' : itemName;
+    const name = wanted || placedName;
+    const state = descriptor && descriptor.properties ? { ...descriptor.properties } : (properties ? { ...properties } : {});
     this.removeItem(itemName, 1);
-    this.world.setBlock(pos, placedName);
+    this.world.setBlock(pos, name, state);
+    if (companion && companion.position) {
+      const target = this.getBlock(companion.position);
+      if (!target || target.name === 'air' || target.name === wanted) {
+        this.world.setBlock(companion.position, companion.descriptor.name, companion.descriptor.properties || {});
+      }
+    }
     this.stats.placed++;
     await this._wait(80);
-    return { ok: true, position: { ...pos }, item: itemName };
+    return { ok: true, position: { ...pos }, item: itemName, placed: { name, properties: state } };
   }
 
   async consume(itemName = null) {

@@ -7,7 +7,7 @@ import {
   woodcuttingPage, farmingPage, fishingPage, explorationPage, sleepPage
 } from './pages/gameplay.js';
 import { combatPage, combatTeamPage, combatGearPage, combatSuppliesPage, combatTargetsPage } from './pages/combat.js';
-import { builderPage, homeBasePage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
+import { builderPage, buildingPage, homeBasePage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
 import {
   operationsOverview, builderProjectsPage, siteSurveyPage, sitePreparationPage,
   lightingPage, materialPlanningPage, warehousePage, crewAssignmentsPage, qualityPage
@@ -73,6 +73,7 @@ export const NAV_GROUPS = [
       { path: 'crew', label: 'Team Assignments', icon: 'users' },
       { path: 'qa', label: 'QA & Security', icon: 'shield' },
       { path: 'home', label: 'Home Base', icon: 'home' },
+      { path: 'building', label: 'Building Workspace', icon: 'layers' },
       { path: 'builder', label: 'Builder', icon: 'hammer' },
       { path: 'schematics', label: 'Schematic Library', icon: 'book-open' },
       { path: 'projects', label: 'Build Projects', icon: 'folder' },
@@ -146,6 +147,7 @@ export function resolveRoute(hash = location.hash) {
     case 'qa': return { ...base, page: qualityPage, label: 'QA & Security' };
     case 'home': return { ...base, page: homeBasePage, label: 'Home Base' };
     case 'builder': return { ...base, page: builderPage, label: 'Builder' };
+    case 'building': return { ...base, page: buildingPage, label: 'Building workspace' };
     case 'schematics': return { ...base, page: schematicsPage, label: 'Schematic Library' };
     case 'projects':
       if (!rest.length) return { ...base, page: buildProjectsPage, label: 'Build Projects' };

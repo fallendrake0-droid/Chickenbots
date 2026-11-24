@@ -1,9 +1,12 @@
 'use strict';
 
 const { Logger } = require('../logger');
+const { config } = require('../config');
 const { classifyBlock, isAir } = require('../excavate/safety');
 const { PHASES } = require('../schematics/blockGrid');
 const { distance } = require('../util/vec');
+const { BuildEngine, STATUS: BLOCK_STATUS } = require('../building/engine');
+const { parseBlock, matchesBlock, formatBlock, placementItem } = require('../building/blockStates');
 
 const DEFAULT_CHUNK_SIZE = 96;
 
@@ -16,7 +19,10 @@ function blockKey(pos) { return `${pos.x},${pos.y},${pos.z}`; }
 
 function countMaterials(blocks) {
   const out = {};
-  for (const b of blocks) out[b.block] = (out[b.block] || 0) + 1;
+  for (const b of blocks) {
+    const name = placementItem(parseBlock(b.blockState || b.block));
+    out[name] = (out[name] || 0) + 1;
+  }
   return out;
 }
 
@@ -54,12 +60,19 @@ class SchematicBuilder {
     this.objectiveId = null;
     this.tasks = [];
     this.analysis = null;
+    this.finalAudit = null;
     this.startedAt = null;
     this.state = 'READY';
     this.cancelled = false;
     this.paused = false;
     this.events = [];
-    this.stats = { placed: 0, cleared: 0, skipped: 0, transferred: 0, failedPlacements: 0 };
+    this.stats = { placed: 0, cleared: 0, skipped: 0, transferred: 0, failedPlacements: 0, stateMismatches: 0, repaired: 0 };
+    this.engine = new BuildEngine({
+      schematic, origin: this.origin, world, bots,
+      authorized: this.authorized, preserveOres: this.preserveOres,
+      registryVersion: config.building?.minecraftVersion || 'auto',
+      logger: this.logger
+    });
   }
 
   // ------------------------------------------------------------------
@@ -83,12 +96,18 @@ class SchematicBuilder {
     let underground = 0;
     const surfaceCache = new Map();
     for (const [x, y, z, paletteIndex, phase] of this.schematic.blocks) {
-      const target = this.schematic.palette[paletteIndex];
+      const targetEntry = this.schematic.palette[paletteIndex];
+      const target = parseBlock(targetEntry).name;
       const pos = this.worldPos([x, y, z]);
       const current = this.world.getBlock(pos);
-      const currentName = current ? current.name : 'air';
-      if (currentName === target) {
-        alreadyBuilt.push({ x: pos.x, y: pos.y, z: pos.z, block: target, phase: PHASES[phase] });
+      if (!current) {
+        // Unknown is not air: never plan a placement into an unloaded chunk.
+        blocked.push({ pos, block: 'unloaded', kind: 'UNLOADED', reason: 'chunk not loaded' });
+        continue;
+      }
+      const currentName = current.name;
+      if (matchesBlock(current, targetEntry)) {
+        alreadyBuilt.push({ x: pos.x, y: pos.y, z: pos.z, block: target, blockState: formatBlock(targetEntry), phase: PHASES[phase] });
         continue;
       }
       let mustClear = false;
@@ -114,7 +133,7 @@ class SchematicBuilder {
           clearance.set(k, { pos, block: currentName });
         }
       }
-      toPlace.push({ x: pos.x, y: pos.y, z: pos.z, block: target, phase: PHASES[phase] || 'FOUNDATION' });
+      toPlace.push({ x: pos.x, y: pos.y, z: pos.z, block: target, blockState: formatBlock(targetEntry), paletteIndex, phase: PHASES[phase] || 'FOUNDATION' });
     }
     const requiredMaterials = countMaterials(toPlace);
     const available = {};
@@ -251,6 +270,17 @@ class SchematicBuilder {
   // ------------------------------------------------------------------
   start({ confirm = false } = {}) {
     if (this.state === 'RUNNING') return { ok: false, error: 'build already running' };
+    const validation = this.engine.validateBlueprint();
+    if (!validation.ok) {
+      this.state = 'FAILED';
+      this._event('build.blueprint-invalid', { issues: validation.issues.length });
+      return { ok: false, error: `blueprint is invalid (${validation.issues.length} issue(s)); nothing was placed`, validation: validation.issues.slice(0, 20) };
+    }
+    const plan = this.engine.buildPlan();
+    if (!plan.valid) {
+      this.state = 'FAILED';
+      return { ok: false, error: `blueprint has ${plan.cycles.length} cyclic dependency position(s); nothing was placed`, cycles: plan.cycles.slice(0, 20) };
+    }
     const analysis = this.analyze();
     if (analysis.requiresSitePrep) {
       return { ok: false, error: `site preparation required: ${analysis.undergroundBlocks} blocks are inside terrain`, requiresSitePrep: true };
@@ -372,63 +402,73 @@ class SchematicBuilder {
     let cleared = 0;
     let skipped = 0;
     const failures = [];
-    for (const b of blocks) {
-      const pos = { x: b.x, y: b.y, z: b.z };
-      const current = this.world.getBlock(pos);
-      if (current && current.name === b.block) { skipped++; continue; }
-      // Reach the work face.
-      let move = await bot.goTo({ x: pos.x, y: pos.y, z: pos.z }, { range: 4, timeoutMs: 10000 });
-      if (move && move.ok === false) { failures.push({ pos, error: move.error || 'cannot reach block' }); continue; }
-      if (current && current.name !== 'air' && current.name !== 'water') {
-        const cls = classifyBlock(current.name, { preserveOres: this.preserveOres, authorized: this.authorized });
-        if (!cls.excavatable) { failures.push({ pos, error: `blocked by ${current.name} (${cls.reason})` }); continue; }
-        // Move adjacent before digging so reach rules hold.
-        if (distance(bot.position, pos) > 5) {
-          move = await bot.goTo({ x: pos.x, y: pos.y + 1, z: pos.z }, { range: 3, timeoutMs: 10000 });
-        }
-        const dig = await bot.digBlock(pos);
-        if (!dig.ok) { failures.push({ pos, error: dig.error || 'dig failed' }); continue; }
-        cleared++;
+    // Process in the engine's dependency order, not the chunk's storage order.
+    const planOrder = new Map((this.engine.buildPlan().order || []).map((key, index) => [key, index]));
+    const ordered = blocks.slice().sort((a, b) => {
+      const ak = `${a.x - this.origin.x},${a.y - this.origin.y},${a.z - this.origin.z}`;
+      const bk = `${b.x - this.origin.x},${b.y - this.origin.y},${b.z - this.origin.z}`;
+      return (planOrder.get(ak) ?? 1e9) - (planOrder.get(bk) ?? 1e9);
+    });
+    for (const b of ordered) {
+      const localKey = `${b.x - this.origin.x},${b.y - this.origin.y},${b.z - this.origin.z}`;
+      const engineBlock = this.engine.byPosition.get(localKey);
+      if (!engineBlock) {
+        failures.push({ pos: { x: b.x, y: b.y, z: b.z }, error: 'position is not in the validated blueprint' });
+        continue;
       }
-      let have = bot.countItem(b.block);
-      if (!have) {
-        const transfer = await this._acquireMaterial(bot, b.block, 1);
-        if (!transfer.ok) { failures.push({ pos, error: transfer.error || `missing ${b.block}` }); continue; }
+      this.finalAudit = null;
+      const result = await this.engine.place(engineBlock, bot, {
+        acquire: (worker, item, count) => this._acquireMaterial(worker, item, count),
+        retries: 1
+      });
+      if (result.ok) {
+        if (result.alreadyPresent) skipped++;
+        else placed++;
+        continue;
       }
-      let place = await bot.placeBlock(pos, b.block);
-      if (!place.ok) {
-        // Move one block closer and retry once.
-        await bot.goTo({ x: pos.x, y: pos.y + 1, z: pos.z }, { range: 2, timeoutMs: 8000 });
-        place = await bot.placeBlock(pos, b.block);
-      }
-      if (!place.ok) { failures.push({ pos, error: place.error || 'place failed' }); this.stats.failedPlacements++; continue; }
-      placed++;
-      this.stats.placed++;
+      failures.push({ pos: { x: b.x, y: b.y, z: b.z }, error: result.error, status: result.status });
+      if (result.status === BLOCK_STATUS.MATERIAL_MISSING) this.stats.failedPlacements++;
+      if (result.status === BLOCK_STATUS.REPAIR_REQUIRED) this.stats.failedPlacements++;
     }
-    if (cleared) this.stats.cleared += cleared;
+    const clearedDelta = this.engine.stats.cleared - (this._engineCleared || 0);
+    this._engineCleared = this.engine.stats.cleared;
+    if (clearedDelta > 0) { cleared = clearedDelta; this.stats.cleared += cleared; }
+    if (placed) this.stats.placed += placed;
     if (skipped) this.stats.skipped += skipped;
     this.taskBoard.updateProgress(task.id, { current: Math.min(blocks.length, placed + skipped), target: blocks.length });
-    // Real verification: rescan the assigned block list.
+    // Per-block verification of the exact state, not a summary count.
     const missing = [];
+    const wrong = [];
     for (const b of blocks) {
+      const localKey = `${b.x - this.origin.x},${b.y - this.origin.y},${b.z - this.origin.z}`;
+      const engineBlock = this.engine.byPosition.get(localKey);
       const current = this.world.getBlock({ x: b.x, y: b.y, z: b.z });
-      if (!current || current.name !== b.block) missing.push({ x: b.x, y: b.y, z: b.z, expected: b.block, found: current ? current.name : 'air' });
+      if (!engineBlock) {
+        missing.push({ x: b.x, y: b.y, z: b.z, expected: b.block, found: current ? current.name : 'unloaded' });
+      } else if (!matchesBlock(current, engineBlock.desired)) {
+        const entry = { x: b.x, y: b.y, z: b.z, expected: engineBlock.canonical, found: current ? formatBlock(current) : 'unloaded' };
+        if (!current || current.name === 'air') missing.push(entry);
+        else wrong.push(entry);
+      }
     }
     if (this.ledger) {
       this.ledger.updateBotInventory(bot.name, bot.inventory);
-      this.ledger.completeTransfer(`build:${this.id}:${task.id}`, missing.length === 0);
+      this.ledger.completeTransfer(`build:${this.id}:${task.id}`, missing.length === 0 && wrong.length === 0);
     }
     let complete = { ok: false };
-    if (missing.length === 0) {
+    if (missing.length === 0 && wrong.length === 0) {
       complete = this.taskBoard.complete(task.id, { by: bot.name, verified: true, notes: `verified ${blocks.length} blocks` });
     } else {
-      complete = this.taskBoard.fail(task.id, `${missing.length}/${blocks.length} blocks not placed`, { by: bot.name, retry: true });
+      complete = this.taskBoard.fail(task.id, `${missing.length}/${blocks.length} blocks missing, ${wrong.length} wrong state`, { by: bot.name, retry: true });
     }
+    if (wrong.length) this.stats.stateMismatches += wrong.length;
     this._event('build.task', { taskId: task.id, bot: bot.name, placed, cleared, skipped, missing: missing.length });
     return {
-      ok: missing.length === 0, buildId: this.id, taskId: task.id, bot: bot.name,
+      ok: missing.length === 0 && wrong.length === 0, buildId: this.id, taskId: task.id, bot: bot.name,
       placed, cleared, skipped, missing: missing.slice(0, 25), missingCount: missing.length,
+      wrong: wrong.slice(0, 25), wrongCount: wrong.length,
       failures: failures.slice(0, 25), failureCount: failures.length,
+      blockStatuses: this.engine.statusCounts(),
       taskStatus: this.taskBoard.getTask(task.id)?.status, completion: complete
     };
   }
@@ -494,33 +534,48 @@ class SchematicBuilder {
     return { iterations, results, status: this.status() };
   }
 
-  /** Re-read the world and report exactly which blocks are missing. */
-  verify() {
-    const missing = [];
-    const wrong = [];
-    let placed = 0;
-    for (const [x, y, z, paletteIndex] of this.schematic.blocks) {
-      const target = this.schematic.palette[paletteIndex];
-      const pos = this.worldPos([x, y, z]);
-      const current = this.world.getBlock(pos);
-      const name = current ? current.name : 'air';
-      if (name === target) placed++;
-      else if (name === 'air') missing.push({ x: pos.x, y: pos.y, z: pos.z, expected: target });
-      else wrong.push({ x: pos.x, y: pos.y, z: pos.z, expected: target, found: name });
-    }
-    const total = this.schematic.blocks.length;
+  /** Re-read the world and report exactly which block states are missing/wrong. */
+  verify({ includeExtras = false } = {}) {
+    const audit = this.engine.verify({ includeExtras });
     return {
       buildId: this.id,
-      total,
-      placed,
-      missingCount: missing.length,
-      wrongCount: wrong.length,
-      complete: missing.length === 0 && wrong.length === 0,
-      percentComplete: Number(((placed / total) * 100).toFixed(2)),
-      missing: missing.slice(0, 50),
-      wrong: wrong.slice(0, 50)
+      total: audit.total,
+      placed: audit.placed,
+      missingCount: audit.missingCount,
+      wrongCount: audit.wrongCount,
+      extraCount: audit.extraCount,
+      complete: audit.verified,
+      percentComplete: audit.percentComplete,
+      missing: audit.missing,
+      wrong: audit.wrong,
+      extras: audit.extras,
+      stateExact: audit.stateExact,
+      blockStatuses: this.engine.statusCounts(),
+      versionCompatibility: this.engine.registry.describe()
     };
   }
+
+  /** Repair missing/wrong blocks from a fresh diff, then re-audit. */
+  async repair(bot, { includeExtras = false, allowExtraRemoval = false } = {}) {
+    const worker = bot || this.bots[0];
+    const result = await this.engine.repair(worker, {
+      includeExtras,
+      allowExtraRemoval,
+      acquire: (target, item, count) => this._acquireMaterial(target, item, count)
+    });
+    if (result.repaired) {
+      this.stats.repaired += result.repaired;
+      this.finalAudit = null;
+      this._event('build.repaired', { repaired: result.repaired, complete: result.complete });
+    }
+    return result;
+  }
+
+  /** Blueprint validity + placement evidence + independent world audit. */
+  tripleCheck() { return this.engine.tripleCheck(); }
+
+  /** Scan the built footprint for blocks that should not be there. */
+  auditExtras() { return this.engine.auditExtras(); }
 
   status() {
     const analysis = this.analysis || this.analyze();
@@ -540,12 +595,18 @@ class SchematicBuilder {
     let state = this.state;
     if (this.paused && state === 'RUNNING') state = 'PAUSED';
     if (state === 'RUNNING') {
-      if (taskStats.COMPLETED === taskStats.total && taskStats.total > 0) state = 'COMPLETE';
-      else if (taskStats.FAILED > 0) state = 'FAILED';
+      if (taskStats.COMPLETED === taskStats.total && taskStats.total > 0) {
+        // Task completion proves each chunk was read back, but the build is
+        // only COMPLETE after the independent blueprint + placement + world
+        // audit also agrees. Cache it: status() is polled every two seconds.
+        if (!this.finalAudit) this.finalAudit = this.engine.tripleCheck();
+        state = this.finalAudit.ok ? 'COMPLETE' : 'FAILED';
+      } else if (taskStats.FAILED > 0) state = 'FAILED';
     }
     this.state = state;
     return {
       buildId: this.id,
+      finalAudit: this.finalAudit ? { ok: this.finalAudit.ok, sampledAt: this.finalAudit.sampledAt, blueprint: this.finalAudit.blueprint, placement: this.finalAudit.placement, audit: this.finalAudit.audit } : null,
       schematicId: this.schematic.id,
       name: this.schematic.name,
       tier: this.schematic.tier,

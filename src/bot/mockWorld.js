@@ -72,6 +72,10 @@ class MockWorld {
     this.size = size;
     this.seaLevel = seaLevel;
     this.overrides = new Map();
+    // Block-state properties for edited cells. Kept separate from the block
+    // name map so every existing caller that treats overrides as strings keeps
+    // working while schematic construction can verify exact states.
+    this.states = new Map();
     // Terrain lookups dominate repeated scans; cache the generated base block
     // name per coordinate. Overrides are consulted first so edits stay live.
     this._baseCache = new Map();
@@ -243,7 +247,7 @@ class MockWorld {
     if (Math.abs(x) > this.size || Math.abs(z) > this.size || y < -64 || y > 320) return null;
     const k = `${x},${y},${z}`;
     const override = this.overrides.get(k);
-    if (override !== undefined) return override;
+    if (override !== undefined) return typeof override === 'string' ? override : override.name;
     let name = this._baseCache.get(k);
     if (name === undefined) {
       name = this.baseBlockAt({ x, y, z });
@@ -260,23 +264,33 @@ class MockWorld {
     const z = Math.floor(pos.z);
     const name = this.blockNameAt(x, y, z);
     if (name === null) return null;
-    if (name === 'air') return { name: 'air', position: { x, y, z }, solid: false, boundingBox: 'empty' };
-    return { name, position: { x, y, z }, solid: name !== 'water' && name !== 'lava', boundingBox: 'block' };
+    const properties = this.states.get(`${x},${y},${z}`) || {};
+    if (name === 'air') return { name: 'air', properties: {}, position: { x, y, z }, solid: false, boundingBox: 'empty' };
+    return { name, properties: { ...properties }, position: { x, y, z }, solid: name !== 'water' && name !== 'lava', boundingBox: 'block' };
   }
 
-  setBlock(pos, name) {
+  setBlock(pos, name, properties = null) {
     const x = Math.floor(pos.x);
     const y = Math.floor(pos.y);
     const z = Math.floor(pos.z);
     const k = key({ x, y, z });
+    let bare = name;
+    if (name && typeof name === 'object') {
+      bare = name.name;
+      properties = name.properties || properties;
+    }
     const before = this.getBlock({ x, y, z });
-    if (name === 'air') {
+    if (bare === 'air' || bare === null || bare === undefined) {
       this.overrides.set(k, 'air');
+      this.states.delete(k);
       if (before && before.name !== 'air') this.edits.dug++;
     } else {
-      this.overrides.set(k, name);
+      this.overrides.set(k, bare);
+      if (properties && Object.keys(properties).length) this.states.set(k, { ...properties });
+      else this.states.delete(k);
       if (!before || before.name === 'air') this.edits.placed++;
     }
+    this._scanCache.clear();
     return true;
   }
 

@@ -7,6 +7,7 @@ const express = require('express');
 const { config } = require('../config');
 const { statusSnapshot } = require('../runtimeState');
 const { toSpongeSchematic, toJSON } = require('../schematics/format');
+const { exportSchematic } = require('../building/schematicIO');
 const logStore = require('../logStore');
 const { worldSnapshot } = require('./worldView');
 
@@ -325,7 +326,9 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     const { tier = null, category = null, q = null, difficulty = null, maxWidth = null, maxLength = null, maxHeight = null, material = null, limit = 24, offset = 0 } = req.query;
     const size = Math.min(200, Math.max(1, Number(limit) || 24));
     const start = Math.max(0, Number(offset) || 0);
-    let filtered = services.library.list({ tier, category, q, limit: 5000 });
+    const { custom = null, sort = null, tag = null, format = null } = req.query;
+    let filtered = services.library.list({ tier, category, q, tag, format, limit: Number.MAX_SAFE_INTEGER, excludeCustom: custom === 'false', sort });
+    if (custom === 'true') filtered = filtered.filter((d) => d.custom);
     if (difficulty) filtered = filtered.filter((d) => Number(d.difficulty) === Number(difficulty));
     if (maxWidth) filtered = filtered.filter((d) => d.dimensions.width <= Number(maxWidth));
     if (maxLength) filtered = filtered.filter((d) => d.dimensions.length <= Number(maxLength));
@@ -369,6 +372,174 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     const design = services.library.get(req.params.id);
     if (!design) return res.status(404).json({ ok: false, error: 'unknown schematic' });
     res.json({ ok: true, schematic: toJSON(services.library.build(design.id)) });
+  });
+
+  // ---------------------------------------------------------------------
+  // Custom schematic catalogue (import, edit, export, remove)
+  // ---------------------------------------------------------------------
+  const customStore = () => services.library && services.library.customStore;
+  app.get('/api/building', (req, res) => {
+    const store = customStore();
+    const builds = [...(services.builders ? services.builders.values() : [])];
+    const firstEngine = builds[0] && builds[0].engine ? builds[0].engine : null;
+    res.json({
+      ok: true,
+      config: services.config?.building || {},
+      registry: firstEngine ? firstEngine.registry.describe() : null,
+      custom: store ? store.statsSummary() : null,
+      library: services.library && services.library.loaded ? services.library.stats() : null,
+      builds: builds.map((builder) => ({
+        id: builder.id, name: builder.schematic.name, state: builder.status().state,
+        percent: builder.status().percentComplete, tasks: builder.status().tasks,
+        verification: builder.engine ? builder.engine.auditSummary() : null
+      })),
+      projects: services.construction ? services.construction.list() : []
+    });
+  });
+
+  app.post('/api/schematics/scan', sameOrigin, rateLimit, (req, res) => {
+    const store = customStore();
+    if (!store) return res.status(503).json({ ok: false, error: 'custom schematic catalogue unavailable' });
+    try {
+      const result = store.scan({ persist: true });
+      invalidate();
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post('/api/schematics/upload', sameOrigin, rateLimit, express.raw({ type: '*/*', limit: '20mb' }), (req, res) => {
+    const store = customStore();
+    if (!store) return res.status(503).json({ ok: false, error: 'custom schematic catalogue unavailable' });
+    if (!req.body || !req.body.length) return res.status(400).json({ ok: false, error: 'empty upload' });
+    const filename = String(req.query.filename || req.get('x-filename') || '').trim();
+    const name = req.query.name ? String(req.query.name) : null;
+    const licence = req.query.licence ? String(req.query.licence) : 'UNKNOWN';
+    const source = req.query.source ? String(req.query.source) : 'upload';
+    try {
+      const result = store.importFile(req.body, { filename, name, licence, source, tags: ['uploaded'], force: req.query.force === 'true' });
+      invalidate();
+      if (!result.ok) return res.status(result.duplicate ? 409 : 422).json({ ok: false, error: result.error || result.reason, duplicate: Boolean(result.duplicate), existing: result.existing || null });
+      return res.json({ ok: true, entry: result.entry, warnings: result.warnings || [] });
+    } catch (err) {
+      services.logger?.error(`schematic upload failed: ${err.message}`);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post('/api/schematics/:id/:action', sameOrigin, rateLimit, (req, res) => {
+    const store = customStore();
+    if (!store) return res.status(503).json({ ok: false, error: 'custom schematic catalogue unavailable' });
+    const id = req.params.id;
+    const action = req.params.action;
+    try {
+      let result;
+      if (action === 'rename') result = store.rename(id, req.body?.name);
+      else if (action === 'tag') result = store.tag(id, Array.isArray(req.body?.tags) ? req.body.tags : [req.body?.tag]);
+      else if (action === 'licence') result = store.setLicence(id, req.body?.licence);
+      else if (action === 'duplicate') result = store.duplicate(id, { name: req.body?.name });
+      else if (action === 'reimport') result = store.reimport(id);
+      else return res.status(404).json({ ok: false, error: `unknown custom schematic action ${action}` });
+      invalidate();
+      if (!result.ok) return res.status(422).json({ ok: false, error: result.error || result.reason || 'action failed' });
+      return res.json({ ok: true, entry: result.entry || null });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.delete('/api/schematics/:id', sameOrigin, rateLimit, (req, res) => {
+    const store = customStore();
+    if (!store) return res.status(503).json({ ok: false, error: 'custom schematic catalogue unavailable' });
+    const result = store.remove(req.params.id);
+    invalidate();
+    if (!result.ok) return res.status(404).json({ ok: false, error: result.error });
+    return res.json({ ok: true, id: result.id });
+  });
+
+  app.get('/api/schematics/:id/export', (req, res) => {
+    if (!services.library || !services.library.loaded) return res.status(503).json({ ok: false, error: 'library not generated' });
+    const design = services.library.get(req.params.id);
+    if (!design) return res.status(404).json({ ok: false, error: 'unknown schematic' });
+    const format = String(req.query.format || 'sponge-schem');
+    let buffer; let extension; let warnings = [];
+    try {
+      if (design.custom) {
+        const store = customStore();
+        if (!store) return res.status(503).json({ ok: false, error: 'custom schematic catalogue unavailable' });
+        const result = store.export(req.params.id, format);
+        if (!result.ok) return res.status(422).json({ ok: false, error: result.error });
+        buffer = result.buffer; extension = result.extension;
+      } else {
+        const schematic = services.library.build(req.params.id);
+        if (!schematic) return res.status(404).json({ ok: false, error: 'schematic data unavailable' });
+        const result = exportSchematic(schematic, format);
+        if (!result || !result.buffer) return res.status(422).json({ ok: false, error: (result && result.error) || 'export failed' });
+        buffer = result.buffer; extension = result.extension; warnings = result.warnings || [];
+      }
+    } catch (err) {
+      return res.status(422).json({ ok: false, error: err.message });
+    }
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${req.params.id}${extension}"`);
+    if (warnings.length) res.setHeader('X-Export-Warnings', String(warnings.length));
+    res.send(buffer);
+  });
+
+  // ---------------------------------------------------------------------
+  // Per-build evidence and controls
+  // ---------------------------------------------------------------------
+  app.get('/api/builds/:id', (req, res) => {
+    const builder = services.builders && (services.builders.get(req.params.id)
+      || [...services.builders.values()].find((entry) => entry.id.startsWith(req.params.id)));
+    if (!builder) return res.status(404).json({ ok: false, error: 'unknown build' });
+    const statusFilter = req.query.status ? String(req.query.status).toUpperCase() : null;
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const limit = Math.min(2000, Math.max(1, Number(req.query.limit) || 200));
+    const all = builder.engine ? builder.engine.blocks : [];
+    const filtered = statusFilter ? all.filter((block) => block.status === statusFilter) : all;
+    const page = filtered.slice(offset, offset + limit).map((block) => ({
+      x: block.x, y: block.y, z: block.z, world: builder.engine.worldPos(block),
+      block: block.canonical, phase: block.phase, status: block.status,
+      attempts: block.attempts, error: block.lastError,
+      observed: block.observed ? block.observed.name : null
+    }));
+    res.json({
+      ok: true,
+      build: builder.status(),
+      verification: builder.verify(),
+      tripleCheck: builder.tripleCheck(),
+      analysis: builder.analysis,
+      registry: builder.engine ? builder.engine.registry.describe() : null,
+      blocks: { total: all.length, filtered: filtered.length, offset, limit, entries: page }
+    });
+  });
+
+  app.post('/api/builds/:id/action', sameOrigin, rateLimit, async (req, res) => {
+    const builder = services.builders && (services.builders.get(req.params.id)
+      || [...services.builders.values()].find((entry) => entry.id.startsWith(req.params.id)));
+    if (!builder) return res.status(404).json({ ok: false, error: 'unknown build' });
+    const action = String(req.body?.action || '').toLowerCase();
+    try {
+      if (action === 'pause') return res.json({ ok: true, result: builder.pause('paused from dashboard'), status: builder.status() });
+      if (action === 'resume') return res.json({ ok: true, result: builder.resume(), status: builder.status() });
+      if (action === 'cancel' || action === 'stop') return res.json({ ok: true, status: builder.cancel('cancelled from dashboard') });
+      if (action === 'verify') return res.json({ ok: true, verification: builder.verify({ includeExtras: true }), tripleCheck: builder.tripleCheck() });
+      if (action === 'repair') {
+        const repair = await builder.repair(null, { includeExtras: req.body?.includeExtras === true, allowExtraRemoval: req.body?.allowExtraRemoval === true });
+        invalidate();
+        return res.json({ ok: repair.complete, repair });
+      }
+      if (action === 'run') {
+        const run = await builder.run({ maxIterations: Math.min(500, Math.max(1, Number(req.body?.steps) || 40)) });
+        invalidate();
+        return res.json({ ok: run.status.state !== 'FAILED', run });
+      }
+      return res.status(400).json({ ok: false, error: `unknown action ${action}` });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
   });
 
   app.get('/api/events', (req, res) => {

@@ -259,7 +259,7 @@ test('builder, site, materials and storage command families operate on the real 
   assert.ok(preview.result.plan);
   const materials = await run('materials status');
   assert.equal(materials.ok, true, materials.result?.error);
-  assert.equal(materials.result.totalNeeded, 393);
+  assert.equal(materials.result.totalNeeded, Object.values(manager.activeProject().materialRequirements).reduce((sum, n) => sum + n, 0));
   assert.ok(Object.keys(materials.result.deficit).length > 0, 'starter inventory is honestly short');
   const readiness = await run('materials readiness');
   assert.equal(readiness.ok, true);

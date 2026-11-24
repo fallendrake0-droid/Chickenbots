@@ -227,6 +227,25 @@ const config = {
     phaseRetries: 3,
     verifySamples: 200
   },
+  building: {
+    verification: envBool('BUILD_VERIFICATION', true),
+    tripleCheck: envBool('BUILD_TRIPLE_CHECK', true),
+    autoRepair: envBool('BUILD_AUTO_REPAIR', false),
+    deterministic: envBool('BUILD_DETERMINISTIC', true),
+    randomPlacement: envBool('BUILD_RANDOM_PLACEMENT', false),
+    allowExplosives: envBool('BUILD_ALLOW_EXPLOSIVES', false),
+    destructiveExcavation: envBool('BUILD_DESTRUCTIVE_EXCAVATION', false),
+    customSchematics: envBool('BUILD_CUSTOM_SCHEMATICS', true),
+    autoStartImportedBuilds: envBool('BUILD_AUTOSTART_IMPORTED', false),
+    libraryTarget: envInt('BUILD_LIBRARY_TARGET', 10000),
+    minecraftVersion: env('BUILD_MC_VERSION', 'auto'),
+    placementMode: env('BUILD_PLACEMENT_MODE', 'replace-region'),
+    customDir: path.join(ROOT, 'data', 'schematics', 'custom'),
+    watchCustom: envBool('BUILD_WATCH_CUSTOM', true),
+    maxConfirmationAttempts: envInt('BUILD_CONFIRM_ATTEMPTS', 4),
+    confirmationDelayMs: envInt('BUILD_CONFIRM_DELAY_MS', 25),
+    maxConcurrentProjects: envInt('BUILD_MAX_CONCURRENT', 3)
+  },
   construction: {
     autoAdvance: envBool('CONSTRUCTION_AUTO', true),
     tickEvery: envInt('CONSTRUCTION_TICK_EVERY', 20),

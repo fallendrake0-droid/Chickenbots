@@ -1,12 +1,17 @@
 'use strict';
 
 const crypto = require('crypto');
+const { parseBlock, formatBlock } = require('../building/blockStates');
 
 /** Material class used for design identity. Palettes are intentionally ignored:
  * recolouring a design must NOT produce a "new" schematic. */
 
-function classOfBlock(name) {
-  const n = String(name || '').toLowerCase();
+function blockNameOf(value) {
+  return parseBlock(value).name;
+}
+
+function classOfBlock(value) {
+  const n = parseBlock(value).name.toLowerCase();
   if (n === 'air' || n === 'cave_air' || n === 'void_air') return 'air';
   if (n === 'water' || n === 'lava') return 'water';
   if (n.includes('glass')) return 'glass';
@@ -66,7 +71,7 @@ function geometryHash(blocks, palette) {
 
 /** Exact hash including palette and block indices (for integrity checks). */
 function exactHash(blocks, palette) {
-  const entries = blocks.map(([x, y, z, p]) => `${x},${y},${z},${palette[p]}`);
+  const entries = blocks.map(([x, y, z, p]) => `${x},${y},${z},${formatBlock(palette[p])}`);
   entries.sort();
   return crypto.createHash('sha256').update(entries.join(';')).digest('hex').slice(0, 32);
 }
@@ -93,4 +98,4 @@ function specHash(spec) {
   return crypto.createHash('sha256').update(JSON.stringify(structural)).digest('hex').slice(0, 24);
 }
 
-module.exports = { classOfBlock, geometryHash, exactHash, specHash, TRANSFORMS };
+module.exports = { blockNameOf, classOfBlock, geometryHash, exactHash, specHash, TRANSFORMS };

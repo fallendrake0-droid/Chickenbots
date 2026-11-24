@@ -3,6 +3,7 @@
 const zlib = require('zlib');
 const nbt = require('prismarine-nbt');
 const { geometryHash, exactHash } = require('./designHash');
+const { rotateBlock, mirrorBlock, parseBlock, formatBlock, placementItem } = require('../building/blockStates');
 const { PHASES } = require('./blockGrid');
 
 /** Legacy numeric ids used by MCEdit .schematic files. Only these blocks can be
@@ -31,9 +32,13 @@ function rotateSchematic(schematic, quarterTurns = 1) {
     length = width;
     width = nextW;
   }
+  // Rotate the palette too: stairs, doors, logs, rails and connected blocks
+  // must not keep their old orientation after the geometry turns.
+  const palette = schematic.palette.map((entry) => formatBlock(rotateBlock(entry, turns)));
   return finalize({
     ...schematic,
     dimensions: { width, height, length },
+    palette,
     blocks,
     rotation: turns * 90,
     structural: { ...schematic.structural, rotated: turns * 90 }
@@ -43,7 +48,8 @@ function rotateSchematic(schematic, quarterTurns = 1) {
 function mirrorSchematic(schematic, axis = 'x') {
   const { width, length } = schematic.dimensions;
   const blocks = schematic.blocks.map(([x, y, z, p, ph]) => (axis === 'x' ? [width - 1 - x, y, z, p, ph] : [x, y, z, length - 1 - z, p, ph]));
-  return finalize({ ...schematic, blocks, mirrored: axis });
+  const palette = schematic.palette.map((entry) => formatBlock(mirrorBlock(entry, axis)));
+  return finalize({ ...schematic, blocks, palette, mirrored: axis });
 }
 
 function translateSchematic(schematic, dx, dy, dz) {
@@ -52,10 +58,15 @@ function translateSchematic(schematic, dx, dy, dz) {
 }
 
 function substituteMaterials(schematic, mapping) {
-  const palette = schematic.palette.map((name) => mapping[name] || name);
+  const palette = schematic.palette.map((entry) => {
+    const parsed = parseBlock(entry);
+    const replacement = mapping[parsed.name] || mapping[entry];
+    if (!replacement) return entry;
+    return typeof replacement === 'string' ? replacement : replacement;
+  });
   const materials = {};
   for (const b of schematic.blocks) {
-    const name = palette[b[3]];
+    const name = parseBlock(palette[b[3]]).name;
     materials[name] = (materials[name] || 0) + 1;
   }
   return finalize({ ...schematic, palette, materials, materialSubstitutions: Object.keys(mapping) });
@@ -72,7 +83,7 @@ function finalize(schematic) {
   const dimensions = { width: maxX - minX + 1, height: maxY - minY + 1, length: maxZ - minZ + 1 };
   const materials = {};
   for (const b of blocks) {
-    const name = schematic.palette[b[3]];
+    const name = parseBlock(schematic.palette[b[3]]).name;
     materials[name] = (materials[name] || 0) + 1;
   }
   return {
@@ -124,7 +135,10 @@ function blockIndex(x, y, z, dims) {
 /** Export Sponge schematic v2 (.schem, gzip-compressed NBT). */
 function toSpongeSchematic(schematic, { author = 'Chickenbots', dataVersion = 4189 } = {}) {
   const { width, height, length } = schematic.dimensions;
-  const namespaced = schematic.palette.map((name) => (name.includes(':') ? name : `minecraft:${name}`));
+  const namespaced = schematic.palette.map((entry) => {
+    const text = formatBlock(entry);
+    return text.includes(':') ? text : `minecraft:${text}`;
+  });
   const paletteNames = ['minecraft:air', ...namespaced];
   const palette = {};
   paletteNames.forEach((name, i) => { palette[name] = i; });
@@ -188,13 +202,14 @@ function fromSpongeSchematic(buffer, { id = null, name = null } = {}) {
       for (let x = 0; x < width; x++) {
         const p = decoded[blockIndex(x, y, z, { width, length })] || 0;
         const blockName = paletteArray[p];
-        if (!blockName || blockName === 'air') continue;
+        if (!blockName || /^air(?:\[.*\])?$/.test(blockName)) continue;
         blocks.push([x, y, z, p, 0]);
-        materials[blockName] = (materials[blockName] || 0) + 1;
+        const bare = placementItem(parseBlock(blockName));
+        materials[bare] = (materials[bare] || 0) + 1;
       }
     }
   }
-  // Re-index palette to only used entries.
+  // Re-index palette to only used entries, preserving the full state string.
   const used = [...new Set(blocks.map((b) => paletteArray[b[3]]))].sort();
   const mapIndex = new Map(used.map((n, i) => [n, i]));
   const palette = used;
@@ -218,7 +233,7 @@ function fromSpongeSchematic(buffer, { id = null, name = null } = {}) {
     estimatedCost: { blocks: blocks.length, uniqueMaterials: palette.length },
     buildPhases: ['FOUNDATION'],
     tags: ['imported'],
-    versionCompatibility: ['sponge-schem-v2'],
+    versionCompatibility: [`sponge-schem-v${root.Version || 1}`],
     structural: { imported: true },
     dataVersion: root.DataVersion || null
   };

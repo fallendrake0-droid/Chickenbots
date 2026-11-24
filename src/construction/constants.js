@@ -65,6 +65,8 @@ const INITIAL_ROLES = Object.freeze({
   '00110000': 'STORAGE_AND_LOGISTICS'
 });
 
+const { rotateBlock, rotatePosition, formatBlock } = require('../building/blockStates');
+
 const PHASE_STATUS = Object.freeze({
   PENDING: 'PENDING', ACTIVE: 'ACTIVE', COMPLETE: 'COMPLETE', BLOCKED: 'BLOCKED', FAILED: 'FAILED', SKIPPED: 'SKIPPED'
 });
@@ -73,16 +75,20 @@ function rotateSchematic(schematic, rotation = 0) {
   const deg = ((Number(rotation) % 360) + 360) % 360;
   if (![0, 90, 180, 270].includes(deg)) throw new Error('rotation must be 0, 90, 180 or 270');
   if (deg === 0) return schematic;
-  const width = schematic.dimensions.width;
-  const length = schematic.dimensions.length;
+  const turns = deg / 90;
+  const { width, length } = schematic.dimensions;
+  // Rotate geometry and block states together. Leaving `facing`, door hinges or
+  // stair shapes untouched would place a correctly shaped house with every
+  // door and staircase facing the old direction.
   const blocks = schematic.blocks.map(([x, y, z, palette, phase]) => {
-    if (deg === 90) return [z, y, width - 1 - x, palette, phase];
-    if (deg === 180) return [width - 1 - x, y, length - 1 - z, palette, phase];
-    return [length - 1 - z, y, x, palette, phase];
+    const pos = rotatePosition(x, z, width, length, turns);
+    return [pos.x, y, pos.z, palette, phase];
   }).sort((a, b) => a[1] - b[1] || a[2] - b[2] || a[0] - b[0]);
+  const palette = (schematic.palette || []).map((entry) => formatBlock(rotateBlock(entry, turns)));
   return {
     ...schematic,
     blocks,
+    palette,
     dimensions: {
       width: deg === 90 || deg === 270 ? length : width,
       height: schematic.dimensions.height,

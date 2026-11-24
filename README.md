@@ -512,6 +512,59 @@ only completed with `verified: true`, and destructive commands without confirmat
 Known environment constraints: `npm run schematics:validate` regenerates all 1120 designs and takes
 roughly two minutes; the full validation pass is therefore not part of the default `npm test`.
 
+
+## Building system: exact placement, custom schematics and honest limits
+
+The builder stack is a deterministic blueprint engine, not a block-approximation
+generator. A palette entry may carry full state (`oak_stairs[facing=east,half=top]`),
+and every placed block is read back from the world and compared by name **and**
+properties before it can become `VERIFIED`.
+
+- **Engine** (`src/building/engine.js`) — dependency-ordered plan (supports, door
+  halves, bed halves, gravity blocks), world-confirmed placement, `verify`,
+  `repair`, `tripleCheck` and an extra-block audit. A placement call that returns
+  without throwing is never trusted; unknown/unloaded chunks are reported as
+  `unloaded`, never as air.
+- **Block states** (`src/building/blockStates.js`) — parsing, formatting,
+  placement-item mapping, 90° rotation and axis mirroring. Rotation preserves a
+  stair's `shape`; mirroring flips `hinge`/`shape` as Minecraft does.
+- **Registry** (`src/building/blockRegistry.js`) — `minecraft-data`-backed block
+  and item lookup with per-property value validation. `26.3` is reported as
+  `NEAREST_KNOWN` (the installed data tops out at 26.1); the fallback is explicit
+  in every report and never presented as exact 26.3 data.
+- **Schematic I/O** (`src/building/schematicIO.js`) — Sponge `.schem` (v1–v3),
+  Litematica `.litematic`, vanilla structure `.nbt`, legacy `.schematic` and
+  native JSON. Packed states, negative regions and block entities are preserved
+  where the format exposes them; unsupported payloads are reported.
+- **Custom catalogue** (`src/building/customLibrary.js`) — drop files in
+  `data/schematics/custom/` or upload from the dashboard. Imports are lazy,
+  content/geometry deduplicated, indexed with licence and source metadata, and
+  removable without re-importing on the next scan. Importing and building are
+  separate operations.
+- **Dashboard** — **Builder Operations → Building Workspace** wires import,
+  rescan, per-build pause/resume/stop/verify/repair, per-block evidence and
+  exports to the real endpoints. The full library page remains the browse/search
+  surface.
+
+### Verified library size (honest)
+
+`data/schematics/manifest.json` contains **1,120 unique generated designs**
+(1,120 unique geometry hashes, 8,688,787 blocks). Each of the 1,120 blueprints
+was reconstructed and audited through `BuildEngine.validateBlueprint()` and its
+dependency planner: **0 invalid blocks, 0 support/dependency cycles, 0 failures**.
+The configured long-term target remains 10,000; the project has **not** reached
+that target and the runtime reports the real count (base + custom) at all times.
+
+```bash
+npm run buildings:audit                 # full blueprint audit (≈8–9 minutes)
+npm run buildings:audit -- --limit 50   # quick sample
+node scripts/buildings-audit.js --json report.json
+```
+
+Structural validation does not prove functional redstone logic, farm output or
+live-server behaviour. Those require separate live functional tests and are not
+claimed here.
+
 ## Deployment check
 
 ```bash

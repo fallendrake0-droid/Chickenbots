@@ -3,17 +3,25 @@
 const mcData = require('minecraft-data');
 const { generateSchematic } = require('./generator');
 const { classOfBlock } = require('./designHash');
+const { parseBlock, formatBlock, placementItem } = require('../building/blockStates');
 const { config } = require('../config');
 
 const REQUIRED_PHASES = ['FOUNDATION', 'WALLS'];
 
-function knownBlockSet(version = '1.21.4') {
+function validationVersion() {
+  const configured = config.building?.minecraftVersion;
+  return configured && configured !== 'auto' ? configured : '26.1';
+}
+
+function knownBlockSet(version = validationVersion()) {
   try {
     const data = mcData(version);
-    return new Set(Object.keys(data.blocksByName));
+    // Material totals use the item required to place a block (torch for a
+    // wall torch, water_bucket for water), so both registries are valid names.
+    return new Set([...Object.keys(data.blocksByName), ...Object.keys(data.itemsByName)]);
   } catch (_) {
     const fallback = mcData('1.20.1');
-    return new Set(Object.keys(fallback.blocksByName));
+    return new Set([...Object.keys(fallback.blocksByName), ...Object.keys(fallback.itemsByName)]);
   }
 }
 
@@ -24,7 +32,7 @@ function supportAnalysis(schematic, { maxUnsupportedRatio = 0.05 } = {}) {
   let unsupported = 0;
   const examples = [];
   for (const [x, y, z, p] of schematic.blocks) {
-    const name = schematic.palette[p];
+    const name = parseBlock(schematic.palette[p]).name;
     const cls = classOfBlock(name);
     if (cls === 'light' || cls === 'vegetation' || cls === 'glass' || cls === 'interior' || cls === 'decoration') continue;
     if (y === 0) continue;
@@ -65,7 +73,7 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
     if (expected.geometryHash && expected.geometryHash !== schematic.geometryHash) issues.invalid.push('geometry hash differs from manifest');
     if (expected.exactHash && expected.exactHash !== schematic.exactHash) issues.invalid.push('exact hash differs from manifest');
   }
-  const paletteSet = new Set(schematic.palette);
+  const paletteSet = new Set(schematic.palette.map((entry) => formatBlock(entry)));
   if (paletteSet.size !== schematic.palette.length) issues.invalid.push('palette contains duplicate entries');
   const materials = {};
   const phaseSet = new Set();
@@ -75,7 +83,7 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
     if (x < 0 || y < 0 || z < 0 || x >= dims.width || y >= dims.height || z >= dims.length) outOfBounds++;
     if (p < 0 || p >= schematic.palette.length) issues.invalid.push(`palette index out of range: ${p}`);
     phaseSet.add(phase);
-    const name = schematic.palette[p];
+    const name = placementItem(parseBlock(schematic.palette[p]));
     materials[name] = (materials[name] || 0) + 1;
   }
   if (outOfBounds) issues.invalid.push(`${outOfBounds} blocks outside stated dimensions`);
@@ -99,7 +107,7 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
   }
   if (!schematic.foundation || !(schematic.foundation.depth > 0)) issues.structuralProblems.push('missing foundation depth');
   if (!schematic.supports || !schematic.supports.length) issues.structuralProblems.push('no foundation supports');
-  if (schematic.palette.some((name) => /^(air|unknown|custom)/.test(name))) issues.unsupportedBlocks.push('placeholder block name');
+  if (schematic.palette.some((entry) => /^(air|unknown|custom)/.test(parseBlock(entry).name))) issues.unsupportedBlocks.push('placeholder block name');
   const support = supportAnalysis(schematic);
   if (!support.ok) issues.structuralProblems.push(`unsupported structural blocks: ${support.unsupported}/${support.checked} (${support.ratio})`);
   if (!Array.isArray(schematic.versionCompatibility) || !schematic.versionCompatibility.length) issues.compatibility.push('no version compatibility declared');
@@ -113,7 +121,7 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
  * rebuilt from each spec and compared against the manifest, so the report is
  * based on real generated structures rather than trusting metadata.
  */
-function validateLibrary(manifest, { regenerate = true, sampleSize = null, version = '1.21.4', onProgress = null } = {}) {
+function validateLibrary(manifest, { regenerate = true, sampleSize = null, version = validationVersion(), onProgress = null } = {}) {
   const started = Date.now();
   const knownBlocks = knownBlockSet(version);
   const report = {
