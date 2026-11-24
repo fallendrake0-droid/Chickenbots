@@ -1,9 +1,12 @@
 'use strict';
 
+const dns = require('dns');
 const { BotAdapter } = require('./adapter');
 const { config, BOT_NAMES } = require('../config');
 const { redactString } = require('../util/redact');
 const { classifyKick, sleep } = require('./connection');
+const { ConnectionStateMachine, STATES, TERMINAL } = require('./connectionState');
+const { ClientTickScheduler, MOVEMENT_PACKETS } = require('./clientTicker');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
 const { FOODS, BED_NAMES, toolTier } = require('../world/items');
@@ -32,6 +35,9 @@ class RealBot extends BotAdapter {
     auth = config.server.auth, logger = null, mineflayer = null, createBot = null,
     loginPassword = config.server.loginPassword, registerPassword = config.server.registerPassword,
     connectTimeoutMs = config.server.connectTimeoutMs,
+    dnsTimeoutMs = config.server.dnsTimeoutMs,
+    configurationTimeoutMs = config.server.configurationTimeoutMs,
+    now = Date.now,
     authDelayMs = config.server.authDelayMs, authTimeoutMs = config.server.authTimeoutMs,
     authEnabled = config.server.authEnabled, registerOnFirstJoin = config.server.registerOnFirstJoin
   } = {}) {
@@ -44,6 +50,8 @@ class RealBot extends BotAdapter {
     this.loginPassword = loginPassword;
     this.registerPassword = registerPassword;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.dnsTimeoutMs = dnsTimeoutMs;
+    this.configurationTimeoutMs = configurationTimeoutMs;
     this.loginTimeoutMs = config.server.loginTimeoutMs;
     this.spawnTimeoutMs = config.server.spawnTimeoutMs;
     this.authEnabled = authEnabled !== false;
@@ -76,10 +84,18 @@ class RealBot extends BotAdapter {
     this.lastRespawnAt = 0;
     this._respawnTimer = null;
     this._loginWaiters = new Set();
+    this._tcpWaiters = new Set();
+    this._stageTimers = new Map();
+    this._pendingConnectionError = null;
     this.loginAt = 0;
     this.spawnAt = 0;
     this.connectStartedAt = 0;
-    this.stageTimings = { connectMs: null, loginMs: null, spawnMs: null, authMs: null };
+    this.now = typeof now === 'function' ? now : Date.now;
+    this.stageTimings = {
+      dnsMs: null, tcpMs: null, handshakeMs: null, configurationMs: null,
+      connectMs: null, loginMs: null, spawnMs: null, authMs: null, totalMs: null
+    };
+    this.stageStartedAt = { dns: 0, tcp: 0, handshake: 0, configuration: 0, spawn: 0, auth: 0 };
     this.spawnPosition = null;
     this.worldView = null;
     this._chatLog = [];
@@ -94,7 +110,19 @@ class RealBot extends BotAdapter {
     this._connectPromise = null;
     this._clientGeneration = 0;
     this._connectionGeneration = 0;
+    this._tcpConnected = false;
+    this._tcpAt = 0;
+    this._loginReceivedAt = 0;
+    this._configurationAt = 0;
+    this._spawnedThisSession = false;
+    this._respawnPacketSeen = false;
+    this.lastDisconnectDumped = null;
+    this._clientTicker = null;
+    this._serverTickingState = null;
     this._tickEndSent = false;
+    this._lastTickEndAt = 0;
+    this._keepAlive = { received: 0, replies: 0, lastReceivedAt: 0, lastReplyAt: 0, maxGapMs: 0, warnings: 0, lastWarningAt: 0 };
+    this.lastDisconnect = null;
     this._antiAfkTimer = null;
     this._antiAfkJumpTimer = null;
     this._antiAfkPulses = 0;
@@ -111,6 +139,10 @@ class RealBot extends BotAdapter {
     this.startedAt = 0;
     this.stats = { dug: 0, placed: 0, attacked: 0, eaten: 0, crafted: 0, deaths: 0, connections: 0 };
     this._deathCount = 0;
+    this.connection = new ConnectionStateMachine({
+      now: this.now,
+      onChange: (snapshot) => this._onConnectionChange(snapshot)
+    });
   }
 
   get ready() { return Boolean(this.connected && this.authenticated && this.spawned && this.bot && this.bot.entity); }
@@ -132,49 +164,57 @@ class RealBot extends BotAdapter {
     if (!client || typeof client.write !== 'function' || this._clientWriteOriginal) return;
     const original = client.write.bind(client);
     const owner = this.bot;
-    const generation = this._connectionGeneration;
+    const generation = this.connection.generation;
     this._clientWriteOriginal = original;
-    const movement = new Set(['position', 'position_look', 'look', 'flying']);
+    const movement = MOVEMENT_PACKETS;
     client.write = (name, packet) => {
       // A queued Mineflayer physics callback from an old socket must never
-      // write into the replacement socket after a reconnect.
-      if (this.bot !== owner || this._connectionGeneration !== generation) return true;
+      // write into the replacement socket after a reconnect. The generation is
+      // owned by the lifecycle state machine, not by this closure.
+      if (this.bot !== owner || !this.connection.isCurrent(generation)) return true;
+      const socket = client.socket;
+      if (socket && (socket.destroyed || socket.readyState === 'closed')) return true;
       if (movement.has(name)) {
         try { this._trace(this._movementLock ? 'held-out' : 'out', name, packet); } catch (_) { /* tracing must never break movement */ }
         if (this._movementLock) {
           this._suppressedMovement++;
           return true;
         }
+        // The client tick scheduler owns packet ordering: at most one
+        // position-bearing packet per tick, then a single tick_end. It passes
+        // non-position movement (look/flying) straight through.
+        if (this._clientTicker && this._clientTicker.enabled) {
+          this._clientTicker.writeMovement(name, packet);
+          return true;
+        }
       }
       const result = original(name, packet);
-      // Minecraft 26.x servers allow only one position-bearing packet per
-      // client tick and reset that counter on client_tick_end. Mineflayer
-      // never sends it, so every bot is kicked on its second movement packet.
-      if (movement.has(name)) {
-        try {
-          original('tick_end', {});
-          if (!this._tickEndSent) {
-            this._tickEndSent = true;
-            this.logger.info(`[${this.name}] client_tick_end enabled after movement packets (26.x requirement)`);
-          }
-        } catch (_) { /* pre-1.21.2 protocol */ }
-      }
+      // Count the library's own automatic reply only after its write call
+      // returns, so a failed write cannot look like a verified keep-alive.
+      if (name === 'keep_alive') this._noteKeepAliveReply();
       return result;
     };
   }
 
   /**
    * A second spawn/respawn packet can arrive after AuthMe confirmation (the
-   * respawn screen issues one). Recomputing this from `passwordRequired`
-   * wiped a confirmed login, made the bot look unready and sent the reconnect
-   * supervisor after a perfectly healthy session.
+   * respawn screen issues one). This used to recompute `authenticated` from
+   * `passwordRequired`, wiping a confirmed login and making a healthy session
+   * look unready. Confirmation is monotonic for the lifetime of one session.
    */
   _applySpawnAuth() {
-    this.authenticated = Boolean(this.authConfirmed || !this.passwordRequired);
-    if (this.authenticated && /auth|login|password|register|credential/i.test(String(this.lastError || ''))) {
-      this.lastError = null;
+    if (this.authConfirmed) {
+      this.authenticated = true;
+      if (this.connection.state === STATES.AUTHENTICATING) this.connection.transition(STATES.READY, { detail: 'password authentication already confirmed' });
+      return true;
     }
-    return this.authenticated;
+    if (!this.passwordRequired) {
+      this.authenticated = true;
+      if (this.connection.state === STATES.AUTHENTICATING) this.connection.transition(STATES.READY, { detail: 'no password required' });
+      return true;
+    }
+    this.authenticated = false;
+    return false;
   }
 
   _lockMovement() {
@@ -194,12 +234,162 @@ class RealBot extends BotAdapter {
   }
 
   _restoreClientTrace() {
+    this._stopClientTicker('client trace restored');
     const client = this.bot && this.bot._client;
     if (client && this._clientWriteOriginal) client.write = this._clientWriteOriginal;
     this._clientWriteOriginal = null;
     this._movementLock = false;
-    // Invalidate closures that still hold the old wrapper.
-    this._connectionGeneration = ++this._clientGeneration;
+  }
+
+  _onConnectionChange(snapshot) {
+    this.connected = Boolean(snapshot.open);
+    this.spawned = Boolean(snapshot.spawned);
+    this.authenticated = Boolean(snapshot.authenticated);
+    // Awaiting spawn with no password is already authenticated in the only
+    // sense that matters: no credential exchange is pending.
+    if (snapshot.state === STATES.AWAITING_SPAWN && !this.passwordRequired) this.authenticated = true;
+    if (TERMINAL.has(snapshot.state)) this.authenticated = false;
+    if (snapshot.generation !== this._connectionGeneration) {
+      this._connectionGeneration = snapshot.generation;
+      this._clientGeneration = snapshot.generation;
+    }
+  }
+
+  _transition(state, detail = '', options = {}) {
+    const ok = this.connection.transition(state, { detail, ...options });
+    if (!ok) {
+      this.logger.debug(`[${this.name}] refused lifecycle transition ${this.connection.state} -> ${state}: ${detail}`);
+    }
+    return ok;
+  }
+
+  _supportFeature(name) {
+    try {
+      if (this.bot && typeof this.bot.supportFeature === 'function') return Boolean(this.bot.supportFeature(name));
+      const version = (this.bot && this.bot.version) || this.version;
+      if (!version || version === 'auto') return false;
+      return Boolean(require('minecraft-data')(version).supportFeature(name));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  _startClientTicker() {
+    this._stopClientTicker('restarting client tick loop');
+    const client = this.bot && this.bot._client;
+    const original = this._clientWriteOriginal;
+    if (!client || !original || !this._supportFeature('sendsClientTickEndPacket')) return false;
+    const owner = this.bot;
+    const generation = this.connection.generation;
+    this._clientTicker = new ClientTickScheduler({
+      name: this.name,
+      logger: this.logger,
+      now: this.now,
+      write: (name, packet) => {
+        if (this.bot !== owner || !this.connection.isCurrent(generation)) return;
+        const socket = client.socket;
+        if (socket && (socket.destroyed || socket.readyState === 'closed')) return;
+        if (name === 'tick_end') {
+          this._lastTickEndAt = this.now();
+          if (!this._tickEndSent) {
+            this._tickEndSent = true;
+            this.logger.info(`[${this.name}] client_tick_end loop active at ${this._clientTicker ? this._clientTicker.tickRate : 20} tps (1.21.2+ requirement)`);
+          }
+        }
+        original(name, packet);
+      }
+    });
+    this._clientTicker.start();
+    if (this._serverTickingState) this._clientTicker.setTickingState(this._serverTickingState);
+    this.connection.event('client_ticker_started', `${this._clientTicker.tickRate} tps`);
+    return true;
+  }
+
+  _stopClientTicker(reason = 'stopped') {
+    if (!this._clientTicker) return false;
+    const stopped = this._clientTicker.stop(reason);
+    this._clientTicker = null;
+    return stopped;
+  }
+
+  _noteKeepAliveReply() {
+    const at = this.now();
+    this._keepAlive.replies += 1;
+    this._keepAlive.lastReplyAt = at;
+    this.connection.event('keep_alive_reply', 'automatic reply written by minecraft-protocol', at);
+  }
+
+  _checkKeepAlive() {
+    if (!this.ready || !this._keepAlive.lastReceivedAt) return;
+    const age = this.now() - this._keepAlive.lastReceivedAt;
+    if (age > config.server.keepAliveMs && this.now() - this._keepAlive.lastWarningAt > config.server.keepAliveMs) {
+      this._keepAlive.warnings += 1;
+      this._keepAlive.lastWarningAt = this.now();
+      this.logger.warn(`[${this.name}] no keep-alive from the server for ${Math.round(age / 1000)}s; minecraft-protocol will close the socket at ${Math.round(config.server.keepAliveMs / 1000)}s`);
+    }
+  }
+
+  _connectionSnapshot(extra = {}) {
+    const snapshot = this.connection.snapshot();
+    return {
+      ...snapshot,
+      name: this.name,
+      version: this.version,
+      connected: this.connected,
+      spawned: this.spawned,
+      authenticated: this.authenticated,
+      ready: this.ready,
+      stageTimings: { ...this.stageTimings },
+      keepAlive: { ...this._keepAlive },
+      ticker: this._clientTicker ? this._clientTicker.snapshot() : null,
+      lastEventAt: this.lastEventAt || null,
+      lastEventAgeMs: this.lastEventAt ? Math.max(0, this.now() - this.lastEventAt) : null,
+      loginAt: this.loginAt || null,
+      spawnAt: this.spawnAt || null,
+      clientState: this.bot && this.bot._client ? this.bot._client.state : null,
+      serverTickingState: this._serverTickingState,
+      lastError: this.lastError || snapshot.lastError || null,
+      lastDisconnect: this.lastDisconnect,
+      ...extra
+    };
+  }
+
+  _captureDisconnectSnapshot(reason) {
+    const at = this.now();
+    const snapshot = {
+      at,
+      reason: this._redact(String(reason || 'connection ended')),
+      generation: this.connection.generation,
+      state: this.connection.state,
+      label: this.connection.label,
+      stage: this.connection.stage,
+      connected: Boolean(this.connected),
+      spawned: Boolean(this.spawned),
+      authenticated: Boolean(this.authenticated),
+      ready: Boolean(this.ready),
+      lastError: this.lastError,
+      kickKind: this.kickKind,
+      position: this.position ? { ...this.position } : null,
+      serverPosition: this.lastServerPosition ? { ...this.lastServerPosition } : null,
+      lastSpawn: this.lastSpawn,
+      stageTimings: { ...this.stageTimings },
+      keepAlive: { ...this._keepAlive },
+      ticker: this._clientTicker ? this._clientTicker.snapshot() : null,
+      lastEventAt: this.lastEventAt || null,
+      lastEventAgeMs: this.lastEventAt ? Math.max(0, at - this.lastEventAt) : null,
+      loginAt: this.loginAt || null,
+      spawnAt: this.spawnAt || null,
+      clientState: this.bot && this.bot._client ? this.bot._client.state : null,
+      serverTickingState: this._serverTickingState,
+      timeline: this.connection.snapshot(at).timeline
+    };
+    // The kicked/end pair must not overwrite the pre-cleanup evidence with the
+    // already-reset booleans of the second event.
+    if (this.lastDisconnect && this.lastDisconnect.generation === snapshot.generation) {
+      return this.lastDisconnect;
+    }
+    this.lastDisconnect = snapshot;
+    return snapshot;
   }
 
   _redact(value) {
@@ -235,32 +425,59 @@ class RealBot extends BotAdapter {
     this.logger.debug(line);
   }
 
-  _dumpTrace(reason) {
-    this.logger.error(`[${this.name}] TRACE DUMP (${this._redact(reason)}) version=${this.version} spawned=${this.spawned} authenticated=${this.authenticated} locked=${this._movementLock} held=${this._suppressedMovement} entity=${JSON.stringify(this.position)} serverPosition=${JSON.stringify(this.lastServerPosition)}`);
-    for (const entry of this._traceLog.slice(-40)) {
+  _dumpTrace(reason, captured = null) {
+    const snapshot = captured || this._captureDisconnectSnapshot(reason);
+    const at = snapshot.at ? new Date(snapshot.at).toISOString() : new Date().toISOString();
+    const summaryLevel = (snapshot.spawned || snapshot.ready) ? 'error' : 'warn';
+    this.logger[summaryLevel](`[${this.name}] DISCONNECT SNAPSHOT ${at} (${snapshot.reason}) generation=${snapshot.generation} state=${snapshot.state} stage=${snapshot.stage} spawned=${snapshot.spawned} authenticated=${snapshot.authenticated} connected=${snapshot.connected} ready=${snapshot.ready} held=${this._suppressedMovement} entity=${JSON.stringify(snapshot.position)} serverPosition=${JSON.stringify(snapshot.serverPosition)} timings=${JSON.stringify(snapshot.stageTimings)} keepAlive=${JSON.stringify(snapshot.keepAlive)} ticker=${JSON.stringify(snapshot.ticker)}`);
+    const entryLevel = (snapshot.spawned || snapshot.ready) ? 'error' : 'debug';
+    for (const entry of (snapshot.timeline || []).slice(-16)) {
+      this.logger[entryLevel](`[${this.name}] LIFECYCLE ${new Date(entry.at).toISOString()} ${entry.kind} ${entry.from ? `${entry.from}->` : ''}${entry.to || entry.stage || entry.event} ${entry.detail || ''}`);
+    }
+    for (const entry of this._traceLog.slice(-20)) {
       this.logger.error(`[${this.name}] TRACE ${entry.at} ${entry.direction} ${entry.packet} pos=${entry.x ?? '-'},${entry.y ?? '-'},${entry.z ?? '-'} yaw=${entry.yaw ?? '-'} pitch=${entry.pitch ?? '-'} ground=${entry.onGround} flags=${JSON.stringify(entry.flags)} auth=${entry.auth} locked=${entry.locked}`);
     }
   }
 
   _abortAuth(error) {
-    const failure = { ok: false, error: error || 'connection lost during password authentication', kind: 'connection' };
+    const failure = { ok: false, code: 'AUTH_ABORTED', error: error || 'connection lost during password authentication', kind: 'connection' };
     for (const finish of [...this._authWaiters]) finish(failure);
     this._authWaiters.clear();
   }
 
-  _failLoginWaiters(error) {
-    for (const waiter of this._loginWaiters) {
-      waiter.resolve({ ok: false, code: 'LOGIN_TIMEOUT', error: error || 'connection closed before login' });
+  _failTcpWaiters(error, code = 'CONNECTION_CLOSED') {
+    for (const waiter of [...this._tcpWaiters]) {
+      waiter.resolve({ ok: false, code, error: error || 'connection closed before TCP establishment', stage: 'tcp' });
+    }
+    this._tcpWaiters.clear();
+  }
+
+  _failLoginWaiters(error, code = 'CONNECTION_CLOSED') {
+    for (const waiter of [...this._loginWaiters]) {
+      waiter.resolve({ ok: false, code, error: error || 'connection closed before login', stage: waiter.stage || 'handshake' });
     }
     this._loginWaiters.clear();
   }
 
-  _failSpawnWaiters(error) {
+  _failSpawnWaiters(error, code = 'CONNECTION_CLOSED') {
     if (!this._spawnWaiters.size) return;
-    for (const waiter of this._spawnWaiters) {
-      waiter.resolve({ ok: false, error: error || this.lastError || 'connection closed before spawn', spawned: this.spawned, authenticated: this.authenticated });
+    for (const waiter of [...this._spawnWaiters]) {
+      waiter.resolve({
+        ok: false,
+        code,
+        error: error || this.lastError || 'connection closed before spawn',
+        stage: 'spawn',
+        spawned: this.spawned,
+        authenticated: this.authenticated
+      });
     }
     this._spawnWaiters.clear();
+  }
+
+  _armLoginWaiters(stage, timeoutMs) {
+    for (const waiter of this._loginWaiters) {
+      if (typeof waiter.arm === 'function') waiter.arm(stage, timeoutMs);
+    }
   }
 
   _loadMineflayer() {
@@ -273,26 +490,17 @@ class RealBot extends BotAdapter {
 
   async connect(options = {}) {
     if (this.shuttingDown) return { ok: false, error: 'shutting down', code: 'SHUTDOWN' };
-    if (this.connected) return { ok: true, already: true };
     // One socket per bot. A dashboard reconnect and the supervisor must never
     // race into two simultaneous logins for the same username.
     if (this._connectPromise) return this._connectPromise;
+    if (this.connected) return { ok: true, already: true };
     this._connectPromise = this._connectOnce(options).finally(() => { this._connectPromise = null; });
     return this._connectPromise;
   }
 
-  async _connectOnce({ timeoutMs = this.connectTimeoutMs } = {}) {
-    if (this.connected) return { ok: true, already: true };
-    if (!this._createBot && this.version === 'auto') {
-      return { ok: false, code: 'VERSION_UNRESOLVED', error: 'server version has not been resolved; the runtime must probe it before connecting' };
-    }
-    const createBot = this._loadMineflayer();
-    // Restore the previous socket before replacing it, then give this socket
-    // its own generation. Callbacks and the write wrapper can now prove they
-    // still belong to the active connection before touching anything.
+  _beginSession(startedAt = null) {
     this._restoreClientTrace();
-    this._clientGeneration++;
-    this._connectionGeneration = this._clientGeneration;
+    this._stopClientTicker('new session');
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
@@ -308,7 +516,101 @@ class RealBot extends BotAdapter {
     this._traceLog = [];
     this.lastServerPosition = null;
     this._authWaiters = new Set();
+    this._loginWaiters = new Set();
+    this._tcpWaiters = new Set();
+    this._pendingConnectionError = null;
     this._tickEndSent = false;
+    this._lastTickEndAt = 0;
+    this._serverTickingState = null;
+    this._tcpConnected = false;
+    this._tcpAt = 0;
+    this._loginReceivedAt = 0;
+    this._configurationAt = 0;
+    this._spawnedThisSession = false;
+    this._respawnPacketSeen = false;
+    this.lastDisconnectDumped = null;
+    this._keepAlive = { received: 0, replies: 0, lastReceivedAt: 0, lastReplyAt: 0, maxGapMs: 0, warnings: 0, lastWarningAt: 0 };
+    this.stageTimings = {
+      dnsMs: null, tcpMs: null, handshakeMs: null, configurationMs: null,
+      connectMs: null, loginMs: null, spawnMs: null, authMs: null, totalMs: null
+    };
+    this.stageStartedAt = { dns: 0, tcp: 0, handshake: 0, configuration: 0, spawn: 0, auth: 0 };
+    this.connection.begin({ host: this.host, port: this.port, version: this.version, username: this.name });
+    this._connectionGeneration = this.connection.generation;
+    this._clientGeneration = this.connection.generation;
+    this.connectStartedAt = startedAt === null ? this.now() : startedAt;
+    this.stageStartedAt.dns = this.now();
+    this.loginAt = 0;
+    this.spawnAt = 0;
+  }
+
+  async _preflightDns(timeoutMs) {
+    // The minecraft-protocol socket performs its own DNS (and SRV) lookup.
+    // Resolve once here so a DNS hang is a distinct, timed stage instead of
+    // being reported as a protocol-login timeout. Injected test adapters have
+    // no hostname to resolve.
+    if (this._createBot) {
+      const skipped = { ok: true, skipped: true, ms: 0, address: null };
+      this.stageTimings.dnsMs = 0;
+      this.connection.event('dns_skipped', 'injected createBot');
+      return skipped;
+    }
+    const budget = Math.max(1, Math.min(this.dnsTimeoutMs, timeoutMs));
+    const started = this.now();
+    this.connection.setStage('dns', { detail: `resolving ${this.host}`, timeoutMs: budget });
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.stageTimings.dnsMs = this.now() - started;
+        if (result.ok) {
+          this.stageStartedAt.tcp = this.now();
+          this.connection.event('dns_resolved', `${result.address || this.host} (${this.stageTimings.dnsMs}ms)`);
+        } else {
+          this.connection.event('dns_failed', result.error);
+        }
+        resolve({ ...result, ms: this.stageTimings.dnsMs });
+      };
+      const timer = setTimeout(() => finish({ ok: false, code: 'DNS_TIMEOUT', error: `DNS lookup for ${this.host} timed out after ${budget}ms` }), budget);
+      try {
+        dns.lookup(this.host, (err, address, family) => {
+          if (err) return finish({ ok: false, code: 'DNS_FAILED', error: `DNS lookup failed for ${this.host}: ${err.message}` });
+          finish({ ok: true, address, family });
+        });
+      } catch (err) {
+        finish({ ok: false, code: 'DNS_FAILED', error: `DNS lookup failed for ${this.host}: ${err.message}` });
+      }
+    });
+  }
+
+  async _connectOnce({ timeoutMs = this.connectTimeoutMs } = {}) {
+    if (this.connected) return { ok: true, already: true };
+    if (!this._createBot && this.version === 'auto') {
+      return { ok: false, code: 'VERSION_UNRESOLVED', error: 'server version has not been resolved; the runtime must probe it before connecting' };
+    }
+    // The attempt clock starts before mineflayer's lazy module/version load:
+    // otherwise a 30s login deadline appears as a 31.1s attempt and the extra
+    // second is misattributed to the server.
+    const attemptStartedAt = this.now();
+    const createBot = this._loadMineflayer();
+    this._beginSession(attemptStartedAt);
+    // Keep the injected-adapter path synchronous: tests and the simulator
+    // emit events immediately after connect() is called. A real connection
+    // has no socket yet, so awaiting DNS cannot miss an event.
+    let dnsResult;
+    if (this._createBot) {
+      this.stageTimings.dnsMs = 0;
+      this.connection.event('dns_skipped', 'injected createBot');
+      dnsResult = { ok: true, skipped: true, ms: 0, address: null };
+    } else {
+      dnsResult = await this._preflightDns(Math.min(this.dnsTimeoutMs, timeoutMs));
+    }
+    if (!dnsResult.ok) {
+      return this._failConnect(dnsResult.code || 'DNS_FAILED', dnsResult.error, 'dns', { dnsMs: this.stageTimings.dnsMs });
+    }
+    this._transition(STATES.TCP_CONNECTING, `connecting to ${this.host}:${this.port}`, { stage: 'tcp', timeoutMs: this.connectTimeoutMs });
     try {
       this.bot = createBot({
         username: this.name,
@@ -326,8 +628,7 @@ class RealBot extends BotAdapter {
         physicsEnabled: true
       });
     } catch (err) {
-      this.lastError = err.message;
-      return { ok: false, error: err.message };
+      return this._failConnect('CREATE_BOT_FAILED', err.message, 'tcp', { errorName: err.name });
     }
     // A shutdown can land between the loop's last check and createBot(); close
     // the socket immediately rather than letting it outlive the runtime.
@@ -337,94 +638,225 @@ class RealBot extends BotAdapter {
     }
     this.stats.connections++;
     this._attachEvents();
-    this.connectStartedAt = Date.now();
-    this.loginAt = 0;
-    this.spawnAt = 0;
-    const login = await this.waitForLogin({ timeoutMs: Math.min(this.loginTimeoutMs, timeoutMs) });
-    this.stageTimings.connectMs = Date.now() - this.connectStartedAt;
+    const tcp = await this.waitForTcp({ timeoutMs: Math.min(this.connectTimeoutMs, timeoutMs) });
+    if (!tcp.ok) {
+      return this._failConnect(tcp.code || 'TCP_TIMEOUT', tcp.error, 'tcp', { skipped: Boolean(tcp.skipped) });
+    }
+    const login = await this.waitForLogin({
+      timeoutMs: Math.min(this.loginTimeoutMs, timeoutMs),
+      configurationTimeoutMs: Math.min(this.configurationTimeoutMs, timeoutMs)
+    });
+    this.stageTimings.connectMs = this.now() - this.connectStartedAt;
     if (!login.ok) {
-      this.lastError = login.error;
-      await this.disconnect('protocol login timed out');
-      return { ok: false, ...login, spawned: false, authenticated: false };
+      return this._failConnect(login.code || 'LOGIN_TIMEOUT', login.error, login.stage || 'handshake');
     }
     this.stageTimings.loginMs = this.loginAt - this.connectStartedAt;
-    const stageStart = Date.now();
+    if (!this._spawnedThisSession) {
+      if (this.connection.state === STATES.AWAITING_SPAWN) {
+        this.connection.setStage('spawn', { detail: 'waiting for the first spawn packet', timeoutMs: this.spawnTimeoutMs });
+      }
+      this.stageStartedAt.spawn = this.stageStartedAt.spawn || this.now();
+    }
     const result = await this.waitForSpawn({ timeoutMs: Math.min(this.spawnTimeoutMs, timeoutMs) });
-    this.stageTimings.spawnMs = Date.now() - stageStart;
+    if (this.stageTimings.spawnMs == null && this.stageStartedAt.spawn) {
+      this.stageTimings.spawnMs = this.now() - this.stageStartedAt.spawn;
+    }
     if (!result.ok) {
-      // Do not leave a half-open socket behind for the next retry.
-      await this.disconnect('connect attempt failed');
-      return result;
+      return this._failConnect(result.code || 'SPAWN_TIMEOUT', result.error, 'spawn', { spawned: result.spawned, authenticated: result.authenticated });
     }
-    if (result.ok) {
-      this.startedAt = Date.now();
-      this.uptimeMs = 0;
-      this.stageTimings.authMs = Date.now() - stageStart;
-      const auth = await this._handleLoginCommands();
-      this.stageTimings.authMs = Date.now() - stageStart;
-      if (auth.ok === false) {
-        this.lastError = auth.error;
-        this.authenticated = false;
-        await this.disconnect('password authentication failed');
-        return { ok: false, error: auth.error, code: 'AUTH_FAILED', spawned: false, authenticated: false };
-      }
-      result.authenticated = this.authenticated;
-      this.lastSessionEndedAt = 0;
-      if (!this.connected || !this.spawned || !this.authenticated) {
-        await this.disconnect('connection lost before ready');
-        return { ok: false, error: this.lastError || 'connection closed before the bot became ready', code: 'NOT_READY', spawned: false, authenticated: false };
-      }
-      this._startAntiAfk();
+    this.startedAt = this.now();
+    this.uptimeMs = 0;
+    this.stageStartedAt.auth = this.now();
+    this.stageTimings.authMs = 0;
+    const auth = await this._handleLoginCommands();
+    this.stageTimings.authMs = this.now() - this.stageStartedAt.auth;
+    if (auth.ok === false) {
+      return this._failConnect(auth.code || 'AUTH_FAILED', auth.error, 'auth', { authFailed: true });
     }
+    // Authentication success is monotonic for this session. A respawn packet
+    // that arrives later may not undo it.
+    this._applySpawnAuth();
+    if (!this.ready) {
+      return this._failConnect('NOT_READY', this.lastError || 'connection closed before the bot became ready', this.connection.stage);
+    }
+    this._transition(STATES.READY, 'ready: socket, spawn and authentication verified', { stage: 'ready' });
+    result.authenticated = this.authenticated;
+    this.lastSessionEndedAt = 0;
+    this.stageTimings.totalMs = this.now() - this.connectStartedAt;
+    this._startAntiAfk();
     return result;
   }
 
+  /**
+   * Resolve a connection failure exactly once. The pre-cleanup snapshot is
+   * captured before any boolean is reset and is what the log dump prints.
+   */
+  async _failConnect(code, error, stage, details = {}) {
+    // A kick/error handler can win the race against the pending waiter. Keep
+    // the first terminal explanation instead of overwriting it with a
+    // downstream timeout.
+    if (this.connection.terminal && this.lastDisconnectDumped === this.connection.generation) {
+      const failure = this.connection.failure || {};
+      return {
+        ok: false,
+        code: failure.code || code,
+        error: failure.error || String(error || 'connection failed'),
+        stage: failure.stage || stage,
+        sessionId: this.connection.generation,
+        elapsedMs: this.connection.elapsedMs(),
+        stageTimings: { ...this.stageTimings },
+        lastStage: this.connection.stage
+      };
+    }
+    const message = String(error || 'connection failed');
+    this.lastError = this._redact(message);
+    this.stageTimings.totalMs = this.connectStartedAt ? this.now() - this.connectStartedAt : null;
+    const snapshot = this._captureDisconnectSnapshot(`${code}: ${message}`);
+    this.connection.fail(code, this.lastError, { stage, details: { ...details, snapshotAt: snapshot.at } });
+    this._keepAlive = this._keepAlive || {};
+    this._dumpTrace(`${code}: ${message}`, snapshot);
+    await this.disconnect(`${code}: ${message}`);
+    return {
+      ok: false,
+      code,
+      error: this.lastError,
+      stage,
+      sessionId: snapshot.generation,
+      elapsedMs: this.now() - this.connectStartedAt,
+      stageTimings: { ...this.stageTimings },
+      lastStage: this.connection.stage,
+      spawned: snapshot.spawned,
+      authenticated: snapshot.authenticated
+    };
+  }
+
+  waitForTcp({ timeoutMs = this.connectTimeoutMs } = {}) {
+    if (!this.bot || !this.bot._client) {
+      // Injected test adapters have no protocol client; the login waiter
+      // remains the authoritative timeout for them.
+      return Promise.resolve({ ok: true, skipped: true, at: this.now() });
+    }
+    if (this._pendingConnectionError) {
+      return Promise.resolve({ ok: false, code: this._pendingConnectionError.code, error: this._pendingConnectionError.error, stage: 'tcp' });
+    }
+    if (this._tcpConnected) return Promise.resolve({ ok: true, at: this._tcpAt || this.now() });
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this._tcpWaiters.delete(waiter);
+        resolve(value);
+      };
+      const waiter = { finish, resolve: finish };
+      const timer = setTimeout(() => {
+        finish({
+          ok: false,
+          code: 'TCP_TIMEOUT',
+          error: `timed out after ${timeoutMs}ms establishing TCP to ${this.host}:${this.port}`,
+          stage: 'tcp'
+        });
+      }, timeoutMs);
+      this._tcpWaiters.add(waiter);
+    });
+  }
+
   _markEvent() {
-    this.lastEventAt = Date.now();
+    this.lastEventAt = this.now();
   }
 
   _attachEvents() {
     const bot = this.bot;
     if (!bot) return;
+    const generation = this.connection.generation;
+    const owns = () => this.bot === bot && this.connection.isCurrent(generation);
+    this._ownsEvent = owns;
     bot.on('login', () => {
-      if (this.bot !== bot) return;
+      if (!owns()) return;
       this._markEvent();
-      this.loginAt = Date.now();
-      for (const waiter of this._loginWaiters) waiter.resolve({ ok: true });
-      this._loginWaiters.clear();
-      this.logger.info(`[${this.name}] TRACE login event (protocol=${bot.protocolVersion}, version=${bot.version}, physics=${bot.physicsEnabled}, passwordRequired=${this.passwordRequired})`);
+      this.loginAt = this.now();
+      this._loginReceivedAt = this.loginAt;
+      this.stageStartedAt.spawn = this.loginAt;
+      this.stageTimings.configurationMs = this._configurationAt ? this.loginAt - this._configurationAt : null;
+      this.stageTimings.loginMs = this.loginAt - this.connectStartedAt;
+      this.stageTimings.connectMs = this.stageTimings.loginMs;
+      this.stageStartedAt.handshake = this.stageStartedAt.handshake || this._tcpAt || this.connectStartedAt;
+      if (!this._configurationAt) this.stageTimings.handshakeMs = this.loginAt - this.stageStartedAt.handshake;
+      if (this.connection.state === STATES.TCP_CONNECTING) {
+        this._transition(STATES.HANDSHAKING, 'socket connected; protocol handshake sent', { stage: 'handshake', timeoutMs: this.loginTimeoutMs });
+      }
+      if (this.connection.state === STATES.HANDSHAKING) {
+        this._transition(STATES.CONFIGURATION, 'login success; configuration exchange complete', { stage: 'configuration' });
+      }
+      this._transition(STATES.AWAITING_SPAWN, 'protocol login accepted; waiting for spawn', { stage: 'spawn', timeoutMs: this.spawnTimeoutMs });
+      this.connection.event('login', `protocol=${bot.protocolVersion} version=${bot.version} passwordRequired=${this.passwordRequired}`);
+      this.logger.info(`[${this.name}] TRACE login event (protocol=${bot.protocolVersion}, version=${bot.version}, physics=${bot.physicsEnabled}, passwordRequired=${this.passwordRequired}, generation=${generation})`);
       this._installClientTrace();
       if (this.passwordRequired) this._lockMovement();
+      this._startClientTicker();
       this.authenticated = !this.passwordRequired;
+      for (const waiter of [...this._loginWaiters]) waiter.resolve({ ok: true, at: this.loginAt, stage: 'spawn' });
+      this._loginWaiters.clear();
       this.logger.info(`[${this.name}] protocol login accepted with ${this.host}${this.passwordRequired ? '; waiting for password authentication' : ''}`);
     });
     bot.on('spawn', () => {
-      if (this.bot !== bot) return;
+      if (!owns()) return;
       this._markEvent();
-      this.logger.debug(`[${this.name}] TRACE spawn event (position=${bot.entity?.position ? `${bot.entity.position.x.toFixed(3)},${bot.entity.position.y.toFixed(3)},${bot.entity.position.z.toFixed(3)}` : 'none'}, onGround=${bot.entity?.onGround}, locked=${this._movementLock})`);
-      const firstSpawn = !this.spawned;
-      this.connected = true;
-      this.spawned = true;
-      this.spawnAt = Date.now();
+      this.logger.debug(`[${this.name}] TRACE spawn event (position=${bot.entity?.position ? `${bot.entity.position.x.toFixed(3)},${bot.entity.position.y.toFixed(3)},${bot.entity.position.z.toFixed(3)}` : 'none'}, onGround=${bot.entity?.onGround}, locked=${this._movementLock}, state=${this.connection.state})`);
+      const manuallySpawned = !this._spawnedThisSession && Boolean(this.spawned);
+      const firstSpawn = !this._spawnedThisSession && !this.spawned;
+      const respawned = manuallySpawned || this.connection.state === STATES.RESPAWNING || (!firstSpawn && this._respawnPacketSeen);
+      if (!firstSpawn && !respawned) {
+        // Mineflayer's health plugin can emit a second `spawn` when a positive
+        // update_health arrives shortly after the first one. Without a
+        // serverbound respawn packet this is a duplicate spawn event, not a
+        // death/respawn cycle, and must not reset the session clock or be
+        // reported as "respawned".
+        this.connection.event('spawn_duplicate', 'spawn event without a respawn packet; not treated as a respawn');
+        this.logger.info(`[${this.name}] duplicate spawn event at ${this._vec(bot.entity?.position).x},${this._vec(bot.entity?.position).y},${this._vec(bot.entity?.position).z} (not a respawn: no respawn packet for this session)`);
+        this.position = this._vec(bot.entity?.position);
+        return;
+      }
+      this._spawnedThisSession = true;
+      this._respawnPacketSeen = false;
+      this.spawnAt = this.now();
       this.respawnAttempts = 0;
       if (this._respawnTimer) { clearTimeout(this._respawnTimer); this._respawnTimer = null; }
       this.lastSpawn = {
         at: this.spawnAt,
-        respawned: !firstSpawn,
+        respawned,
         position: this._vec(bot.entity?.position),
         health: bot.health,
         food: bot.food,
         dimension: bot.game?.dimension || 'overworld'
       };
+      // First spawn: awaiting_spawn -> authenticating/ready. A later spawn
+      // after a death comes from respawning. A duplicate spawn while already
+      // ready is acknowledged but does not rewrite the lifecycle.
+      const target = (this.passwordRequired && !this.authConfirmed) ? STATES.AUTHENTICATING : STATES.READY;
+      if (firstSpawn && this.connection.state !== STATES.AWAITING_SPAWN) {
+        // Be tolerant of a proxy that omitted the configuration events, but
+        // keep the transitions valid by walking through the missing states.
+        if (this.connection.state === STATES.HANDSHAKING) this._transition(STATES.AWAITING_SPAWN, 'spawn arrived before login event');
+        else if (this.connection.state === STATES.TCP_CONNECTING) {
+          this._transition(STATES.HANDSHAKING, 'spawn arrived before connect event');
+          this._transition(STATES.AWAITING_SPAWN, 'spawn arrived before login event');
+        }
+      }
+      this._transition(target, firstSpawn ? 'first spawn packet' : 'respawn packet', { stage: target === STATES.READY ? 'ready' : 'auth' });
       this._applySpawnAuth();
+      if (!this._clientTicker && this._supportFeature('sendsClientTickEndPacket')) this._startClientTicker();
       this.position = this._vec(bot.entity?.position);
       this.spawnPosition = { ...this.position };
       this.dimension = bot.game?.dimension || 'overworld';
       this._syncInventory();
+      this.stageTimings.spawnMs = this.loginAt ? this.spawnAt - this.loginAt : this.spawnAt - this.connectStartedAt;
+      this.connection.event('spawn', `position=${this.position.x},${this.position.y},${this.position.z} respawned=${respawned}`);
       // Some proxies emit a second spawn packet after the initial teleport.
       // Keep the event useful without logging two identical "spawned" lines.
       this.logger.info(`[${this.name}] ${firstSpawn ? 'spawned' : 'respawned'} at ${this.position.x},${this.position.y},${this.position.z}`);
-      for (const waiter of this._spawnWaiters) waiter.resolve({ ok: true, spawned: true, authenticated: this.authenticated });
+      for (const waiter of [...this._spawnWaiters]) waiter.resolve({ ok: true, spawned: true, authenticated: this.authenticated });
       this._spawnWaiters.clear();
     });
     bot.on('move', () => {
@@ -511,44 +943,126 @@ class RealBot extends BotAdapter {
       this._scheduleRespawn();
     });
     bot.on('kicked', (reason) => {
-      if (this.bot !== bot) return;
+      if (!owns()) return;
       this.lastError = this._redact(this._formatKickReason(reason));
       const kick = classifyKick(this.lastError);
       this.kickKind = kick.kind;
       if (kick.pauseRetries) this.retryPaused = true;
-      if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
+      if (this.spawned && this.authenticated) this.lastSessionEndedAt = this.now();
       this._stopAntiAfk();
-      this.connected = false;
-      this.spawned = false;
-      this.authenticated = false;
+      this._stopClientTicker(`kicked: ${kick.kind}`);
+      const snapshot = this._captureDisconnectSnapshot(`kicked (${kick.label}): ${this.lastError}`);
+      this.connection.fail('KICKED', this.lastError, { stage: this.connection.stage, details: { kickKind: kick.kind, label: kick.label } });
       this.logger.warn(`[${this.name}] kicked (${kick.label}): ${this.lastError}`);
-      this._dumpTrace(`kicked: ${this.lastError}`);
+      this.lastDisconnectDumped = snapshot.generation;
+      this._dumpTrace(`kicked: ${this.lastError}`, snapshot);
       this._abortAuth(this.lastError);
-      this._failLoginWaiters(this.lastError);
-      this._failSpawnWaiters(this.lastError);
+      this._failTcpWaiters(this.lastError, 'KICKED');
+      this._failLoginWaiters(this.lastError, 'KICKED');
+      this._failSpawnWaiters(this.lastError, 'KICKED');
       if (kick.pauseRetries) {
         this.logger.error(`[${this.name}] automatic retries paused after ${kick.kind} kick; an explicit dashboard reconnect is required`);
       }
       if (/invalid move player packet/i.test(this.lastError)) {
         this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
       }
+      // The lifecycle is already terminal and its end event is ignored by the
+      // generation gate. Close the library client explicitly so a kicked bot
+      // cannot keep timers or a half-open socket alive until reconnect.
+      try { bot.quit('kicked'); } catch (_) { /* already gone */ }
     });
     bot.on('error', (err) => {
-      if (this.bot !== bot) return;
+      if (!owns()) return;
       this.lastError = this._redact(err.message);
+      this._pendingConnectionError = { error: this.lastError, code: err.code || 'CONNECTION_ERROR', at: this.now() };
       this.logger.error(`[${this.name}] connection error${err.code ? ` (${err.code})` : ''}: ${this.lastError}`);
+      this.connection.event('connection_error', `${err.code || ''} ${this.lastError}`.trim());
+      this._captureDisconnectSnapshot(`connection error${err.code ? ` (${err.code})` : ''}: ${this.lastError}`);
       this._abortAuth(this.lastError);
+      this._failTcpWaiters(this.lastError);
       this._failLoginWaiters(this.lastError);
       this._failSpawnWaiters(this.lastError);
     });
     if (bot._client && typeof bot._client.on === 'function') {
-      bot._client.on('keep_alive', () => {
-        if (this.bot !== bot) return;
-        this._markEvent();
-        this.logger.debug(`[${this.name}] TRACE keep_alive received; replying`);
+      const client = bot._client;
+      const markTcp = () => {
+        if (!owns() || this._tcpConnected) return;
+        this._tcpConnected = true;
+        this._tcpAt = this.now();
+        this.stageTimings.tcpMs = this._tcpAt - (this.stageStartedAt.tcp || this.connectStartedAt);
+        this.stageStartedAt.handshake = this._tcpAt;
+        this.connection.setStage('handshake', { detail: 'TCP connected; sending handshake', timeoutMs: this.loginTimeoutMs });
+        if (this.connection.state === STATES.TCP_CONNECTING) {
+          this._transition(STATES.HANDSHAKING, 'TCP connected; handshake sent', { stage: 'handshake', timeoutMs: this.loginTimeoutMs });
+        }
+        this.connection.event('tcp_connected', `${this.host}:${this.port} in ${this.stageTimings.tcpMs}ms`);
+        for (const waiter of [...this._tcpWaiters]) waiter.resolve({ ok: true, at: this._tcpAt, elapsedMs: this.stageTimings.tcpMs });
+        this._tcpWaiters.clear();
+      };
+      const attachSocket = (socket) => {
+        if (!owns()) return;
+        if (!socket) return markTcp();
+        if (socket.readyState === 'open' || (socket.connecting === false && !socket.destroyed)) return markTcp();
+        socket.once('connect', markTcp);
+        socket.once('error', (err) => {
+          if (!owns()) return;
+          this._failTcpWaiters(`TCP socket error: ${err.message}`, 'TCP_ERROR');
+        });
+      };
+      // `client.connect` fires when the library has created (or adopted) the
+      // socket, after its DNS/SRV step. Actual TCP readiness is the socket's
+      // own connect event. Attach both now and on the library event so a
+      // synchronous stream adapter cannot race past us.
+      client.once('connect', () => attachSocket(client.socket));
+      if (client.socket) attachSocket(client.socket);
+      client.on('start_configuration', () => {
+        if (!owns()) return;
+        this._configurationAt = this.now();
+        this.stageTimings.handshakeMs = this._configurationAt - (this.stageStartedAt.handshake || this._tcpAt || this.connectStartedAt);
+        this.stageStartedAt.configuration = this._configurationAt;
+        this._stopClientTicker('re-entering configuration');
+        if (this.connection.state === STATES.TCP_CONNECTING) this._transition(STATES.HANDSHAKING, 'configuration requested before connect event', { stage: 'handshake' });
+        if (this.connection.state === STATES.HANDSHAKING) {
+          this._transition(STATES.CONFIGURATION, 'server configuration exchange', { stage: 'configuration', timeoutMs: this.configurationTimeoutMs });
+        }
+        this._armLoginWaiters('configuration', this.configurationTimeoutMs);
+        this.connection.event('start_configuration', 'configuration state entered');
       });
-      bot._client.on('position', (packet) => {
-        if (this.bot !== bot) return;
+      client.on('finish_configuration', () => {
+        if (!owns()) return;
+        this.connection.event('finish_configuration', 'configuration acknowledged by the server');
+        if (!this._clientTicker && String(client.state || '').toLowerCase() === 'play') this._startClientTicker();
+      });
+      client.on('set_ticking_state', (packet = {}) => {
+        if (!owns()) return;
+        // 26.1 names these fields tick_rate/is_frozen on the wire. Accept the
+        // camelCase aliases too so older minecraft-data schemas work.
+        const tickRate = packet.tick_rate ?? packet.tickRate;
+        const isFrozen = packet.is_frozen ?? packet.isFrozen;
+        this._serverTickingState = { tickRate, isFrozen };
+        if (this._clientTicker) this._clientTicker.setTickingState({ tickRate, isFrozen });
+        this.connection.event('set_ticking_state', `rate=${tickRate} frozen=${isFrozen}`);
+      });
+      client.on('step_tick', (packet = {}) => {
+        if (!owns()) return;
+        const steps = packet.tick_steps ?? packet.tickSteps ?? packet.steps ?? packet.ticks ?? 0;
+        if (this._clientTicker) this._clientTicker.stepTicks(steps);
+        this.connection.event('step_tick', `steps=${steps}`);
+      });
+      client.on('keep_alive', () => {
+        if (!owns()) return;
+        this._markEvent();
+        const at = this.now();
+        if (this._keepAlive.lastReceivedAt) {
+          this._keepAlive.maxGapMs = Math.max(this._keepAlive.maxGapMs, at - this._keepAlive.lastReceivedAt);
+        }
+        this._keepAlive.received += 1;
+        this._keepAlive.lastReceivedAt = at;
+        this.connection.event('keep_alive', 'received; minecraft-protocol replies automatically');
+        this.logger.debug(`[${this.name}] TRACE keep_alive received; minecraft-protocol replies automatically`);
+      });
+      client.on('position', (packet) => {
+        if (!owns()) return;
         this.lastServerPosition = {
           x: Number.isFinite(packet.x) ? Number(packet.x.toFixed(3)) : packet.x,
           y: Number.isFinite(packet.y) ? Number(packet.y.toFixed(3)) : packet.y,
@@ -560,14 +1074,19 @@ class RealBot extends BotAdapter {
         };
         this.logger.debug(`[${this.name}] TRACE in position x=${packet.x} y=${packet.y} z=${packet.z} yaw=${packet.yaw} pitch=${packet.pitch} flags=${JSON.stringify(packet.flags)} teleportId=${packet.teleportId}`);
       });
-      bot._client.on('respawn', () => {
-        if (this.bot === bot) this.logger.debug(`[${this.name}] TRACE in respawn`);
+      client.on('respawn', () => {
+        if (!owns()) return;
+        this._respawnPacketSeen = true;
+        this.connection.event('respawn', 'server respawn packet');
+        if (this.passwordRequired && !this.authConfirmed) this._transition(STATES.AUTHENTICATING, 'respawn while authentication is pending', { stage: 'auth' });
+        else this._transition(STATES.RESPAWNING, 'server respawn packet; waiting for spawn', { stage: 'spawn' });
+        this.logger.debug(`[${this.name}] TRACE in respawn`);
       });
-      bot._client.on('update_health', (packet) => {
-        if (this.bot === bot) this.logger.debug(`[${this.name}] TRACE in update_health health=${packet.health} food=${packet.food}`);
+      client.on('update_health', (packet) => {
+        if (owns()) this.logger.debug(`[${this.name}] TRACE in update_health health=${packet.health} food=${packet.food}`);
       });
-      bot._client.on('packet', (data, meta) => {
-        if (this.bot !== bot) return;
+      client.on('packet', (data, meta) => {
+        if (!owns()) return;
         this._markEvent();
         if (!meta) return;
         if (['kick_disconnect', 'system_chat', 'player_loaded', 'start_configuration', 'login'].includes(meta.name)) {
@@ -576,15 +1095,22 @@ class RealBot extends BotAdapter {
       });
     }
     bot.on('end', (reason) => {
-      if (this.bot !== bot) return;
-      if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
+      if (!owns()) return;
+      if (this.spawned && this.authenticated) this.lastSessionEndedAt = this.now();
       this._stopAntiAfk();
-      this.connected = false;
-      this.spawned = false;
-      this.authenticated = false;
+      this._stopClientTicker(`end: ${reason || 'end'}`);
       const detail = this.lastError && this.lastError !== reason ? `${reason || 'end'}: ${this.lastError}` : (reason || 'end');
+      const snapshot = this._captureDisconnectSnapshot(`end: ${detail}`);
+      if (!this.connection.terminal) {
+        this.connection.close(this._redact(String(detail)));
+      }
       this.logger.warn(`[${this.name}] disconnected: ${this._redact(detail)}`);
+      if (!this.lastDisconnectDumped || this.lastDisconnectDumped !== snapshot.generation) {
+        this.lastDisconnectDumped = snapshot.generation;
+        this._dumpTrace(`end: ${detail}`, snapshot);
+      }
       this._abortAuth(this.lastError || `connection closed (${reason || 'end'})`);
+      this._failTcpWaiters(this.lastError || `connection closed (${reason || 'end'})`);
       this._failLoginWaiters(this.lastError || `connection closed (${reason || 'end'})`);
       this._failSpawnWaiters(this.lastError || `connection closed (${reason || 'end'})`);
     });
@@ -717,30 +1243,83 @@ class RealBot extends BotAdapter {
     return { x: Number(position.x.toFixed(3)), y: Number(position.y.toFixed(3)), z: Number(position.z.toFixed(3)) };
   }
 
-  waitForLogin({ timeoutMs = this.loginTimeoutMs } = {}) {
+  waitForLogin({ timeoutMs = this.loginTimeoutMs, configurationTimeoutMs = this.configurationTimeoutMs } = {}) {
     if (this.loginAt) return Promise.resolve({ ok: true, already: true, loginAt: this.loginAt });
+    if (this._pendingConnectionError) {
+      return Promise.resolve({ ok: false, code: this._pendingConnectionError.code, error: this._pendingConnectionError.error, stage: this.connection.stage });
+    }
     return new Promise((resolve) => {
-      const waiter = { resolve: null };
-      const timer = setTimeout(() => {
+      let settled = false;
+      let timer = null;
+      let stage = this.connection.state === STATES.CONFIGURATION ? 'configuration' : 'handshake';
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         this._loginWaiters.delete(waiter);
-        resolve({ ok: false, code: 'LOGIN_TIMEOUT', error: `timed out after ${timeoutMs}ms waiting for protocol login` });
-      }, timeoutMs);
-      waiter.resolve = (value) => { clearTimeout(timer); resolve(value); };
+        resolve(value);
+      };
+      const arm = (nextStage, budget) => {
+        if (settled) return;
+        if (nextStage) stage = nextStage;
+        clearTimeout(timer);
+        const at = this.now();
+        timer = setTimeout(() => {
+          finish({
+            ok: false,
+            code: stage === 'configuration' ? 'CONFIGURATION_TIMEOUT' : 'LOGIN_TIMEOUT',
+            error: `timed out after ${budget}ms in ${stage} stage waiting for protocol login`,
+            stage,
+            elapsedMs: this.now() - at
+          });
+        }, budget);
+      };
+      const waiter = {
+        stage,
+        resolve: finish,
+        arm: (nextStage, budget = configurationTimeoutMs) => arm(nextStage, budget)
+      };
       this._loginWaiters.add(waiter);
+      arm(stage, timeoutMs);
     });
   }
 
   waitForSpawn({ timeoutMs = this.spawnTimeoutMs } = {}) {
-    if (this.ready) return Promise.resolve({ ok: true, spawned: true, authenticated: true });
+    // A password-required bot is spawned but not *ready* until /login is
+    // confirmed. The spawn event can arrive before this waiter is registered
+    // (the login waiter resolves in the same turn), so checking `ready` here
+    // made the adapter wait the whole spawn timeout despite a valid spawn.
+    if (this._spawnedThisSession && this.spawned) {
+      return Promise.resolve({ ok: true, spawned: true, authenticated: this.authenticated });
+    }
     return new Promise((resolve) => {
-      const waiter = { resolve: null };
-      const timer = setTimeout(() => {
+      let settled = false;
+      let timer = null;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         this._spawnWaiters.delete(waiter);
-        this.lastError = this.lastError || 'timed out waiting for spawn';
-        resolve({ ok: false, error: this.lastError, spawned: this.spawned, authenticated: this.authenticated });
-      }, timeoutMs);
-      waiter.resolve = (value) => { clearTimeout(timer); resolve(value); };
+        resolve(value);
+      };
+      const waiter = { resolve: finish };
+      const startedAt = this.now();
+      const arm = () => {
+        timer = setTimeout(() => {
+          this.lastError = this.lastError || 'timed out waiting for spawn';
+          finish({
+            ok: false,
+            code: 'SPAWN_TIMEOUT',
+            error: `timed out after ${timeoutMs}ms waiting for spawn`,
+            stage: 'spawn',
+            elapsedMs: this.now() - startedAt,
+            spawned: this.spawned,
+            authenticated: this.authenticated
+          });
+        }, timeoutMs);
+      };
       this._spawnWaiters.add(waiter);
+      arm();
     });
   }
 
@@ -768,12 +1347,12 @@ class RealBot extends BotAdapter {
         else if (failure.test(clean)) finish({ ok: false, error: clean, kind });
       });
       this._authWaiters.add(finish);
-      timer = setTimeout(() => finish({ ok: false, error: `no ${kind} confirmation from the server`, kind }), this.authTimeoutMs);
+      timer = setTimeout(() => finish({ ok: false, code: 'AUTH_TIMEOUT', error: `timed out after ${this.authTimeoutMs}ms waiting for ${kind} confirmation from the server`, kind }), this.authTimeoutMs);
       this.logger.debug(`[${this.name}] auth ${kind}: sending command (password redacted), timeout=${this.authTimeoutMs}ms`);
       try {
         this.bot.chat(command);
       } catch (err) {
-        finish({ ok: false, error: err.message, kind });
+        finish({ ok: false, code: 'AUTH_SEND_FAILED', error: err.message, kind });
       }
     });
   }
@@ -783,14 +1362,14 @@ class RealBot extends BotAdapter {
       this.authenticated = true;
       return { ok: true, required: false };
     }
-    if (!this.bot || !this.connected || !this.spawned) return { ok: false, error: 'cannot authenticate before spawn' };
+    if (!this.bot || !this.connected || !this.spawned) return { ok: false, code: 'AUTH_DISCONNECTED', error: 'cannot authenticate before spawn' };
     // Freeze movement until the password is accepted. physicsEnabled alone is
     // not enough: mineflayer's updatePosition() keeps sending packets.
     this._lockMovement();
     if (this.bot.clearControlStates) this.bot.clearControlStates();
     this.bot.physicsEnabled = false;
     await sleep(this.authDelayMs);
-    if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
+    if (!this.connected || !this.spawned) return { ok: false, code: 'AUTH_DISCONNECTED', error: this.lastError || 'disconnected before password authentication' };
 
     let registered = false;
     // Existing accounts are login-only. Registration is opt-in because every
@@ -808,7 +1387,7 @@ class RealBot extends BotAdapter {
     } else if (this.registerPassword && this.hasRegistered && !this.loginPassword) {
       return { ok: false, error: 'account is already registered; set MC_LOGIN_PASSWORD for reconnects', kind: 'login' };
     }
-    if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password authentication' };
+    if (!this.connected || !this.spawned) return { ok: false, code: 'AUTH_DISCONNECTED', error: this.lastError || 'disconnected before password authentication' };
     if (!this.loginPassword) {
       return { ok: false, error: 'no login password configured; set MC_LOGIN_PASSWORD', kind: 'login' };
     }
@@ -829,11 +1408,14 @@ class RealBot extends BotAdapter {
       }
       if (!result.ok) return result;
     }
-    if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password confirmation' };
+    if (!this.connected || !this.spawned) return { ok: false, code: 'AUTH_DISCONNECTED', error: this.lastError || 'disconnected before password confirmation' };
     this.authenticated = true;
     this.authConfirmed = true;
     this.lastError = null;
     this.kickKind = null;
+    if (this.connection.state === STATES.AUTHENTICATING) {
+      this._transition(STATES.READY, 'password authentication confirmed', { stage: 'ready' });
+    }
     this._unlockMovement();
     if (this.bot) this.bot.physicsEnabled = true;
     this.logger.info(`[${this.name}] password authentication confirmed${registered ? ' (registered)' : ''}`);
@@ -1652,13 +2234,12 @@ class RealBot extends BotAdapter {
   get chatLog() { return this._chatLog.slice(-50); }
 
   /**
-   * Keep idle sessions alive without fighting the pathfinder.
+   * Keep-alive verification only.
    *
-   * A swing every 30s proves the client is active. Some idle-kick plugins only
-   * count real movement, so every fourth pulse also taps jump while the bot is
-   * standing safely on the ground with no path, dig or container open. This
-   * never runs mid-task and the movement is vertical, so it cannot walk a bot
-   * off a farm or into lava.
+   * A swing every 30s is a real animation packet, not a position change, and
+   * proves the session is writable. V6 does not send synthetic movement to
+   * defeat idle-kick plugins: the fix for a frozen client is the real 20 tps
+   * client tick loop, not fabricated walking or jumping.
    */
   _startAntiAfk() {
     this._stopAntiAfk();
@@ -1668,28 +2249,11 @@ class RealBot extends BotAdapter {
 
   _antiAfkPulse() {
     if (!this.ready || !this.bot) return;
+    this._checkKeepAlive();
     try {
       if (typeof this.bot.swingArm === 'function') this.bot.swingArm();
-      this._antiAfkPulses++;
+      this._antiAfkPulses += 1;
     } catch (_) { /* an animation must never drop the session */ }
-    if (this._antiAfkPulses % 4 !== 0) return;
-    if (this._movementLock || this.inWater || this.inLava || this.health <= 0) return;
-    const entity = this.bot.entity;
-    if (!entity || !entity.onGround || entity.vehicle) return;
-    if (this.bot.pathfinder && typeof this.bot.pathfinder.isMoving === 'function' && this.bot.pathfinder.isMoving()) return;
-    if (this.bot.targetDigBlock || this.bot.currentWindow) return;
-    if (typeof this.bot.setControlState !== 'function') return;
-    const owner = this.bot;
-    try {
-      owner.setControlState('jump', true);
-    } catch (_) { return; }
-    if (this._antiAfkJumpTimer) clearTimeout(this._antiAfkJumpTimer);
-    this._antiAfkJumpTimer = setTimeout(() => {
-      if (this.bot === owner) {
-        try { owner.setControlState('jump', false); } catch (_) { /* session ended */ }
-      }
-    }, 220);
-    if (typeof this._antiAfkJumpTimer.unref === 'function') this._antiAfkJumpTimer.unref();
   }
 
   _stopAntiAfk() {
@@ -1700,12 +2264,18 @@ class RealBot extends BotAdapter {
   }
 
   async disconnect(reason = 'shutdown') {
+    // Capture before any cleanup changes the state the operator is trying to
+    // diagnose. The first capture for a generation is the one kept.
+    const snapshot = this._captureDisconnectSnapshot(reason || 'disconnected');
     if (this._respawnTimer) { clearTimeout(this._respawnTimer); this._respawnTimer = null; }
-    this._failLoginWaiters(reason || 'disconnected');
     this._stopAntiAfk();
     this._unlockMovement();
+    this._stopClientTicker(`disconnect: ${reason}`);
+    if (!this.connection.terminal) this.connection.close(reason || 'disconnected');
+    this._failTcpWaiters(reason || 'disconnected');
+    this._failLoginWaiters(reason || 'disconnected');
     this._restoreClientTrace();
-    if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
+    if (snapshot.ready) this.lastSessionEndedAt = this.now();
     const bot = this.bot;
     this.bot = null;
     try { if (bot) bot.quit(reason); } catch (_) { /* already gone */ }
@@ -1713,9 +2283,10 @@ class RealBot extends BotAdapter {
     this.spawned = false;
     this.authenticated = false;
     this.authConfirmed = false;
+    this._tcpConnected = false;
     this._abortAuth(reason || 'disconnected');
     this._failSpawnWaiters(reason || 'disconnected');
-    return { ok: true };
+    return { ok: true, sessionId: snapshot.generation };
   }
 
   summary() {
@@ -1731,6 +2302,10 @@ class RealBot extends BotAdapter {
       retryPaused: this.retryPaused,
       lastEventAt: this.lastEventAt,
       lastSessionEndedAt: this.lastSessionEndedAt,
+      lastDisconnect: this.lastDisconnect,
+      connection: this._connectionSnapshot(),
+      keepAlive: { ...this._keepAlive },
+      ticker: this._clientTicker ? this._clientTicker.snapshot() : null,
       lastDeath: this.lastDeath,
       lastDeathMessage: this.lastDeathMessage,
       lastDamageAt: this.lastDamageAt,

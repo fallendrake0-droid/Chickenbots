@@ -17,7 +17,8 @@ const { createDashboard } = require('./dashboard/server');
 const { MockWorld } = require('./bot/mockWorld');
 const { MockBot } = require('./bot/mockBot');
 const { RealBot } = require('./bot/realBot');
-const { isThrottleError, isJoinStallError, throttleCooldown, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
+const { isThrottleError, isJoinStallError, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
+const { JoinScheduler } = require('./bot/joinScheduler');
 const { resolveServerVersion } = require('./bot/serverVersion');
 const { connectionStatus } = require('./bot/status');
 
@@ -35,7 +36,7 @@ const STARTER_KIT = {
  * start until every configured bot has connected, authenticated and spawned.
  */
 class TeamRuntime {
-  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion } = {}) {
+  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion, now = Date.now, random = Math.random } = {}) {
     this.simulate = Boolean(simulate);
     this.shouldConnect = connect;
     this.wantDashboard = dashboard;
@@ -43,7 +44,8 @@ class TeamRuntime {
     this.host = host;
     this.logger = logger || new Logger({ level: config.logging.level });
     this.mode = this.simulate ? 'simulation' : 'live';
-    this.now = () => Date.now();
+    this.now = typeof now === 'function' ? now : () => Date.now();
+    this.random = typeof random === 'function' ? random : Math.random;
     this.board = new TaskBoard({ claimTtlMs: config.team.claimTtlMs, lockTtlMs: config.team.lockTtlMs, now: this.now });
     this.memory = new TeamMemory({ maxObservations: config.team.maxObservations, defaultTtlMs: config.team.observationTtlMs, now: this.now });
     this.ledger = new ResourceLedger({ reserves: config.reserves, now: this.now });
@@ -94,6 +96,13 @@ class TeamRuntime {
     this.nextJoinAt = 0;
     this.throttleStrikes = 0;
     this.lastThrottleAt = 0;
+    this.joinScheduler = new JoinScheduler({
+      now: this.now,
+      random: this.random,
+      baseDelayMs: config.server.reconnect.throttleDelayMs,
+      maxDelayMs: config.server.reconnect.throttleMaxDelayMs,
+      jitterMs: Math.min(250, config.server.reconnect.jitterMs)
+    });
     this.lastJoinStartedAt = 0;
     this.shutdownController = new AbortController();
   }
@@ -326,14 +335,21 @@ class TeamRuntime {
     const previous = this.joinLock;
     this.joinLock = new Promise((resolve) => { release = resolve; });
     await previous;
+    let announced = false;
     while (!this.shutdownRequested) {
       const now = Date.now();
       const target = Math.max(this.joinCooldownUntil, this.nextJoinAt);
       if (now >= target) break;
       const wait = Math.max(50, target - now);
       const reason = this.joinCooldownUntil >= this.nextJoinAt ? 'server throttle cooldown' : 'per-IP join spacing';
-      this.logger.info(`join queue: waiting ${(wait / 1000).toFixed(1)}s for ${reason}`);
-      await sleep(wait, this.shutdownController.signal);
+      if (!announced) {
+        this.logger.info(`join queue: waiting ${(wait / 1000).toFixed(1)}s for ${reason}`);
+        announced = true;
+      }
+      // Re-check at least once a second. A bot becoming ready clears the
+      // fleet-wide cooldown; without this short poll a healthy join queued
+      // behind the old pause would still sit out the full 90s.
+      await sleep(Math.min(wait, 1000), this.shutdownController.signal);
     }
     // Hold the slot until the caller finishes connecting, then enforce the next
     // start time. A fixed inter-start interval is what keeps the server's
@@ -352,15 +368,29 @@ class TeamRuntime {
    * window; hammering it extends the block and can drop the bots already in.
    */
   _registerJoinBackoff(kind, error) {
-    this.throttleStrikes = Math.min(10, (this.throttleStrikes || 0) + 1);
-    this.lastThrottleAt = Date.now();
-    const wait = throttleCooldown({
-      strikes: this.throttleStrikes,
-      throttleDelayMs: config.server.reconnect.throttleDelayMs,
-      maxDelayMs: config.server.reconnect.throttleMaxDelayMs
-    });
-    this.joinCooldownUntil = Math.max(this.joinCooldownUntil, Date.now() + wait);
-    this.logger.warn(`join queue: ${kind} (${error}); all joins paused until ${new Date(this.joinCooldownUntil).toISOString()} (strike ${this.throttleStrikes}, ${(wait / 1000).toFixed(0)}s)`);
+    // Read the live configuration so an operator/test changing the throttle
+    // budget takes effect without rebuilding the runtime.
+    this.joinScheduler.baseDelayMs = config.server.reconnect.throttleDelayMs;
+    this.joinScheduler.maxDelayMs = config.server.reconnect.throttleMaxDelayMs;
+    this.joinScheduler.jitterMs = Math.min(250, config.server.reconnect.jitterMs);
+    const record = this.joinScheduler.strike({ kind, error });
+    this.throttleStrikes = record.strikes;
+    this.lastThrottleAt = record.lastFailureAt || this.now();
+    this.joinCooldownUntil = record.cooldownUntil || 0;
+    if (record.counted) {
+      this.logger.warn(`join queue: ${kind} (${error}); joins paused until ${new Date(this.joinCooldownUntil).toISOString()} (strike ${record.strikes}/${record.maxStrikes}, ${(record.lastWaitMs / 1000).toFixed(1)}s, episode ${record.episodes})`);
+    } else {
+      this.logger.info(`join queue: ${kind} (${error}) belongs to the open outage episode; strike ${record.strikes} unchanged, ${(record.remainingMs / 1000).toFixed(1)}s remaining`);
+    }
+    return record;
+  }
+
+  _markJoinSuccess(bot) {
+    const record = this.joinScheduler.success();
+    this.throttleStrikes = record.strikes;
+    this.joinCooldownUntil = record.cooldownUntil || 0;
+    this.logger.info(`join queue: ${bot.name} is ready; outage episode closed (strike level ${record.strikes}/${record.maxStrikes} retained for the next outage)`);
+    return record;
   }
 
   async _connectWithRetry(bot) {
@@ -387,7 +417,7 @@ class TeamRuntime {
       const release = await this._acquireJoinSlot();
       if (this.shutdownRequested) { release(); return { ok: false, error: 'shutting down' }; }
       const startedAt = Date.now();
-      this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.passwordRequired ? 'password' : 'none'} timeout=${config.server.connectTimeoutMs}ms`);
+      this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.passwordRequired ? 'password' : 'none'} budgets: dns=${config.server.dnsTimeoutMs}ms tcp=${config.server.connectTimeoutMs}ms login=${config.server.loginTimeoutMs}ms configuration=${config.server.configurationTimeoutMs}ms spawn=${config.server.spawnTimeoutMs}ms`);
       let result;
       try {
         result = await bot.connect();
@@ -426,12 +456,10 @@ class TeamRuntime {
       if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
         this.retryPausedBots.delete(bot.name);
-        // A stable session proves the limiter has cleared. Decay the strike
-        // counter only after a quiet period, so a success immediately followed
-        // by another throttle does not reset the exponential backoff.
-        if (this.lastThrottleAt && Date.now() - this.lastThrottleAt > 10 * 60 * 1000) {
-          this.throttleStrikes = Math.max(0, this.throttleStrikes - 1);
-        }
+        // A ready session proves this outage episode is over. The join
+        // scheduler retains the strike level for a future outage and resets it
+        // after a genuinely quiet ten minutes.
+        this._markJoinSuccess(bot);
         this.logger.info(`[${bot.name}] ready (attempt ${attempt}, ${elapsed}ms)`);
         this._anchorHomeToSpawn(bot);
         return result;
@@ -454,9 +482,15 @@ class TeamRuntime {
       const stalled = isJoinStallError(result.error);
       if (stalled) delay = Math.max(delay, config.server.reconnect.throttleDelayMs);
       // Never let a per-bot retry start sooner than the next fleet join slot.
+      // The fleet-wide cooldown is enforced by _acquireJoinSlot, which
+      // re-checks every second: a healthy bot becoming ready clears it, and a
+      // sleeping retry must not ignore that. The log still shows the effective
+      // wait so an operator is not told 90s when the queue will hold 180s.
+      const cooldownWait = Math.max(0, this.joinCooldownUntil - Date.now());
       delay = Math.max(delay, config.server.joinIntervalMs, this.nextJoinAt - Date.now());
+      const effectiveDelay = Math.max(delay, cooldownWait);
       const reason = isThrottleError(result.error) ? 'server join throttle' : stalled ? 'join stalled before spawn' : 'connection failed';
-      this.logger.warn(`[${bot.name}] ${reason} after ${elapsed}ms: ${result.error}; retrying in ${(delay / 1000).toFixed(1)}s`);
+      this.logger.warn(`[${bot.name}] ${reason} after ${elapsed}ms${result.code ? ` [${result.code}${result.stage ? `/${result.stage}` : ''}]` : ''}: ${result.error}; retrying in ${(effectiveDelay / 1000).toFixed(1)}s`);
       await sleep(delay, this.shutdownController.signal);
     }
     return { ok: bot.ready };
@@ -743,6 +777,13 @@ class TeamRuntime {
       lastEventAt: status.lastEventAt,
       lastEventAgeMs: status.lastEventAgeMs,
       kickKind: bot.kickKind || null,
+      sessionId: status.sessionId || (bot.connection ? bot.connection.generation : null),
+      stage: status.stage || null,
+      connection: typeof bot.connection === 'object' && bot.connection && typeof bot.connection.snapshot === 'function' ? bot.connection.snapshot() : null,
+      stageTimings: bot.stageTimings || null,
+      keepAlive: bot._keepAlive ? { ...bot._keepAlive } : null,
+      ticker: typeof bot._clientTicker?.snapshot === 'function' ? bot._clientTicker.snapshot() : null,
+      lastDisconnect: bot.lastDisconnect || null,
       retryPaused: Boolean(bot.retryPaused || this.retryPausedBots.has(name)),
       error: this.connectionErrors[name] || this.connectionErrors.server || bot.lastError || null
     };
@@ -772,7 +813,22 @@ class TeamRuntime {
       ticks: this.ticks,
       uptimeMs: this.startedAt ? Date.now() - this.startedAt : 0,
       home: this.home,
-      bots: [...this.bots.values()].map((bot) => ({ name: bot.name, connected: bot.connected, spawned: bot.spawned, authenticated: bot.authenticated, ready: bot.ready, health: bot.health, deaths: bot.deaths || 0, lastSpawn: bot.lastSpawn || null, stageTimings: bot.stageTimings || null })),
+      bots: [...this.bots.values()].map((bot) => {
+        const status = connectionStatus(bot);
+        const connection = bot.connection && typeof bot.connection.snapshot === 'function' ? bot.connection.snapshot() : null;
+        return {
+          name: bot.name, connected: bot.connected, spawned: bot.spawned, authenticated: bot.authenticated, ready: bot.ready,
+          online: status.online, status: status.status, statusLabel: status.statusLabel, statusDetail: status.statusDetail,
+          health: bot.health, deaths: bot.deaths || 0, lastSpawn: bot.lastSpawn || null,
+          stageTimings: bot.stageTimings || null,
+          connection: connection ? {
+            generation: connection.generation, state: connection.state, label: connection.label, detail: connection.detail,
+            stage: connection.stage, stageLabel: connection.stageLabel, stageElapsedMs: connection.stageElapsedMs,
+            stageTimeoutMs: connection.stageTimeoutMs, elapsedMs: connection.elapsedMs, failure: connection.failure,
+            invalidTransitions: connection.invalidTransitions
+          } : null
+        };
+      }),
       connectionErrors: { ...this.connectionErrors },
       joinQueue: {
         nextJoinAt: this.nextJoinAt || null,
@@ -780,7 +836,8 @@ class TeamRuntime {
         waiting: [...this.reconnectTasks.keys()],
         joinIntervalMs: config.server.joinIntervalMs,
         joinJitterMs: config.server.joinJitterMs,
-        throttleStrikes: this.throttleStrikes || 0
+        throttleStrikes: this.throttleStrikes || 0,
+        scheduler: this.joinScheduler.snapshot()
       },
       dashboard: this.dashboard ? this.dashboard.url : null,
       construction: this.construction ? { activeId: this.construction.activeId, projects: this.construction.projects.size } : null,

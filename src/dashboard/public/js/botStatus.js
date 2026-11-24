@@ -7,6 +7,7 @@
 const STATUS_META = {
   online: { label: 'Online', tone: 'ok', dot: 'ok', online: true },
   joining: { label: 'Joining', tone: 'warn', dot: 'warn', online: false },
+  reconnecting: { label: 'Reconnecting', tone: 'warn', dot: 'warn', online: false },
   authenticating: { label: 'Authenticating', tone: 'warn', dot: 'warn', online: false },
   auth_failed: { label: 'Auth failed', tone: 'danger', dot: 'danger', online: false },
   dead: { label: 'Dead', tone: 'danger', dot: 'danger', online: false },

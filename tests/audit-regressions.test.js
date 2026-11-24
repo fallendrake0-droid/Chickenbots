@@ -283,7 +283,7 @@ test('mock movement is clamped to the materialised world and mining honours its 
   assert.ok(result.results.some((r) => /minimum mining depth/.test(r.error || '')), JSON.stringify(result));
 });
 
-test('the join queue spaces starts and backs off exponentially after a throttle', async () => {
+test('the join queue spaces starts and records one strike per outage episode', async () => {
   const runtime = await createRuntime({ simulate: true, connect: false, dashboard: false });
   const joinInterval = config.server.joinIntervalMs;
   const joinJitter = config.server.joinJitterMs;
@@ -306,8 +306,16 @@ test('the join queue spaces starts and backs off exponentially after a throttle'
     assert.ok(firstCooldown >= 900 && firstCooldown < 2000, `first cooldown was ${firstCooldown}`);
     runtime._registerJoinBackoff('throttled', 'Connection throttled!');
     const secondCooldown = runtime.joinCooldownUntil - Date.now();
-    assert.ok(secondCooldown > firstCooldown, 'repeated throttles must grow the cooldown');
+    assert.equal(runtime.throttleStrikes, 1, 'one outage episode records one strike, not one per bot');
+    assert.ok(secondCooldown <= firstCooldown + 100, 'an already-running pause is not pushed further out');
+
+    // A ready session closes the episode. A genuinely separate outage then
+    // escalates the strike level and the bounded cooldown.
+    runtime.joinScheduler.success();
+    runtime._registerJoinBackoff('throttled', 'Connection throttled!');
+    const thirdCooldown = runtime.joinCooldownUntil - Date.now();
     assert.equal(runtime.throttleStrikes, 2);
+    assert.ok(thirdCooldown > firstCooldown, 'a separate outage grows the cooldown');
   } finally {
     config.server.joinIntervalMs = joinInterval;
     config.server.joinJitterMs = joinJitter;

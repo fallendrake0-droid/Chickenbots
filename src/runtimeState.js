@@ -199,7 +199,14 @@ function statusSnapshot(services) {
         position: s.position,
         lastEventAt: s.lastEventAt || null,
         lastEventAgeMs: s.lastEventAgeMs,
-        lastError: s.lastError || null
+        lastError: s.lastError || null,
+        sessionId: s.sessionId || null,
+        stage: s.stage || null,
+        connection: s.connection || null,
+        stageTimings: s.stageTimings || null,
+        keepAlive: s.keepAlive || null,
+        ticker: s.ticker || null,
+        lastDisconnect: s.lastDisconnect || null
       })),
       commands: services.commands ? services.commands.recent(20) : []
     }

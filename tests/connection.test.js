@@ -71,16 +71,13 @@ test('shutdown abort wakes a reconnect sleep immediately', async () => {
   assert.ok(Date.now() - started < 1000);
 });
 
-test('anti-afk activity keeps an idle session alive without interrupting real work', () => {
+test('periodic activity verifies the session without fabricating movement', () => {
   const real = new RealBot({ name: '________' });
-  const controls = [];
   let swings = 0;
-  let moving = false;
   real.bot = {
     entity: { onGround: true },
-    pathfinder: { isMoving: () => moving },
-    swingArm() { swings++; },
-    setControlState(state, value) { controls.push([state, value]); }
+    pathfinder: { isMoving: () => false },
+    swingArm() { swings++; }
   };
   real.connected = true;
   real.spawned = true;
@@ -91,15 +88,9 @@ test('anti-afk activity keeps an idle session alive without interrupting real wo
   real._antiAfkPulse();
   real._antiAfkPulse();
   assert.equal(swings, 3);
-  assert.deepEqual(controls, [], 'no movement while the first three pulses only swing');
   real._antiAfkPulse();
-  assert.deepEqual(controls, [['jump', true]], 'the fourth pulse proves real movement');
-  assert.ok(real._antiAfkJumpTimer, 'the jump is released on a timer');
-
-  moving = true;
-  real._antiAfkPulses = 3;
-  real._antiAfkPulse();
-  assert.equal(controls.length, 1, 'a working pathfinder is never interrupted');
+  assert.equal(swings, 4);
+  assert.equal(real._antiAfkJumpTimer, null, 'V6 never fabricates movement to defeat idle kicks');
   real._stopAntiAfk();
   assert.equal(real._antiAfkTimer, null);
   assert.equal(real._antiAfkJumpTimer, null);
@@ -230,12 +221,15 @@ test('position packets are suppressed until password auth is released', () => {
   assert.equal(real._movementLock, true);
   real._unlockMovement();
   fake._client.write('position_look', {});
-  assert.deepEqual(writes, ['chat', 'position_look', 'tick_end']);
+  assert.deepEqual(writes, ['chat', 'position_look']);
   assert.equal(real._movementLock, false);
 
-  // A movement packet must be followed by client_tick_end for 26.x servers.
+  // The write wrapper must not synthesise a duplicate tick_end. The client
+  // tick scheduler owns the single per-tick tick_end (see
+  // tests/connection-lifecycle.test.js).
   fake._client.write('position', { x: 1, y: 64, z: 1 });
-  assert.deepEqual(writes.slice(-2), ['position', 'tick_end']);
+  assert.deepEqual(writes.slice(-1), ['position']);
+  assert.equal(writes.filter((name) => name === 'tick_end').length, 0);
 });
 
 test('AuthMe replies "Login successful." and "You are already registered." are accepted', async () => {

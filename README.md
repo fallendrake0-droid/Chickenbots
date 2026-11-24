@@ -327,15 +327,18 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `10000` / `0` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so five bots on one host must join slowly or the server rejects them. |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `10000` / `0` | exact gap before queuing each bot's initial connection task; the join queue also enforces `MC_JOIN_INTERVAL_MS` |
-| `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | first fleet-wide pause after a throttle or a socket that never reaches spawn; repeats double the pause up to the maximum |
+| `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | fleet-wide pause after a throttle or a socket that never reaches spawn. One outage episode records **one** strike no matter how many bots fail in it; a genuinely separate outage (after a bot became ready) escalates the bounded, jittered pause up to the maximum |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | settle delay and confirmation timeout for password auth |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
-| `MC_LOGIN_TIMEOUT_MS` | `30000` | protocol-login stage timeout; separate from spawn and AuthMe so failures are diagnosable |
+| `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
+| `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
+| `MC_LOGIN_TIMEOUT_MS` | `30000` | handshake/login stage timeout; separate from configuration, spawn and AuthMe so failures are diagnosable |
+| `MC_CONFIGURATION_TIMEOUT_MS` | `15000` | configuration-exchange budget once the server sends `start_configuration` |
 | `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
-| `MC_KEEPALIVE_MS` | `120000` | client-side keepalive watchdog; raise this if Aternos lag causes `client timed out` drops |
+| `MC_KEEPALIVE_MS` | `120000` | client-side watchdog threshold. The library still sends the reply itself; this is a diagnostic, not the reconnect strategy |
 | `MC_STALE_AFTER_MS` | `90000` | a connected bot with no inbound packet for this long is reported as `No packets`, never `Online` |
 | `MC_REJOIN_DELAY_MS` | `10000` | hold-down before the first rejoin after a real session ends; the fleet reconnect supervisor keeps trying and the throttle queue backs off if the server rejects it |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
@@ -594,15 +597,18 @@ commissioning.
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
   Bots join **one socket at a time**, at least `MC_JOIN_INTERVAL_MS` (10s by default) apart, because
   Paper's `connection-throttle` is enforced per source IP and all five bots share the host's IP.
-  A throttle or a socket that never reaches spawn pauses **every** join and doubles that pause on each
-  repeat (90s, 180s, … up to 10 minutes). Only one live runtime may run per checkout: a PID lock
+  A throttle or a socket that never reaches spawn pauses **every** join. All failures in the same
+  outage are one strike, so four bots timing out do not turn a 90s pause into 10 minutes; a bot that
+  becomes ready closes the episode and clears the pause, and only a separate later outage escalates
+  the bounded, jittered backoff. Only one live runtime may run per checkout: a PID lock
   (`data/runtime/live.pid`) refuses a second instance, because duplicate logins make Aternos close the
   first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
   `settings.connection-throttle: 0` in `bukkit.yml` (or a value below `MC_JOIN_INTERVAL_MS`) and restart
   it; otherwise keep the interval generous. A bot that drops re-enters the same queue after
   `MC_REJOIN_DELAY_MS` (10s by default), and the reconnect supervisor keeps running even while
-  autonomy is paused. Connected bots swing their arm every 30s and jump in place every fourth pulse
-  when they are safely idle, so idle/AFK plugins do not kick the team while the rest of the roster joins.
+  autonomy is paused. Connected bots send a real swing animation every 30s so a writable session is
+  visible to idle plugins. Chickenbots does **not** fabricate movement or jump to defeat AFK checks; the
+  real 20 tps client tick loop is the fix for a client that looks frozen.
   When `MC_LOGIN_PASSWORD` is set (there is no built-in default; put it in an untracked `.env`),
   every join sends only `/login` because the accounts already exist. If the server answers `You are not registered.`, Chickenbots
   creates that account once (`/register`) and retries `/login`. Set
@@ -614,9 +620,12 @@ commissioning.
   still use bounded, jittered backoff, and the runtime never deliberately spams reconnects. Bans and
   whitelist/operator kicks still pause retries: automatically evading moderation would turn a
   temporary kick into a ban. All other drops are retried indefinitely by default.
-  A server-side `Invalid move player packet` kick on Minecraft 26.x is normally caused by a missing
-  `client_tick_end`; Chickenbots sends it after every movement packet. If kicks continue, set
-  `MC_VERSION` to the server's exact version instead of `auto`.
+  Minecraft 1.21.2+ / 26.x needs the vanilla client tick loop: exactly one `client_tick_end` at the
+  end of every client tick, after that tick's movement packet. Mineflayer 4.39.0 predates the upstream
+  fix, so Chickenbots runs its own 20 tps scheduler, handles `set_ticking_state` / `step_tick`, and
+  defers a second position-bearing packet to the next tick. It never sends a duplicate tick_end after
+  a movement packet, and it does not send `player_loaded` itself because Mineflayer already does. If
+  protocol kicks continue, set `MC_VERSION` to the server's exact version instead of `auto`.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
   real version instead of sending five bots into mineflayer's autoVersion crash path.
@@ -625,7 +634,9 @@ commissioning.
   `LOG_LEVEL=debug` (opt-in; the default is `info`) adds lifecycle detail and auth timing. Per-packet
   movement, keepalive and position traces stay off even then unless `MC_TRACE_PACKETS=true`: writing
   that volume to a terminal can block the event loop and cost the socket its keepalive. A kicked bot
-  also gets a 40-event trace dump. Passwords are
+  gets a pre-cleanup disconnect snapshot with the session generation, stage, timings, keep-alive and
+  tick-loop counters, plus a bounded lifecycle timeline. The Connections dashboard renders the same
+  timeline as per-bot cards. Passwords are
   never printed; auth commands, echoed `/register`/`/login` chat, configured secret values and
   password/token-shaped metadata are redacted centrally before they reach the terminal, log store or
   dashboard. The dashboard binds loopback by default. A non-loopback bind without

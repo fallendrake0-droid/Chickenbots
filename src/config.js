@@ -95,7 +95,13 @@ const config = {
     // distinguish a dead TCP connect from a server that accepts the socket but
     // never finishes login, spawn or AuthMe, which made the join queue opaque.
     connectTimeoutMs: envInt('MC_CONNECT_TIMEOUT_MS', 45000),
+    // DNS is timed separately from the TCP connect so a resolver hang is not
+    // reported as a protocol-login timeout. The library still resolves the
+    // hostname it connects to; the preflight only decides whether to attempt.
+    dnsTimeoutMs: envInt('MC_DNS_TIMEOUT_MS', 10000),
+    // Handshake/login and the configuration exchange have separate budgets.
     loginTimeoutMs: envInt('MC_LOGIN_TIMEOUT_MS', 30000),
+    configurationTimeoutMs: envInt('MC_CONFIGURATION_TIMEOUT_MS', 15000),
     spawnTimeoutMs: envInt('MC_SPAWN_TIMEOUT_MS', 45000),
     keepAliveMs: envInt('MC_KEEPALIVE_MS', 120000),
     // A socket can die silently (NAT timeout, proxy restart) without emitting
@@ -317,7 +323,9 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   text('server.version', server.version, 64);
   if (server.auth !== 'offline' && server.auth !== 'microsoft') fail('server.auth', "must be 'offline' or 'microsoft'");
   integer('server.connectTimeoutMs', server.connectTimeoutMs, 1000, 600000);
+  integer('server.dnsTimeoutMs', server.dnsTimeoutMs, 1000, 300000);
   integer('server.loginTimeoutMs', server.loginTimeoutMs, 1000, 600000);
+  integer('server.configurationTimeoutMs', server.configurationTimeoutMs, 1000, 600000);
   integer('server.spawnTimeoutMs', server.spawnTimeoutMs, 1000, 600000);
   integer('server.keepAliveMs', server.keepAliveMs, 1000, 3600000);
   integer('server.staleAfterMs', server.staleAfterMs, 1000, 3600000);

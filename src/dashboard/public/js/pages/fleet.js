@@ -639,6 +639,7 @@ export const connectionsPage = {
     const diagnostics = (state.snapshot && state.snapshot.diagnostics) || {};
     const config = diagnostics.config || {};
     const rows = diagnostics.bots || [];
+    const lifecycleRows = rows.filter((row) => row.connection && row.connection.generation > 0);
     const runtime = diagnostics.runtime || {};
     const fleet = bots();
     const server = config.server || {};
@@ -679,6 +680,37 @@ export const connectionsPage = {
                 </tr>`;
               }).join('')}</tbody>
             </table>
+          </div>
+        </section>
+        <section class="card" style="margin-top:16px">
+          <div class="card-header"><div class="card-title">${icon('activity')} Lifecycle and login timeline</div><span class="tiny muted">One session id per attempt; stale events are rejected</span></div>
+          <div class="card-body">
+            ${lifecycleRows.length ? `<div class="grid grid--2">${lifecycleRows.map((row) => {
+              const c = row.connection || {};
+              const timeline = (c.timeline || []).slice(-8).reverse();
+              const stateTone = c.state === 'ready' ? 'ok' : c.state === 'failed' ? 'danger' : c.state === 'closed' || c.state === 'idle' ? 'neutral' : 'warn';
+              const keep = row.keepAlive || {};
+              const ticker = row.ticker || {};
+              const last = row.lastDisconnect || null;
+              return `<section class="card card--inset">
+                <div class="card-header"><div class="card-title">${esc(row.name)} ${badge(c.label || row.statusLabel || 'Unknown', stateTone)}</div><span class="mono tiny">session ${esc(c.generation ?? '—')}</span></div>
+                <div class="card-body card-body--tight">
+                  ${kvRows([
+                    ['Stage', esc(`${c.stageLabel || c.stage || '—'}${c.stageElapsedMs != null ? ` · ${(c.stageElapsedMs / 1000).toFixed(1)}s` : ''}`)],
+                    ['Stage budget', c.stageTimeoutMs ? `${(c.stageTimeoutMs / 1000).toFixed(0)}s` : '—'],
+                    ['Session elapsed', c.elapsedMs != null ? duration(c.elapsedMs) : '—'],
+                    ['Keep-alive', `${num(keep.received || 0)} received · ${num(keep.replies || 0)} replied · max gap ${keep.maxGapMs ? duration(keep.maxGapMs) : '—'}`],
+                    ['Client ticks', ticker.tickEnds != null ? `${num(ticker.tickEnds)} tick_end · ${ticker.tickRate || 20} tps${ticker.frozen ? ' · frozen' : ''}` : 'not active'],
+                    ['Last inbound', c.lastEventAgeMs != null ? `${duration(c.lastEventAgeMs)} ago` : '—'],
+                    ['Last failure', c.failure ? esc(`${c.failure.code} in ${c.failure.stage}: ${c.failure.error}`) : '—'],
+                    ['Last disconnect', last ? esc(`${last.reason} · ${last.state} · spawned=${last.spawned} auth=${last.authenticated} · ${new Date(last.at).toLocaleTimeString()}`) : '—']
+                  ])}
+                  <div class="timeline" style="margin-top:8px">
+                    ${timeline.map((entry) => `<div class="activity-item"><span class="activity-icon">${icon('chevron-right')}</span><div class="activity-main"><div>${esc(entry.kind === 'state' ? `${entry.from || '—'} → ${entry.to}` : entry.kind === 'stage' ? `stage: ${entry.stage}` : entry.kind === 'event' ? `event: ${entry.event}` : entry.kind)}</div><div class="mono">${esc(new Date(entry.at).toLocaleTimeString())}${entry.detail ? ` · ${esc(entry.detail)}` : ''}</div></div></div>`).join('') || '<div class="muted small">No lifecycle events recorded.</div>'}
+                  </div>
+                </div>
+              </section>`;
+            }).join('')}</div>` : emptyState('No connection records', 'No bot has attempted a live connection yet.', 'wifi')}
           </div>
         </section>
         <section class="card" style="margin-top:16px">
