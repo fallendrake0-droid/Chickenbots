@@ -722,7 +722,9 @@ export const connectionsPage = {
               ['Protocol version', esc(server.version || '—'), true],
               ['Dashboard', esc(`${(config.dashboard && config.dashboard.host) || '0.0.0.0'}:${(config.dashboard && config.dashboard.port) || 3000}`), true],
               ['PVP', config.pvp ? 'Enabled' : 'Disabled'],
-              ['AI planner', config.ai ? 'Enabled' : 'Disabled']
+              ['AI planner', config.ai ? 'Enabled' : 'Disabled'],
+              ['Event loop', runtime.eventLoop ? (runtime.eventLoop.samples ? `mean ${runtime.eventLoop.meanMs}ms · p99 ${runtime.eventLoop.p99Ms}ms · max ${runtime.eventLoop.maxMs}ms` : 'collecting samples') : '—'],
+              ['Readiness', `${rows.filter((r) => r.online).length}/${rows.length} ready · ${rows.filter((r) => ['joining', 'reconnecting'].includes(r.status)).length} connecting · ${rows.filter((r) => r.status === 'authenticating').length} authenticating · ${rows.filter((r) => ['offline', 'auth_failed'].includes(r.status)).length} offline`]
             ])}
           </div>
         </section>

@@ -618,6 +618,9 @@ class RealBot extends BotAdapter {
         port: this.port,
         auth: this.auth,
         version: this.version === 'auto' ? undefined : this.version,
+        // Bounds the inbound chunk burst at spawn and reconnect. Mineflayer's
+        // default is 'far' (12), which is expensive for five bots at once.
+        viewDistance: config.server.viewDistance,
         checkTimeoutInterval: config.server.keepAliveMs,
         hideErrors: false,
         // Mineflayer's default logErrors handler console.log()s the raw Error

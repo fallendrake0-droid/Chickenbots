@@ -10,6 +10,7 @@ const { RealBot } = require('../src/bot/realBot');
 const { connectionStatus } = require('../src/bot/status');
 const { TeamRuntime } = require('../src/runtime');
 const { isJoinStallError } = require('../src/bot/connection');
+const { config } = require('../src/config');
 
 class FakeClient extends EventEmitter {
   constructor() {
@@ -55,9 +56,11 @@ class FakeBot extends EventEmitter {
 
 function newReal(name = '________', extra = {}) {
   let fake = null;
+  let options = null;
   const real = new RealBot({
     name,
-    createBot: () => {
+    createBot: (opts) => {
+      options = opts;
       fake = new FakeBot();
       return fake;
     },
@@ -71,7 +74,7 @@ function newReal(name = '________', extra = {}) {
     spawnTimeoutMs: 500,
     ...extra
   });
-  return { real, fake: () => fake };
+  return { real, fake: () => fake, options: () => options };
 }
 
 test('the lifecycle machine assigns a generation, validates transitions and keeps a timeline', () => {
@@ -146,6 +149,22 @@ test('the client tick scheduler emits one tick_end per tick and defers a second 
   const stoppedAt = writes.length;
   scheduler.tick();
   assert.equal(writes.length, stoppedAt, 'a stopped scheduler cannot emit another tick');
+});
+
+test('the client asks for a bounded chunk radius so five joins cannot block the tick loop', async () => {
+  assert.equal(config.server.viewDistance, 'short');
+  const { real, fake, options } = newReal('01010100');
+  const pending = real.connect();
+  for (let i = 0; i < 80 && !fake(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(fake(), 'createBot should have been called');
+  fake()._client.emit('connect');
+  fake().version = '26.1';
+  fake()._client.emit('login');
+  fake()._client.emit('spawn');
+  fake().emit('spawn');
+  await pending.catch(() => null);
+  assert.equal(options().viewDistance, config.server.viewDistance);
+  await real.disconnect('test complete');
 });
 
 test('a spawn that arrives before the spawn waiter is not lost when auth is still pending', async () => {

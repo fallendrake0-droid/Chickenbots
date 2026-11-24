@@ -55,6 +55,13 @@ function envBool(name, fallback) {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
+function envViewDistance(name, fallback) {
+  const raw = env(name);
+  if (raw === undefined) return fallback;
+  const numeric = Number.parseInt(raw, 10);
+  return Number.isFinite(numeric) ? numeric : raw.toLowerCase();
+}
+
 /** The five bot usernames are fixed. Never rename, never add bots. */
 const BOT_NAMES = Object.freeze(['________', '10101000', '01010100', '11001100', '00110000']);
 
@@ -99,6 +106,11 @@ const config = {
     // reported as a protocol-login timeout. The library still resolves the
     // hostname it connects to; the preflight only decides whether to attempt.
     dnsTimeoutMs: envInt('MC_DNS_TIMEOUT_MS', 10000),
+    // Client-requested chunk distance. 'far' (12) makes the server send up to
+    // 625 chunks per bot; five simultaneous joins then parse/decompress them
+    // on the protocol thread, which is enough to starve the 20 tps tick loop.
+    // 'short' (8) keeps normal awareness while bounding that burst.
+    viewDistance: envViewDistance('MC_VIEW_DISTANCE', 'short'),
     // Handshake/login and the configuration exchange have separate budgets.
     loginTimeoutMs: envInt('MC_LOGIN_TIMEOUT_MS', 30000),
     configurationTimeoutMs: envInt('MC_CONFIGURATION_TIMEOUT_MS', 15000),
@@ -324,6 +336,11 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   if (server.auth !== 'offline' && server.auth !== 'microsoft') fail('server.auth', "must be 'offline' or 'microsoft'");
   integer('server.connectTimeoutMs', server.connectTimeoutMs, 1000, 600000);
   integer('server.dnsTimeoutMs', server.dnsTimeoutMs, 1000, 300000);
+  const viewDistance = server.viewDistance;
+  if (!(Number.isInteger(viewDistance) && viewDistance >= 2 && viewDistance <= 32)
+    && !['tiny', 'short', 'normal', 'far'].includes(viewDistance)) {
+    fail('server.viewDistance', "must be tiny, short, normal, far or an integer from 2 to 32");
+  }
   integer('server.loginTimeoutMs', server.loginTimeoutMs, 1000, 600000);
   integer('server.configurationTimeoutMs', server.configurationTimeoutMs, 1000, 600000);
   integer('server.spawnTimeoutMs', server.spawnTimeoutMs, 1000, 600000);

@@ -13,6 +13,7 @@ const { SchematicLibrary } = require('./schematics/library');
 const { ActionRegistry } = require('./actions');
 const { TeamCombatCoordinator } = require('./combat/team');
 const { createCommandHandler } = require('./commands');
+const { monitorEventLoopDelay } = require('perf_hooks');
 const { createDashboard } = require('./dashboard/server');
 const { MockWorld } = require('./bot/mockWorld');
 const { MockBot } = require('./bot/mockBot');
@@ -105,6 +106,10 @@ class TeamRuntime {
     });
     this.lastJoinStartedAt = 0;
     this.shutdownController = new AbortController();
+    this.eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+    this.eventLoopDelay.enable();
+    this._eventLoopWarnedMax = 0;
+    this._eventLoopLastWarnAt = 0;
   }
 
   get allBotsReady() {
@@ -550,6 +555,7 @@ class TeamRuntime {
     this.ticking = true;
     try {
       if (this.allBotsReady) this.autonomyArmed = true;
+      this._checkEventLoopDelay();
       this._syncBots();
       // Connection supervision must run while paused and while the autonomy
       // gate is closed. Pausing work must never leave a disconnected bot out of
@@ -630,6 +636,32 @@ class TeamRuntime {
     } finally {
       this.ticking = false;
     }
+  }
+
+  eventLoopStats() {
+    const histogram = this.eventLoopDelay;
+    if (!histogram) return null;
+    const ms = (value) => Number.isFinite(value) ? Math.round(value / 1e6 * 10) / 10 : null;
+    return {
+      samples: histogram.count || 0,
+      meanMs: ms(histogram.mean),
+      maxMs: ms(histogram.max),
+      p50Ms: ms(histogram.percentile(50)),
+      p95Ms: ms(histogram.percentile(95)),
+      p99Ms: ms(histogram.percentile(99)),
+      resolutionMs: histogram.resolution
+    };
+  }
+
+  _checkEventLoopDelay() {
+    const stats = this.eventLoopStats();
+    if (!stats || stats.maxMs === null) return;
+    if (stats.maxMs < 1000 || stats.maxMs < this._eventLoopWarnedMax + 1000) return;
+    const now = Date.now();
+    if (now - this._eventLoopLastWarnAt < 30000) return;
+    this._eventLoopWarnedMax = stats.maxMs;
+    this._eventLoopLastWarnAt = now;
+    this.logger.warn(`event loop blocked for up to ${stats.maxMs}ms (p99 ${stats.p99Ms}ms); a chunk/status burst can starve tick_end and keep-alive deadlines`);
   }
 
   async _safetyOnlyTick() {
@@ -830,6 +862,7 @@ class TeamRuntime {
         };
       }),
       connectionErrors: { ...this.connectionErrors },
+      eventLoop: this.eventLoopStats(),
       joinQueue: {
         nextJoinAt: this.nextJoinAt || null,
         cooldownUntil: this.joinCooldownUntil || null,
@@ -856,6 +889,7 @@ class TeamRuntime {
     for (const bot of this.bots.values()) bot.shuttingDown = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    try { this.eventLoopDelay?.disable(); } catch (_) { /* unavailable */ }
     try { if (this.coordinator) this.coordinator.disable(); } catch (_) { /* ignore */ }
     if (this.dashboard) {
       try { await this.dashboard.stop(); } catch (_) { /* server already closed */ }

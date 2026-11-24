@@ -27,6 +27,9 @@ test('ready bots run safety ticks while the team is still joining', async () => 
   assert.equal(team.team.online, 1);
   assert.equal(team.bots.find((bot) => bot.name === '________').online, true);
   assert.equal(team.bots.find((bot) => bot.name === '10101000').online, false);
+  const stats = runtime.eventLoopStats();
+  assert.ok(stats && Number.isInteger(stats.samples), 'event loop delays must be measurable');
+  runtime.eventLoopDelay.disable();
 });
 
 test('pausing autonomy never stops reconnect supervision', async () => {
