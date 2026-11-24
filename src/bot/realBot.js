@@ -78,6 +78,8 @@ class RealBot extends BotAdapter {
     this._clientGeneration = 0;
     this._connectionGeneration = 0;
     this._tickEndSent = false;
+    this._antiAfkTimer = null;
+    this._antiAfkPulses = 0;
     this.kickKind = null;
     this.retryPaused = false;
     this._blockCache = new Map();
@@ -141,6 +143,17 @@ class RealBot extends BotAdapter {
       }
       return result;
     };
+  }
+
+  /**
+   * A second spawn/respawn packet can arrive after AuthMe confirmation (the
+   * respawn screen issues one). Recomputing this from `passwordRequired`
+   * wiped a confirmed login, made the bot look unready and sent the reconnect
+   * supervisor after a perfectly healthy session.
+   */
+  _applySpawnAuth() {
+    this.authenticated = Boolean(this.authConfirmed || !this.passwordRequired);
+    return this.authenticated;
   }
 
   _lockMovement() {
@@ -318,6 +331,7 @@ class RealBot extends BotAdapter {
         await this.disconnect('connection lost before ready');
         return { ok: false, error: this.lastError || 'connection closed before the bot became ready', code: 'NOT_READY', spawned: false, authenticated: false };
       }
+      this._startAntiAfk();
     }
     return result;
   }
@@ -345,7 +359,7 @@ class RealBot extends BotAdapter {
       const firstSpawn = !this.spawned;
       this.connected = true;
       this.spawned = true;
-      this.authenticated = !this.passwordRequired; // AuthMe-style login is confirmed separately
+      this._applySpawnAuth();
       this.position = this._vec(bot.entity?.position);
       this.spawnPosition = { ...this.position };
       this.dimension = bot.game?.dimension || 'overworld';
@@ -394,6 +408,7 @@ class RealBot extends BotAdapter {
       this.kickKind = kick.kind;
       if (kick.pauseRetries) this.retryPaused = true;
       if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
+      this._stopAntiAfk();
       this.connected = false;
       this.spawned = false;
       this.authenticated = false;
@@ -452,6 +467,7 @@ class RealBot extends BotAdapter {
     bot.on('end', (reason) => {
       if (this.bot !== bot) return;
       if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();
+      this._stopAntiAfk();
       this.connected = false;
       this.spawned = false;
       this.authenticated = false;
@@ -1300,7 +1316,30 @@ class RealBot extends BotAdapter {
 
   get chatLog() { return this._chatLog.slice(-50); }
 
+  /**
+   * Paper/Bukkit idle-kick plugins often ignore a static position packet.
+   * Swing the arm periodically: it is a real player action, costs nothing and
+   * is not a movement packet, so it cannot fight the pathfinder.
+   */
+  _startAntiAfk() {
+    this._stopAntiAfk();
+    this._antiAfkTimer = setInterval(() => {
+      if (!this.ready || !this.bot) return;
+      try {
+        if (typeof this.bot.swingArm === 'function') this.bot.swingArm();
+        this._antiAfkPulses++;
+      } catch (_) { /* an animation must never drop the session */ }
+    }, 45000);
+    if (typeof this._antiAfkTimer.unref === 'function') this._antiAfkTimer.unref();
+  }
+
+  _stopAntiAfk() {
+    if (this._antiAfkTimer) clearInterval(this._antiAfkTimer);
+    this._antiAfkTimer = null;
+  }
+
   async disconnect(reason = 'shutdown') {
+    this._stopAntiAfk();
     this._unlockMovement();
     this._restoreClientTrace();
     if (this.spawned && this.authenticated) this.lastSessionEndedAt = Date.now();

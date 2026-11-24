@@ -17,7 +17,7 @@ const { createDashboard } = require('./dashboard/server');
 const { MockWorld } = require('./bot/mockWorld');
 const { MockBot } = require('./bot/mockBot');
 const { RealBot } = require('./bot/realBot');
-const { isThrottleError, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
+const { isThrottleError, isJoinStallError, throttleCooldown, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
 const { resolveServerVersion } = require('./bot/serverVersion');
 const { connectionStatus } = require('./bot/status');
 
@@ -89,6 +89,10 @@ class TeamRuntime {
     this.resolveVersion = resolveVersion;
     this.joinLock = Promise.resolve();
     this.joinCooldownUntil = 0;
+    this.nextJoinAt = 0;
+    this.throttleStrikes = 0;
+    this.lastThrottleAt = 0;
+    this.lastJoinStartedAt = 0;
     this.shutdownController = new AbortController();
   }
 
@@ -287,12 +291,41 @@ class TeamRuntime {
     const previous = this.joinLock;
     this.joinLock = new Promise((resolve) => { release = resolve; });
     await previous;
-    while (!this.shutdownRequested && Date.now() < this.joinCooldownUntil) {
-      const wait = Math.max(50, this.joinCooldownUntil - Date.now());
-      this.logger.info(`join queue: waiting ${(wait / 1000).toFixed(1)}s for server throttle cooldown`);
+    while (!this.shutdownRequested) {
+      const now = Date.now();
+      const target = Math.max(this.joinCooldownUntil, this.nextJoinAt);
+      if (now >= target) break;
+      const wait = Math.max(50, target - now);
+      const reason = this.joinCooldownUntil >= this.nextJoinAt ? 'server throttle cooldown' : 'per-IP join spacing';
+      this.logger.info(`join queue: waiting ${(wait / 1000).toFixed(1)}s for ${reason}`);
       await sleep(wait, this.shutdownController.signal);
     }
+    // Hold the slot until the caller finishes connecting, then enforce the next
+    // start time. A fixed inter-start interval is what keeps the server's
+    // per-IP connection throttle from rejecting the fleet.
+    this.lastJoinStartedAt = Date.now();
+    this.nextJoinAt = this.lastJoinStartedAt + staggerDelay({
+      staggerMs: config.server.joinIntervalMs,
+      jitterMs: config.server.joinJitterMs
+    });
     return release;
+  }
+
+  /**
+   * A throttle or a socket that never reaches spawn means the server's per-IP
+   * limiter is still active. Pause every join for an exponentially longer
+   * window; hammering it extends the block and can drop the bots already in.
+   */
+  _registerJoinBackoff(kind, error) {
+    this.throttleStrikes = Math.min(10, (this.throttleStrikes || 0) + 1);
+    this.lastThrottleAt = Date.now();
+    const wait = throttleCooldown({
+      strikes: this.throttleStrikes,
+      throttleDelayMs: config.server.reconnect.throttleDelayMs,
+      maxDelayMs: config.server.reconnect.throttleMaxDelayMs
+    });
+    this.joinCooldownUntil = Math.max(this.joinCooldownUntil, Date.now() + wait);
+    this.logger.warn(`join queue: ${kind} (${error}); all joins paused until ${new Date(this.joinCooldownUntil).toISOString()} (strike ${this.throttleStrikes}, ${(wait / 1000).toFixed(0)}s)`);
   }
 
   async _connectWithRetry(bot) {
@@ -330,8 +363,9 @@ class TeamRuntime {
       }
       const elapsed = Date.now() - startedAt;
       if (!result.ok && isThrottleError(result.error)) {
-        this.joinCooldownUntil = Math.max(this.joinCooldownUntil, Date.now() + config.server.reconnect.throttleDelayMs);
-        this.logger.warn(`join queue: throttled; all joins paused until ${new Date(this.joinCooldownUntil).toISOString()}`);
+        this._registerJoinBackoff('throttled', result.error);
+      } else if (!result.ok && isJoinStallError(result.error)) {
+        this._registerJoinBackoff('join stalled', result.error);
       }
       if (this.intentionalDisconnects.has(bot.name)) {
         return { ok: false, error: 'disconnected by operator', stopped: true };
@@ -357,6 +391,12 @@ class TeamRuntime {
       if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
         this.retryPausedBots.delete(bot.name);
+        // A stable session proves the limiter has cleared. Decay the strike
+        // counter only after a quiet period, so a success immediately followed
+        // by another throttle does not reset the exponential backoff.
+        if (this.lastThrottleAt && Date.now() - this.lastThrottleAt > 10 * 60 * 1000) {
+          this.throttleStrikes = Math.max(0, this.throttleStrikes - 1);
+        }
         this.logger.info(`[${bot.name}] ready (attempt ${attempt}, ${elapsed}ms)`);
         return result;
       }
@@ -367,7 +407,7 @@ class TeamRuntime {
       this.connectionErrors[bot.name] = result.error || 'connection failed';
       const max = config.server.reconnect.maxAttempts;
       if (max > 0 && attempt >= max) throw new Error(result.error || 'max reconnect attempts reached');
-      const delay = reconnectDelay({
+      let delay = reconnectDelay({
         attempt,
         error: result.error,
         baseDelayMs: config.server.reconnect.baseDelayMs,
@@ -375,7 +415,11 @@ class TeamRuntime {
         throttleDelayMs: config.server.reconnect.throttleDelayMs,
         jitterMs: config.server.reconnect.jitterMs
       });
-      const reason = isThrottleError(result.error) ? 'server join throttle' : 'connection failed';
+      const stalled = isJoinStallError(result.error);
+      if (stalled) delay = Math.max(delay, config.server.reconnect.throttleDelayMs);
+      // Never let a per-bot retry start sooner than the next fleet join slot.
+      delay = Math.max(delay, config.server.joinIntervalMs, this.nextJoinAt - Date.now());
+      const reason = isThrottleError(result.error) ? 'server join throttle' : stalled ? 'join stalled before spawn' : 'connection failed';
       this.logger.warn(`[${bot.name}] ${reason} after ${elapsed}ms: ${result.error}; retrying in ${(delay / 1000).toFixed(1)}s`);
       await sleep(delay, this.shutdownController.signal);
     }

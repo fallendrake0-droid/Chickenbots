@@ -214,3 +214,28 @@ test('AuthMe replies "Login successful." and "You are already registered." are a
   assert.equal(real.authenticated, true);
   assert.deepEqual(commands, ['/register secret secret', '/login secret']);
 });
+
+test('join throttles and spawn stalls share an exponential fleet cooldown', () => {
+  const { isJoinStallError, throttleCooldown } = require('../src/bot/connection');
+  assert.equal(isJoinStallError('timed out waiting for spawn'), true);
+  assert.equal(isJoinStallError('connection closed before the bot became ready'), true);
+  assert.equal(isJoinStallError('socket hang up'), false);
+  assert.equal(throttleCooldown({ strikes: 1, throttleDelayMs: 90000, maxDelayMs: 600000 }), 90000);
+  assert.equal(throttleCooldown({ strikes: 2, throttleDelayMs: 90000, maxDelayMs: 600000 }), 180000);
+  assert.equal(throttleCooldown({ strikes: 9, throttleDelayMs: 90000, maxDelayMs: 600000 }), 600000);
+  assert.equal(throttleCooldown({ strikes: 0, throttleDelayMs: 90000, maxDelayMs: 600000 }), 90000);
+});
+
+test('a post-login respawn does not wipe a confirmed password session', () => {
+  const real = new RealBot({ name: '________', loginPassword: 'secret' });
+  real.passwordRequired = true;
+  real.authConfirmed = true;
+  assert.equal(real._applySpawnAuth(), true);
+  assert.equal(real.authenticated, true);
+
+  const fresh = new RealBot({ name: '10101000', loginPassword: 'secret' });
+  fresh.passwordRequired = true;
+  fresh.authConfirmed = false;
+  assert.equal(fresh._applySpawnAuth(), false);
+  assert.equal(fresh.authenticated, false);
+});

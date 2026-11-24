@@ -106,6 +106,12 @@ const config = {
     // time, with jitter, instead of starting all five bots simultaneously.
     connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 5000),
     connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 1000),
+    // Paper/Bukkit applies a per-IP connection throttle (`connection-throttle`,
+    // commonly 30-60s on Aternos). Every bot in this fleet shares one source
+    // IP, so joins must be at least this far apart or the server rejects them
+    // and an existing session can be dropped in the storm.
+    joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 45000),
+    joinJitterMs: envInt('MC_JOIN_JITTER_MS', 10000),
     // Registration / login (Aternos + AuthMe style plugins). There is no
     // built-in password and no default credential: live connections refuse to
     // start with auth enabled unless a password is supplied through the
@@ -127,7 +133,8 @@ const config = {
       maxAttempts: envInt('MC_RECONNECT_MAX', 0), // 0 = unlimited
       baseDelayMs: envInt('MC_RECONNECT_BASE_MS', 5000),
       maxDelayMs: envInt('MC_RECONNECT_MAX_MS', 120000),
-      throttleDelayMs: envInt('MC_THROTTLE_DELAY_MS', 30000),
+      throttleDelayMs: envInt('MC_THROTTLE_DELAY_MS', 90000),
+      throttleMaxDelayMs: envInt('MC_THROTTLE_MAX_DELAY_MS', 600000),
       jitterMs: envInt('MC_RECONNECT_JITTER_MS', 4000)
     }
   },
@@ -279,6 +286,8 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('server.rejoinDelayMs', server.rejoinDelayMs, 0, 3600000);
   integer('server.connectStaggerMs', server.connectStaggerMs, 0, 3600000);
   integer('server.connectJitterMs', server.connectJitterMs, 0, 3600000);
+  integer('server.joinIntervalMs', server.joinIntervalMs, 0, 3600000);
+  integer('server.joinJitterMs', server.joinJitterMs, 0, 3600000);
   integer('server.versionProbeTimeoutMs', server.versionProbeTimeoutMs, 1000, 120000);
   integer('server.serverStartDelayMs', server.serverStartDelayMs, 1000, 3600000);
   integer('server.versionRetryDelayMs', server.versionRetryDelayMs, 1000, 3600000);
@@ -292,6 +301,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('server.reconnect.baseDelayMs', reconnect.baseDelayMs, 0, 3600000);
   integer('server.reconnect.maxDelayMs', reconnect.maxDelayMs, 1, 3600000);
   integer('server.reconnect.throttleDelayMs', reconnect.throttleDelayMs, 0, 3600000);
+  integer('server.reconnect.throttleMaxDelayMs', reconnect.throttleMaxDelayMs, 1, 3600000);
   integer('server.reconnect.jitterMs', reconnect.jitterMs, 0, 3600000);
   if (reconnect.baseDelayMs > reconnect.maxDelayMs) warn('server.reconnect', 'baseDelayMs is greater than maxDelayMs and will be capped');
 

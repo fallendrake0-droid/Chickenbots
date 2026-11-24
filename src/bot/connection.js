@@ -2,9 +2,24 @@
 
 /** Server-side join throttling and connection pacing helpers. */
 const THROTTLE_RE = /throttl|wait before reconnecting|too many connect|rate.?limit|try again later|connection limit/i;
+// A server that accepts the socket but never sends login/spawn is usually
+// still enforcing the same per-IP limiter. Treat it like a throttle so the
+// fleet backs off instead of retrying into the block.
+const JOIN_STALL_RE = /timed out waiting for spawn|before the bot became ready|no login confirmation|no register confirmation/i;
 
 function isThrottleError(error) {
   return THROTTLE_RE.test(String(error || ''));
+}
+
+function isJoinStallError(error) {
+  return JOIN_STALL_RE.test(String(error || ''));
+}
+
+/** Exponential fleet-wide join backoff after repeated throttle responses. */
+function throttleCooldown({ strikes = 1, throttleDelayMs = 90000, maxDelayMs = 600000 } = {}) {
+  const base = Math.max(1000, Number(throttleDelayMs) || 0);
+  const n = Math.max(1, Number(strikes) || 1);
+  return Math.min(Math.max(base, Number(maxDelayMs) || base), base * Math.pow(2, n - 1));
 }
 
 /**
@@ -46,7 +61,7 @@ function sleep(ms, signal = null) {
   });
 }
 
-module.exports = { isThrottleError, reconnectDelay, staggerDelay, sleep, classifyKick };
+module.exports = { isThrottleError, isJoinStallError, throttleCooldown, reconnectDelay, staggerDelay, sleep, classifyKick };
 
 /**
  * Classify why a socket ended. Operator/staff kicks and bans must stop the

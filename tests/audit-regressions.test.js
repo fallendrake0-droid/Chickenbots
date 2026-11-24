@@ -281,3 +281,36 @@ test('mock movement is clamped to the materialised world and mining honours its 
   const result = await actions.mining.mineOresDeep({ maxDepth: 4, minY: bot.position.y });
   assert.ok(result.results.some((r) => /minimum mining depth/.test(r.error || '')), JSON.stringify(result));
 });
+
+test('the join queue spaces starts and backs off exponentially after a throttle', async () => {
+  const runtime = await createRuntime({ simulate: true, connect: false, dashboard: false });
+  const joinInterval = config.server.joinIntervalMs;
+  const joinJitter = config.server.joinJitterMs;
+  const throttleDelay = config.server.reconnect.throttleDelayMs;
+  try {
+    config.server.joinIntervalMs = 80;
+    config.server.joinJitterMs = 0;
+    config.server.reconnect.throttleDelayMs = 1200;
+    runtime.nextJoinAt = 0;
+    const releaseFirst = await runtime._acquireJoinSlot();
+    releaseFirst();
+    const started = Date.now();
+    const releaseSecond = await runtime._acquireJoinSlot();
+    releaseSecond();
+    assert.ok(Date.now() - started >= 60, 'second join slot must wait for the per-IP interval');
+
+    assert.equal(runtime.throttleStrikes, 0);
+    runtime._registerJoinBackoff('throttled', 'Connection throttled!');
+    const firstCooldown = runtime.joinCooldownUntil - Date.now();
+    assert.ok(firstCooldown >= 900 && firstCooldown < 2000, `first cooldown was ${firstCooldown}`);
+    runtime._registerJoinBackoff('throttled', 'Connection throttled!');
+    const secondCooldown = runtime.joinCooldownUntil - Date.now();
+    assert.ok(secondCooldown > firstCooldown, 'repeated throttles must grow the cooldown');
+    assert.equal(runtime.throttleStrikes, 2);
+  } finally {
+    config.server.joinIntervalMs = joinInterval;
+    config.server.joinJitterMs = joinJitter;
+    config.server.reconnect.throttleDelayMs = throttleDelay;
+    if (runtime.shutdownController) runtime.shutdownController.abort();
+  }
+});

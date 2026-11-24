@@ -290,8 +290,9 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
-| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `5000` / `1000` | gap between joining bots; the runtime serializes logins and pauses all joins after an Aternos throttle |
-| `MC_THROTTLE_DELAY_MS` | `30000` | minimum retry delay after a throttled join |
+| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `45000` / `10000` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so five bots on one host must join slowly or the server rejects them. |
+| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `5000` / `1000` | gap before queuing each bot's initial connection task; the join queue still enforces `MC_JOIN_INTERVAL_MS` |
+| `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | first fleet-wide pause after a throttle or a socket that never reaches spawn; repeats double the pause up to the maximum |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
 | `MC_AUTH_ENABLED` | `true` | Set to `false` for servers with no password plugin |
@@ -484,7 +485,14 @@ commissioning.
 
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
-  Bots join one at a time with jitter, and throttled joins use a 30-second floor before retrying.
+  Bots join **one socket at a time**, at least `MC_JOIN_INTERVAL_MS` (45s by default) apart, because
+  Paper's `connection-throttle` is enforced per source IP and all five bots share the host's IP.
+  A throttle or a socket that never reaches spawn pauses **every** join and doubles that pause on each
+  repeat (90s, 180s, … up to 10 minutes). If you control the server, set
+  `settings.connection-throttle: 0` in `bukkit.yml` (or a value below `MC_JOIN_INTERVAL_MS`) and restart
+  it; otherwise keep the interval generous. A bot that drops re-enters the same queue after
+  `MC_REJOIN_DELAY_MS`, and connected bots swing their arm every 45s so idle/AFK plugins do not kick
+  the team while the rest of the roster joins.
   When `MC_LOGIN_PASSWORD` is set (there is no built-in default; put it in an untracked `.env`),
   every join sends only `/login` because the accounts already exist. If the server answers `You are not registered.`, Chickenbots
   creates that account once (`/register`) and retries `/login`. Set
