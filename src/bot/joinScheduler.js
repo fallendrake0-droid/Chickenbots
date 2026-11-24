@@ -98,7 +98,7 @@ class JoinScheduler {
     this.lastSuccessAt = when;
     // A successful join proves the server is accepting this fleet again. Do
     // not make the remaining healthy reconnect attempts sit out a pause that
-    // has already served its purpose; the normal 10s join spacing still
+    // has already served its purpose; the configured join spacing (0 by default) still
     // applies. The strike level is retained for a future, separate outage.
     this.cooldownUntil = 0;
     this.lastWaitMs = 0;

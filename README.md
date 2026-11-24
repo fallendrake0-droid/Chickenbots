@@ -326,8 +326,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
-| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `10000` / `0` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so ten bots on one host must join slowly or the server rejects them. |
-| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `10000` / `0` | exact gap before queuing each bot's initial connection task; the join queue also enforces `MC_JOIN_INTERVAL_MS` |
+| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `0` / `0` | artificial gap between login sockets; `0` starts the team immediately. A real server throttle still opens a bounded fleet-wide pause. |
+| `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `0` / `0` | gap before queuing each bot's initial connection task; `0` means immediate |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | fleet-wide pause after a throttle or a socket that never reaches spawn. One outage episode records **one** strike no matter how many bots fail in it; a genuinely separate outage (after a bot became ready) escalates the bounded, jittered pause up to the maximum |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
 | `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | Opt in to sending `/register` once before `/login` (only needed for a brand-new account) |
@@ -343,7 +343,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
 | `MC_KEEPALIVE_MS` | `120000` | client-side watchdog threshold. The library still sends the reply itself; this is a diagnostic, not the reconnect strategy |
 | `MC_STALE_AFTER_MS` | `90000` | a connected bot with no inbound packet for this long is reported as `No packets`, never `Online` |
-| `MC_REJOIN_DELAY_MS` | `10000` | hold-down before the first rejoin after a real session ends; the fleet reconnect supervisor keeps trying and the throttle queue backs off if the server rejects it |
+| `MC_REJOIN_DELAY_MS` | `0` | hold-down before the first rejoin after a real session ends; the reconnect supervisor and throttle queue still apply |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
 | `DASHBOARD_HOST` | `127.0.0.1` | bind address; loopback by default because the dashboard can issue commands |
@@ -598,17 +598,16 @@ commissioning.
 
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all ten bots are ready.
-  Bots join **one socket at a time**, at least `MC_JOIN_INTERVAL_MS` (10s by default) apart, because
-  Paper's `connection-throttle` is enforced per source IP and all ten bots share the host's IP.
-  A throttle or a socket that never reaches spawn pauses **every** join. All failures in the same
+  Bots start immediately; `MC_JOIN_INTERVAL_MS` defaults to **0**. If Paper/Aternos applies a
+  per-IP join throttle, that throttle or a socket that never reaches spawn pauses **every** join. All failures in the same
   outage are one strike, so four bots timing out do not turn a 90s pause into 10 minutes; a bot that
   becomes ready closes the episode and clears the pause, and only a separate later outage escalates
   the bounded, jittered backoff. Only one live runtime may run per checkout: a PID lock
   (`data/runtime/live.pid`) refuses a second instance, because duplicate logins make Aternos close the
   first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
-  `settings.connection-throttle: 0` in `bukkit.yml` (or a value below `MC_JOIN_INTERVAL_MS`) and restart
-  it; otherwise keep the interval generous. A bot that drops re-enters the same queue after
-  `MC_REJOIN_DELAY_MS` (10s by default), and the reconnect supervisor keeps running even while
+  `settings.connection-throttle: 0` in `bukkit.yml` if the burst is being rejected; otherwise the
+  runtime's bounded backoff handles it. A bot that drops re-enters the same queue after
+  `MC_REJOIN_DELAY_MS` (0 by default), and the reconnect supervisor keeps running even while
   autonomy is paused. Connected bots send a real swing animation every 30s so a writable session is
   visible to idle plugins. Chickenbots does **not** fabricate movement or jump to defeat AFK checks; the
   real 20 tps client tick loop is the fix for a client that looks frozen.

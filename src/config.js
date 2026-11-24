@@ -129,19 +129,18 @@ const config = {
     // long, so the dashboard never reports a dead socket as online. The vanilla
     // server sends keep-alives every ~15-20s, so 90s is safely above normal.
     staleAfterMs: envInt('MC_STALE_AFTER_MS', 90000),
-    // Aternos throttles a reconnect that follows a real session end. Hold the
-    // first rejoin briefly; the join queue and throttle backoff still protect
-    // against a server that rejects it. Initial joins use the same 10s spacing.
-    rejoinDelayMs: envInt('MC_REJOIN_DELAY_MS', 10000),
-    // Never start the next initial connection task before the fleet join
-    // interval has elapsed. Jitter is zero so the spacing is exactly 10s.
-    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 10000),
+    // Rejoin immediately after a real session ends. The per-bot retry backoff
+    // and fleet throttle scheduler still protect against a server that rejects
+    // a rapid return.
+    rejoinDelayMs: envInt('MC_REJOIN_DELAY_MS', 0),
+    // No artificial spacing between initial connection tasks. The join queue
+    // still serialises slot acquisition and honours a real server throttle.
+    connectStaggerMs: envInt('MC_CONNECT_STAGGER_MS', 0),
     connectJitterMs: envInt('MC_CONNECT_JITTER_MS', 0),
-    // Paper/Bukkit applies a per-IP connection throttle (`connection-throttle`,
-    // commonly 30-60s on Aternos). Every bot in this fleet shares one source
-    // IP, so joins must be at least this far apart or the server rejects them
-    // and an existing session can be dropped in the storm.
-    joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 10000),
+    // Paper/Bukkit can apply a per-IP connection throttle. The default is 0 so
+    // the team starts immediately; if the server throttles the burst, the
+    // strike scheduler still opens a bounded fleet-wide pause.
+    joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 0),
     joinJitterMs: envInt('MC_JOIN_JITTER_MS', 0),
     // Registration / login (Aternos + AuthMe style plugins). There is no
     // built-in password and no default credential: live connections refuse to

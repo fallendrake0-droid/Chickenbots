@@ -357,9 +357,9 @@ class TeamRuntime {
       // behind the old pause would still sit out the full 90s.
       await sleep(Math.min(wait, 1000), this.shutdownController.signal);
     }
-    // Hold the slot until the caller finishes connecting, then enforce the next
-    // start time. A fixed inter-start interval is what keeps the server's
-    // per-IP connection throttle from rejecting the fleet.
+    // Record the start time, then release the slot immediately unless an
+    // operator configured a non-zero interval. Holding the lock through the
+    // whole handshake made bots join strictly one-by-one even at 0 ms spacing.
     this.lastJoinStartedAt = Date.now();
     this.nextJoinAt = this.lastJoinStartedAt + staggerDelay({
       staggerMs: config.server.joinIntervalMs,
@@ -446,7 +446,10 @@ class TeamRuntime {
       }
       if (this.shutdownRequested) return { ok: false, error: 'shutting down' };
       const release = await this._acquireJoinSlot();
-      if (this.shutdownRequested) { release(); return { ok: false, error: 'shutting down' }; }
+      // Release after the start slot is granted, not after the entire
+      // handshake, so a 0 ms join interval really means no artificial delay.
+      release();
+      if (this.shutdownRequested) { return { ok: false, error: 'shutting down' }; }
       const startedAt = Date.now();
       this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.passwordRequired ? 'password' : 'none'} budgets: dns=${config.server.dnsTimeoutMs}ms tcp=${config.server.connectTimeoutMs}ms login=${config.server.loginTimeoutMs}ms configuration=${config.server.configurationTimeoutMs}ms spawn=${config.server.spawnTimeoutMs}ms`);
       let result;
@@ -454,8 +457,6 @@ class TeamRuntime {
         result = await bot.connect();
       } catch (err) {
         result = { ok: false, error: err.message, code: err.code };
-      } finally {
-        release();
       }
       const elapsed = Date.now() - startedAt;
       this._registerJoinFailure(bot, result);
