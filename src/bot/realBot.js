@@ -230,9 +230,7 @@ class RealBot extends BotAdapter {
       } catch (err) {
         // A synchronous EPIPE/EBADF must not escape a timer and crash the
         // process. Mark the transport dead so no later callback writes again.
-        this._transportDead = true;
-        this.lastError = this._redact(err.message || 'socket write failed');
-        this.logger.warn(`[${this.name}] socket write failed (${err.code || err.name || 'error'}): ${this.lastError}`);
+        this._handleSocketWriteFailure(err, 'socket write');
         return true;
       }
       // Count the library's own automatic reply only after its write call
@@ -277,6 +275,19 @@ class RealBot extends BotAdapter {
       const outcome = this.authenticated ? 'released movement after auth' : 'discarded movement while unauthenticated';
       this.logger.info(`[${this.name}] ${outcome} (${this._suppressedMovement} packet(s) held)`);
     }
+  }
+
+  _handleSocketWriteFailure(err, context = 'socket write') {
+    this._transportDead = true;
+    this.lastError = this._redact((err && err.message) || 'socket write failed');
+    this.logger.warn(`[${this.name}] ${context} failed (${(err && (err.code || err.name)) || 'error'}): ${this.lastError}`);
+    const generation = this.connection.generation;
+    // Do not tear down another generation if a queued callback from an old
+    // client fires after a reconnect. Cleanup itself is idempotent.
+    setImmediate(() => {
+      if (this.connection.generation !== generation || this.connection.terminal) return;
+      this.disconnect(`${context} failed: ${this.lastError}`, { generation }).catch(() => {});
+    });
   }
 
   _restoreClientTrace() {
@@ -363,10 +374,8 @@ class RealBot extends BotAdapter {
         } catch (err) {
           // A timer callback must not throw EPIPE into the process. Stop the
           // loop and let the ordinary end/kick path own the reconnect.
-          this._transportDead = true;
-          this.lastError = this._redact(err.message || 'tick write failed');
-          this.logger.warn(`[${this.name}] client tick write failed (${err.code || err.name || 'error'}): ${this.lastError}`);
           this._stopClientTicker('client write failed');
+          this._handleSocketWriteFailure(err, 'client tick write');
         }
       }
     });
