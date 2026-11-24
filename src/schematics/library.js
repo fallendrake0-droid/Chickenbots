@@ -241,6 +241,8 @@ class SchematicLibrary {
     this.minCount = minCount;
     this.cache = new Map();
     this.byId = new Map();
+    this._statsCache = null;
+    this._categoryCache = null;
     if (this._manifest && Array.isArray(this._manifest.designs)) {
       for (const design of this._manifest.designs) this.byId.set(design.id, design);
     }
@@ -252,6 +254,8 @@ class SchematicLibrary {
     if (!this._manifestLoaded) {
       this._manifest = loadManifest();
       this._manifestLoaded = true;
+      this._statsCache = null;
+      this._categoryCache = null;
       if (this._manifest) for (const design of this._manifest.designs) this.byId.set(design.id, design);
     }
     return this._manifest;
@@ -260,6 +264,8 @@ class SchematicLibrary {
   set manifest(value) {
     this._manifest = value;
     this._manifestLoaded = true;
+    this._statsCache = null;
+    this._categoryCache = null;
     this.byId.clear();
     if (value && Array.isArray(value.designs)) for (const design of value.designs) this.byId.set(design.id, design);
   }
@@ -366,10 +372,12 @@ class SchematicLibrary {
   search(query, limit = 20) { return this.list({ q: query, limit }); }
 
   categories() {
-    const map = new Map();
-    for (const d of (this.manifest ? this.manifest.designs : [])) {
-      map.set(d.category, (map.get(d.category) || 0) + 1);
+    if (!this._categoryCache) {
+      const base = new Map();
+      for (const d of (this.manifest ? this.manifest.designs : [])) base.set(d.category, (base.get(d.category) || 0) + 1);
+      this._categoryCache = base;
     }
+    const map = new Map(this._categoryCache);
     const store = this.customStore;
     if (store) for (const entry of store.list({ limit: Number.MAX_SAFE_INTEGER })) {
       map.set(entry.category, (map.get(entry.category) || 0) + 1);
@@ -379,39 +387,48 @@ class SchematicLibrary {
 
   stats() {
     if (!this.manifest) return { loaded: false, count: 0 };
-    const designs = this.manifest.designs;
     const store = this.customStore;
     const customStats = store ? store.statsSummary() : null;
-    const blockCounts = designs.map((d) => Object.values(d.materials).reduce((s, n) => s + n, 0));
-    const materialTotals = {};
-    for (const d of designs) for (const [name, n] of Object.entries(d.materials)) materialTotals[name] = (materialTotals[name] || 0) + n;
-    const topMaterials = Object.entries(materialTotals).sort((a, b) => b[1] - a[1]).slice(0, 15)
-      .map(([name, count]) => ({ name, count }));
+    // The 10,000-design manifest is static between generations. Walking every
+    // material map and re-sorting categories on each dashboard snapshot cost
+    // more than a second and blocked keep-alive/tick processing, so the base
+    // half is computed once and only custom-store counts are refreshed.
+    if (!this._statsCache) {
+      const designs = this.manifest.designs;
+      const blockCounts = designs.map((d) => Object.values(d.materials).reduce((s, n) => s + n, 0));
+      const materialTotals = {};
+      for (const d of designs) for (const [name, n] of Object.entries(d.materials)) materialTotals[name] = (materialTotals[name] || 0) + n;
+      const topMaterials = Object.entries(materialTotals).sort((a, b) => b[1] - a[1]).slice(0, 15)
+        .map(([name, count]) => ({ name, count }));
+      this._statsCache = {
+        loaded: true,
+        count: designs.length,
+        minimumRequired: this.minCount,
+        meetsMinimum: designs.length >= this.minCount,
+        uniqueGeometry: new Set(designs.map((d) => d.geometryHash)).size,
+        tiers: [...new Set(designs.map((d) => d.tier))].map((tier) => ({ tier, count: designs.filter((d) => d.tier === tier).length })),
+        categories: this.categories(),
+        blocks: {
+          total: blockCounts.reduce((s, n) => s + n, 0),
+          min: Math.min(...blockCounts),
+          max: Math.max(...blockCounts),
+          average: Math.round(blockCounts.reduce((s, n) => s + n, 0) / blockCounts.length)
+        },
+        topMaterials,
+        dimensions: {
+          maxWidth: Math.max(...designs.map((d) => d.dimensions.width)),
+          maxHeight: Math.max(...designs.map((d) => d.dimensions.height)),
+          maxLength: Math.max(...designs.map((d) => d.dimensions.length))
+        },
+        generatedAt: this.manifest.generatedAt,
+        generationMs: this.manifest.generationMs,
+        rejected: (this.manifest.rejected || []).length
+      };
+    }
     return {
-      loaded: true,
-      count: designs.length,
-      minimumRequired: this.minCount,
-      meetsMinimum: designs.length >= this.minCount,
-      uniqueGeometry: new Set(designs.map((d) => d.geometryHash)).size,
-      tiers: [...new Set(designs.map((d) => d.tier))].map((tier) => ({ tier, count: designs.filter((d) => d.tier === tier).length })),
-      categories: this.categories(),
-      blocks: {
-        total: blockCounts.reduce((s, n) => s + n, 0),
-        min: Math.min(...blockCounts),
-        max: Math.max(...blockCounts),
-        average: Math.round(blockCounts.reduce((s, n) => s + n, 0) / blockCounts.length)
-      },
-      topMaterials,
-      dimensions: {
-        maxWidth: Math.max(...designs.map((d) => d.dimensions.width)),
-        maxHeight: Math.max(...designs.map((d) => d.dimensions.height)),
-        maxLength: Math.max(...designs.map((d) => d.dimensions.length))
-      },
-      generatedAt: this.manifest.generatedAt,
-      generationMs: this.manifest.generationMs,
-      rejected: designs.length === 0 ? 0 : (this.manifest.rejected || []).length,
+      ...this._statsCache,
       custom: customStats,
-      totalIncludingCustom: designs.length + (customStats ? customStats.count : 0)
+      totalIncludingCustom: this._statsCache.count + (customStats ? customStats.count : 0)
     };
   }
 }

@@ -131,8 +131,9 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   let eventTimer = null;
   const startEventTimer = () => {
     if (eventTimer) return;
-    // One second keeps the browser close enough to the real connection state
-    // that a kicked bot no longer reads as online for several seconds.
+    // Two seconds keeps the browser close to the real connection state without
+    // rebuilding the full bot/action/library snapshot every second; a large
+    // snapshot can otherwise consume a noticeable share of the event loop.
     eventTimer = setInterval(() => {
       if (!eventClients.size) return;
       let payload;
@@ -156,7 +157,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
           client.write(payload);
         } catch (_) { eventClients.delete(client); }
       }
-    }, 1000);
+    }, 2000);
     if (eventTimer.unref) eventTimer.unref();
   };
 

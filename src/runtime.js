@@ -237,6 +237,14 @@ class TeamRuntime {
     this.running = true;
     this.startedAt = Date.now();
     let dashboardInfo = null;
+    if (this.dashboard && this.library) {
+      // Build the library index/summary before the first dashboard request or
+      // bot socket. Parsing the 20 MB manifest inside a live status snapshot
+      // blocked the event loop for >1 s while logins were in flight.
+      const started = Date.now();
+      this.library.stats();
+      this.logger.info(`schematic library ready: ${this.library.count} designs in ${Date.now() - started}ms`);
+    }
     if (this.dashboard) {
       dashboardInfo = await this.dashboard.start();
       this.logger.info(`dashboard listening on http://${dashboardInfo.host}:${dashboardInfo.port}`);
