@@ -111,10 +111,13 @@ class MiningController {
     return true;
   }
 
-  findOres({ radius = config.mining.maxSearchRadius, limit = 32 } = {}) {
+  findOres({ radius = config.mining.maxSearchRadius, limit = 32, only = null } = {}) {
     // Exposed ore only: a flat findBlocks limit returns one deep buried layer,
     // which mineOre() can neither walk to nor reach with its pickaxe.
-    return findExposed(this.bot, ORE_NAMES, { radius: Math.min(radius, 20), minY: -59, limit });
+    const names = only
+      ? [only, only.startsWith('deepslate_') ? only.slice('deepslate_'.length) : `deepslate_${only}`].filter((name) => ORE_TIERS[name])
+      : ORE_NAMES;
+    return findExposed(this.bot, names, { radius: Math.min(radius, 20), minY: -59, limit });
   }
 
   /** Hazards are checked before every dig: adjacent lava/water and a liquid ceiling. */
@@ -279,9 +282,9 @@ class MiningController {
   }
 
   /** Mine every safe ore in range, best-first by distance. */
-  async mineNearby({ radius = 24, limit = 16 } = {}) {
+  async mineNearby({ radius = 24, limit = 16, only = null } = {}) {
     this._begin();
-    const ores = this.findOres({ radius, limit });
+    const ores = this.findOres({ radius, limit, only });
     const results = [];
     for (const ore of ores) {
       if (this.stopRequested) break;
@@ -298,9 +301,9 @@ class MiningController {
   }
 
   /** Ore search that can sink a safe shaft when no ore is reachable from the surface. */
-  async mineOresDeep({ radius = 48, limit = 6, maxDepth = 8, minY = -59 } = {}) {
+  async mineOresDeep({ radius = 48, limit = 6, maxDepth = 8, minY = -59, only = null } = {}) {
     this._begin();
-    const shallow = await this.mineNearby({ radius, limit });
+    const shallow = await this.mineNearby({ radius, limit, only });
     if (shallow.mined > 0 || this.stopRequested) return shallow;
     const results = [];
     let mined = 0;
@@ -324,7 +327,9 @@ class MiningController {
         results.push({ ok: false, error: 'unsafe shaft block', hazards: safety.hazards });
         break;
       }
-      if (ORE_TIERS[block.name]) {
+      const wanted = !only || block.name === only || block.name === `deepslate_${only}`
+        || (only.startsWith('deepslate_') && block.name === only.slice('deepslate_'.length));
+      if (ORE_TIERS[block.name] && wanted) {
         const oreResult = await this.mineOre(below);
         results.push(oreResult);
         if (oreResult.ok) mined++;
@@ -340,14 +345,24 @@ class MiningController {
       const move = await this.bot.goTo(below, { range: 0 });
       if (!move || move.ok === false) break;
     }
+    // A vertical shaft only samples one column. When that column is exhausted
+    // (the common 12/32 stall), expose fresh faces with a short horizontal
+    // branch before the next tick rescans.
+    if (mined === 0 && !this.stopRequested) {
+      const axis = (this.stats.tunnels % 2 === 0) ? 'x' : 'z';
+      const branch = await this.branchMine({ length: 6, axis, direction: 1, only });
+      results.push(branch);
+      mined += branch.ores || 0;
+    }
     return { ok: mined > 0, mined, skipped: results.filter((r) => !r.ok).length, results };
   }
 
   /** A 1x2 branch tunnel with torches, stopping at hazards. */
-  async branchMine({ length = 16, axis = 'x', direction = 1, torchEvery = config.mining.torchInterval } = {}) {
+  async branchMine({ length = 16, axis = 'x', direction = 1, torchEvery = config.mining.torchInterval, only = null } = {}) {
     this._begin();
     const start = { ...this.bot.position };
     let mined = 0;
+    let ores = 0;
     let placed = 0;
     let stopped = null;
     for (let step = 1; step <= length && !this.stopRequested; step++) {
@@ -357,11 +372,13 @@ class MiningController {
         const block = this.bot.getBlock(pos);
         if (!block || block.name === 'air') continue;
         if (HAZARDS.has(block.name)) { stopped = { reason: `hazard ${block.name}`, position: pos }; break; }
-        const safety = this.checkSafety(pos);
+        const safety = this.checkSafety(pos, { ignoreFloor: true });
         if (!safety.safe) { stopped = { reason: 'unsafe', position: pos, hazards: safety.hazards }; break; }
-        if (ORE_TIERS[block.name]) {
+        const wanted = !only || block.name === only || block.name === `deepslate_${only}`
+          || (only.startsWith('deepslate_') && block.name === only.slice('deepslate_'.length));
+        if (ORE_TIERS[block.name] && wanted) {
           const oreResult = await this.mineOre(pos);
-          if (oreResult.ok) mined++;
+          if (oreResult.ok) { mined++; ores++; }
           continue;
         }
         const move = await this.bot.goTo(pos, { range: 3 });
@@ -381,7 +398,7 @@ class MiningController {
       }
     }
     this.stats.tunnels++;
-    return { ok: mined > 0, mined, torches: placed, stopped, start, length, axis, direction };
+    return { ok: mined > 0, mined, ores, torches: placed, stopped, start, length, axis, direction };
   }
 
   caveScan({ radius = 24 } = {}) {

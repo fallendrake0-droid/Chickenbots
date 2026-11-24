@@ -117,7 +117,16 @@ class RecoveryManager {
     food = null,
     threats = [],
     lastDamageAt = null,
-    deathMessage = null
+    deathMessage = null,
+    confidence = 'unknown',
+    summary = null,
+    task = null,
+    navigation = null,
+    combat = null,
+    equipment = null,
+    environment = null,
+    velocity = null,
+    onGround = null
   } = {}) {
     const entry = {
       at,
@@ -133,7 +142,16 @@ class RecoveryManager {
         username: threat.username || null
       })),
       lastDamageAt: lastDamageAt || null,
-      deathMessage: deathMessage || null
+      deathMessage: deathMessage || null,
+      confidence: ['confirmed', 'likely', 'unknown'].includes(confidence) ? confidence : 'unknown',
+      summary: summary || null,
+      task: task ? { id: task.id || task.taskId || null, type: task.type || null, label: task.label || null } : null,
+      navigation: navigation || null,
+      combat: combat ? { state: combat.state || null, target: combat.target || null } : null,
+      equipment: equipment || null,
+      environment: environment || null,
+      velocity: velocity || null,
+      onGround: onGround === undefined ? null : onGround
     };
     this.deaths.push(entry);
     this._trim(at);
@@ -158,7 +176,7 @@ class RecoveryManager {
   }
 
   /** Assess whether the place the server put the bot is survivable. */
-  assessSpawn({ threats = [], health = 20, food = 20, position = null } = {}) {
+  assessSpawn({ threats = [], health = 20, food = 20, position = null, hazards = [] } = {}) {
     const hostiles = threats.filter((threat) => threat && (threat.hostile || threat.type === 'player'));
     const nearest = hostiles.slice().sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999))[0] || null;
     const reasons = [];
@@ -166,6 +184,7 @@ class RecoveryManager {
     if (hostiles.length >= 3) reasons.push(`${hostiles.length} hostiles nearby`);
     if (Number(health) <= this.criticalHealth) reasons.push(`health ${health}`);
     if (Number(food) <= 6) reasons.push(`food ${food}`);
+    for (const hazard of hazards || []) if (!reasons.includes(hazard)) reasons.push(hazard);
     const safe = reasons.length === 0;
     const assessment = {
       at: this.now(),
@@ -176,14 +195,15 @@ class RecoveryManager {
       nearest: nearest ? { name: nearest.name || nearest.type || 'unknown', distance: nearest.distance ?? null } : null,
       health,
       food,
+      hazards: (hazards || []).slice(),
       reasons
     };
     this.spawnSafety = assessment;
     return assessment;
   }
 
-  recordSpawn({ at = this.now(), position = null, threats = [], health = 20, food = 20 } = {}) {
-    const assessment = this.assessSpawn({ threats, health, food, position });
+  recordSpawn({ at = this.now(), position = null, threats = [], health = 20, food = 20, hazards = [] } = {}) {
+    const assessment = this.assessSpawn({ threats, health, food, position, hazards });
     this.spawns.push({ at, position: position ? { ...position } : null, safe: assessment.safe, reasons: assessment.reasons });
     this._trim(at);
     if (!assessment.safe) {
@@ -291,7 +311,16 @@ class RecoveryManager {
         healthBefore: death.healthBefore,
         food: death.food,
         threats: death.threats,
-        deathMessage: death.deathMessage
+        deathMessage: death.deathMessage,
+        confidence: death.confidence,
+        summary: death.summary,
+        task: death.task,
+        navigation: death.navigation,
+        combat: death.combat,
+        equipment: death.equipment,
+        environment: death.environment,
+        velocity: death.velocity,
+        onGround: death.onGround
       })),
       lastDeath: this.lastDeath,
       spawnSafety: this.spawnSafety,

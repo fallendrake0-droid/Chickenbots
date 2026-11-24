@@ -257,8 +257,14 @@ class MockBot extends BotAdapter {
         return { ok: true, position: { ...this.position }, distance: distance(start, this.position), range };
       }
     }
-    // Terrain navigation: walk toward the target on the surface if no stance is open.
+    // Terrain navigation: walk toward the target on the surface only when the
+    // target really is a surface point. Teleporting a miner from y=-7 to the
+    // surface to reach a blocked stance silently destroyed mining shafts and
+    // made every deep task restart from the top.
     const ground = this.world.surfaceY(target.x, target.z) + 1;
+    if (Math.abs(ground - start.y) > 8 && Math.abs(ground - target.y) > 3) {
+      return { ok: false, error: `no reachable stance near ${target.x},${target.y},${target.z}`, position: { ...this.position } };
+    }
     this.position = { x: target.x, y: ground, z: target.z };
     this.stats.moved++;
     this.fallDistance = 0;
@@ -553,17 +559,45 @@ class MockBot extends BotAdapter {
       const causeLabel = this.lastAttacker
         ? `${this.lastAttacker.name}${this.lastAttacker.distance !== null ? ` (${this.lastAttacker.distance}m)` : ''}`
         : this.lastDeathMessage || cause || 'unknown damage source';
+      const blockAt = (dx, dy, dz) => {
+        try {
+          const block = this.getBlock({ x: Math.floor(this.position.x) + dx, y: Math.floor(this.position.y) + dy, z: Math.floor(this.position.z) + dz });
+          return block && block.name ? String(block.name).replace(/^minecraft:/, '') : null;
+        } catch (_) { return null; }
+      };
+      const blocks = { feet: blockAt(0, 0, 0), head: blockAt(0, 1, 0), below: blockAt(0, -1, 0) };
+      const names = Object.values(blocks).filter(Boolean);
+      const hazards = [];
+      if (names.some((name) => name.includes('lava'))) hazards.push('lava');
+      if (names.some((name) => name === 'fire' || name === 'soul_fire')) hazards.push('fire');
+      if (names.some((name) => name.includes('water'))) hazards.push('water');
       this.lastDeath = {
         at,
         position: { ...this.position },
         cause: causeLabel,
+        confidence: this.lastDeathMessage ? 'confirmed' : this.lastAttacker ? 'likely' : 'unknown',
+        summary: `Died at ${Math.round(this.position.x)},${Math.round(this.position.y)},${Math.round(this.position.z)}: ${causeLabel}`,
         healthBefore: before,
         food: this.food,
+        saturation: this.saturation ?? null,
         lastDamageAt: this.lastDamageAt || null,
         lastDamageAmount: this.lastDamageAmount || null,
         attacker: this.lastAttacker || null,
         message: this.lastDeathMessage || null,
-        dimension: this.dimension || 'overworld'
+        dimension: this.dimension || 'overworld',
+        velocity: null,
+        onGround: this.onGround ?? null,
+        equipment: {
+          held: this.heldItem || null,
+          offhand: this.getOffhand ? this.getOffhand() : null,
+          armor: this.equipment.armorPieces || [],
+          toolTiers: { pickaxe: this.equipment.pickaxe || 0, axe: this.equipment.axe || 0, shovel: this.equipment.shovel || 0, sword: this.equipment.sword || 0 }
+        },
+        environment: {
+          blocks,
+          hazards,
+          flags: { onGround: this.onGround ?? null, oxygen: this.oxygen ?? null, food: this.food ?? null, saturation: this.saturation ?? null, health: this.health ?? null, onFire: Boolean(this.onFire), inLava: Boolean(this.inLava) }
+        }
       };
       this.deathHistory.push(this.lastDeath);
       if (this.deathHistory.length > 40) this.deathHistory.shift();

@@ -28,7 +28,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     completionCondition: 'foundation, walls, roof, storage, five beds and perimeter verified',
     failureCondition: 'site unusable and no alternative within 256 blocks',
     recoveryStrategy: 're-plan site and reuse gathered materials',
-    requirements: { oak_log: 256, stone: 128, iron_ingot: 64, food: 128, bed: 5 },
+    requirements: { oak_log: 256, stone: 128, iron_ingot: 32, food: 128, bed: 5 },
     metadata: { template, botNames }
   });
 
@@ -76,7 +76,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     metadata: { risk: 'normal' }
   })).filter(Boolean);
 
-  const ironQuotas = splitQuota(64, 2);
+  const ironQuotas = splitQuota(32, 2);
   ironQuotas.map((q, i) => add({
     type: 'MINE_ORE',
     label: `Mine ${q} iron ore (${i + 1}/2)`,
@@ -91,11 +91,11 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
 
   const food = add({
     type: 'FARM_CROP',
-    label: 'Establish food production',
+    label: 'Establish food production (16 crops)',
     priority: 70,
     requires: { capability: 'farm' },
-    params: { crop: 'wheat', count: 64, establish: true },
-    units: { target: 64 },
+    params: { crop: 'wheat', count: 16, establish: true },
+    units: { target: 16 },
     maxAttempts: 3,
     estimatedMs: 300000,
     metadata: { risk: 'low' }

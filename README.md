@@ -116,7 +116,12 @@ tests/                      team, excavation, construction, schematics, builder,
   to dead work; a task with no verified progress for `TASK_STALL_MS` is released for re-planning.
   Completion still requires a verified world change.
 * Objective manager and task board with dependencies, claims with TTL, heartbeats, retries,
-  cancellation, spatial region reservations and lock deadlock detection/resolution.
+  cancellation, spatial region reservations and lock deadlock detection/resolution. Autonomous
+  planning never disables itself permanently: a completed objective is followed by a fresh plan,
+  a failed one backs off exponentially (60s, 120s, … capped at 5 minutes) and the dashboard exposes
+  `team.planning` so "no objective" is visible instead of guessed at.
+* Tasks record the command that created them, the operator, `createdAt` and `lastProgressAt`, so an
+  operator can trace a row back to their own request rather than trusting a label.
 * Resource ledger with per-bot inventories, verified storage counts, reservations and real
   transfer requests. The builder moves items between bots and containers instead of duplicating them.
 * Internal comms bus (objective created, task completed, emergency, leader elected, transfers).
@@ -135,8 +140,11 @@ tests/                      team, excavation, construction, schematics, builder,
   an operator (`target add`, `duel`, or an authorised arena), and the policy still refuses teammates,
   protected players, unauthorised names and servers with `SERVER_PVP_ENABLED=false`. No packet
   exploits, reach hacks or fabricated hits are used.
-* Death diagnostics record the real position, last attacker/death message, health/food at death and
-  nearby threats. A rolling death-loop detector (`3 deaths/2 min` or `5/10 min`) puts the bot into a
+* Death diagnostics record the real position, last attacker/death message (with an explicit
+  `confirmed`/`likely`/`unknown` confidence instead of pretending to know an unobserved cause),
+  health/food/velocity at death, nearby threats, the task the bot was working on, held/offhand/armour
+  equipment and a bounded scan of the feet/head/floor blocks (`lava`, `fire`, `water`, `suffocation`,
+  `falling`). A rolling death-loop detector (`3 deaths/2 min` or `5/10 min`) puts the bot into a
   recovery state: it stops claiming work, heals/equips, retreats toward home, releases its task for
   re-planning and only resumes after a quiet safe-hold period. An unsafe spawn (hostiles within
   range, critical health or hunger) starts the same recovery instead of feeding the loop.
@@ -330,7 +338,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `LOG_LEVEL` | `info` | `info` prints lifecycle and errors; `debug` adds lifecycle detail |
 | `MC_TRACE_PACKETS` | `false` | opt-in per-packet movement/keepalive tracing. Leave off during normal live runs: a flooded terminal can block the event loop and drop the socket |
 | `AUTONOMY_ENABLED` | `true` | autonomy request; still gated on connection+auth+spawn |
-| `TASK_STALL_MS` | `90000` | a task with no verified progress this long is released for re-planning |
+| `TASK_STALL_MS` | `45000` | a task with no verified progress this long is released for re-planning; real excavation work (a dug shaft/branch) resets the timer even before the quota moves |
 | `TASK_STALL_CYCLES` | `3` | minimum no-progress action cycles before release |
 | `PVE_ENABLED` | `true` | autonomous hostile-mob defence; on by default |
 | `PvP_ENABLED` | `true` | PvP feature enabled by default, but players are only attacked when explicitly authorised on the target list |
@@ -390,6 +398,7 @@ build <designId|number|query> [x y z] [run] confirm
 home set x y z | home status | home build [tier] [run] confirm
 schematics <list|search|info|stats|validate|export|import> ...
 pause | resume | stop
+queue status | queue retry <bot|all> | queue cooldown reset
 ```
 
 Examples:

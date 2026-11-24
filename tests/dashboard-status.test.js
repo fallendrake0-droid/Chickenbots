@@ -126,6 +126,13 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
     assert.deepEqual(settings.body.settings.roster, NAMES);
     assert.equal(settings.body.settings.server.joinIntervalMs, 10000);
     assert.match(String(settings.headers['cache-control']), /no-store/);
+    const queue = await request(port, '/api/queue');
+    assert.equal(queue.body.ok, true);
+    assert.ok(Array.isArray(queue.body.joinQueue.waiting));
+    assert.equal(queue.body.bots.length, 5);
+    const reset = await request(port, '/api/queue/reset-cooldown', 'POST', {});
+    assert.equal(reset.body.ok, true);
+    assert.equal(reset.body.joinQueue.cooldownUntil, null);
 
     const kicked = await request(port, '/api/bot/________/disconnect', 'POST', {});
     assert.equal(kicked.body.ok, true);

@@ -3,7 +3,7 @@ import { esc, timeAgo, humanize } from './utils.js';
 import { openModal, isModalOpen, confirmDialog, toast, resultMessage, setButtonLoading } from './ui.js';
 import {
   init, state, prefs, savePrefs, subscribe, unreadNotifications, notifications,
-  markNotificationsRead, botNames, serverInfo, fleetHealth, runCommand, runBotAction,
+  markNotificationsRead, botNames, serverInfo, fleetHealth, runCommand, runBotAction, runQueueAction,
   fetchLogs, refreshCommands, payloadOf
 } from './store.js';
 import { resolveRoute, renderNav, NAV_ITEMS } from './router.js';
@@ -437,6 +437,30 @@ async function onBotAction(button) {
   }
 }
 
+async function onQueueAction(button) {
+  const action = button.dataset.queueAction;
+  if (!action) return;
+  if (action === 'reset-cooldown') {
+    const ok = await confirmDialog({
+      title: 'Clear join queue cooldown',
+      message: 'Clear the fleet-wide join cooldown and throttle strike counter?',
+      confirmLabel: 'Clear cooldown',
+      details: 'Only do this when you know the server throttle has expired. Hammering a live throttle can extend it.'
+    });
+    if (!ok) return;
+  }
+  setButtonLoading(button, true);
+  try {
+    const result = await runQueueAction(action);
+    if (result && result.ok === false) notify('error', 'Queue action failed', result.error || 'Backend rejected the action.', 8000);
+    else notify('success', 'Join queue updated', action === 'retry-all' ? `${result.queued || 0} reconnect(s) queued` : 'Cooldown cleared', 4500);
+  } catch (err) {
+    notify('error', 'Queue action failed', err.message, 8000);
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
 /* --------------------------------------------------------------- dropdown */
 
 function closeDropdowns(except = null) {
@@ -727,6 +751,12 @@ function wireGlobalActions() {
     if (botAction) {
       event.preventDefault();
       await onBotAction(botAction);
+      return;
+    }
+    const queueAction = event.target.closest('[data-queue-action]');
+    if (queueAction) {
+      event.preventDefault();
+      await onQueueAction(queueAction);
       return;
     }
     const assign = event.target.closest('[data-task-assign]');

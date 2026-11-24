@@ -729,7 +729,7 @@ function registerAll(services, registry) {
 
   registry.register({
     name: 'task', category: 'task', summary: 'Task manager: list, add, assign, cancel, retry, objectives', usage: 'task <list|add|assign|priority|cancel|retry|info|objective> ...',
-    execute: async (args) => {
+    execute: async (args, context = {}) => {
       const sub = (args[0] || 'list').toLowerCase();
       if (sub === 'list') {
         const status = args[1] ? args[1].toUpperCase() : null;
@@ -745,7 +745,11 @@ function registerAll(services, registry) {
         const parsed = parseTaskParams(args.slice(2));
         validateTaskParams(type, parsed.params);
         const label = parsed.label || type;
-        const result = services.taskBoard.addTask({ type, label, priority: 50, params: parsed.params });
+        const result = services.taskBoard.addTask({
+          type, label, priority: 50, params: parsed.params,
+          sourceCommand: context && context.line ? context.line : null,
+          createdBy: context && context.operator ? context.operator : null
+        });
         if (!result.ok) return result;
         return { ok: true, task: result.task, params: result.task.params };
       }
@@ -820,6 +824,39 @@ function registerAll(services, registry) {
   registerCombat(registry, services);
   registerConstruction(registry, services);
   registerSchematics(registry, services);
+
+  registry.register({
+    name: 'queue', category: 'core', summary: 'Inspect or repair the join/reconnect queue', usage: 'queue <status|retry <bot|all>|cooldown reset>',
+    execute: async (args) => {
+      if (!services.runtime) throw new CommandError('no runtime available');
+      const action = args[0] || 'status';
+      if (action === 'status') {
+        const state = services.runtime.state();
+        return {
+          ok: true,
+          joinQueue: state.joinQueue,
+          bots: state.bots.map((bot) => ({ name: bot.name, ready: bot.ready, spawn: bot.lastSpawn ? { at: bot.lastSpawn.at, safe: bot.lastSpawn.safe } : null, timings: bot.stageTimings }))
+        };
+      }
+      if (action === 'retry') {
+        const target = args[1];
+        if (!target) throw new CommandError('queue retry requires a bot name or "all"');
+        const names = target === 'all' ? BOT_NAMES : [target];
+        for (const name of names) if (!services.bots.has(name)) throw new CommandError(`unknown bot ${name}; roster: ${BOT_NAMES.join(', ')}`);
+        const results = [];
+        for (const name of names) results.push(await services.runtime.reconnectBot(name));
+        return { ok: results.every((result) => result.ok !== false), results };
+      }
+      if (action === 'cooldown' && args[1] === 'reset') {
+        const previous = { cooldownUntil: services.runtime.joinCooldownUntil || null, strikes: services.runtime.throttleStrikes || 0 };
+        services.runtime.joinCooldownUntil = 0;
+        services.runtime.throttleStrikes = 0;
+        services.runtime.nextJoinAt = 0;
+        return { ok: true, cleared: previous };
+      }
+      throw new CommandError('usage: queue <status|retry <bot|all>|cooldown reset>');
+    }
+  });
 
   registry.register({
     name: 'pause', category: 'core', summary: 'Pause autonomous actions', usage: 'pause',

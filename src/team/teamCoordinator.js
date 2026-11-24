@@ -67,11 +67,15 @@ class TeamCoordinator {
     this.roles = new Map();
     this.formation = config.team.formation;
     this.autoPlan = autoPlan;
+    // Consecutive failed plans, not the number of plans ever created. Counting
+    // creations made the team stop planning forever after three successful
+    // objectives, which looked exactly like "the bots are idle".
+    this.planFailures = 0;
     this.planAttempts = 0;
     this.planRetryAt = 0;
-    this.planStopped = false;
     this.planRetryMs = 60000;
-    this.maxAutoPlans = 3;
+    this.maxAutoPlanBackoffMs = 5 * 60 * 1000;
+    this.lastPlanObjectiveId = null;
     this.enabled = false;
     this.ticks = 0;
     this.startedAt = now();
@@ -250,19 +254,37 @@ class TeamCoordinator {
   ensureObjectives() {
     if (!this.autoPlan) return null;
     if (this.board.listObjectives('ACTIVE').length > 0) return null;
-    if (this.planStopped) return null;
     const now = this.now();
+    // Resolve the previous plan before deciding whether to make a new one.
+    // Failed plans back off exponentially, but planning is never disabled
+    // permanently: a later success resets the backoff.
+    if (this.lastPlanObjectiveId) {
+      const previous = this.board.getObjective(this.lastPlanObjectiveId);
+      this.lastPlanObjectiveId = null;
+      if (previous && previous.status === 'FAILED') {
+        this.planFailures++;
+        const delay = Math.min(this.maxAutoPlanBackoffMs, this.planRetryMs * (2 ** Math.min(4, this.planFailures - 1)));
+        this.planRetryAt = now + delay;
+        if (this.logger) this.logger.warn(`automatic plan failed (${this.planFailures} consecutive); re-planning in ${Math.round(delay / 1000)}s`);
+        return null;
+      }
+      if (previous && previous.status === 'COMPLETED') {
+        this.planFailures = 0;
+        this.planRetryAt = now + 15000;
+        return null;
+      }
+      // A cancelled objective is an operator decision; do not count it as a
+      // planner failure, but give the operator a short quiet period.
+      this.planFailures = 0;
+      this.planRetryAt = now + 5000;
+      return null;
+    }
     if (now < this.planRetryAt) return null;
-    // A failed automatic plan must not be recreated every tick: that filled the
-    // task board with thousands of duplicate objectives and flooded the log.
     const plan = createSurvivalBasePlan(this.board, { botNames: this.botNames });
     if (plan.created) {
       this.planAttempts++;
+      this.lastPlanObjectiveId = plan.objective.id;
       this.planRetryAt = now + this.planRetryMs;
-      if (this.planAttempts >= this.maxAutoPlans) {
-        this.planStopped = true;
-        if (this.logger) this.logger.error(`automatic planning paused after ${this.planAttempts} failed plan(s); fix the blocking task and restart or add a plan manually`);
-      }
       this.comms.send('OBJECTIVE_CREATED', 'system', { objectiveId: plan.objective.id, title: plan.objective.title });
       if (this.logger) this.logger.info(`new team objective: ${plan.objective.title}`);
     }
@@ -494,7 +516,15 @@ class TeamCoordinator {
         objectives: this.objectiveBoard(),
         roles: Object.fromEntries(this.roles),
         formationSlots: this.formationSlots().slots,
-        separation: this.separationVectors()
+        separation: this.separationVectors(),
+        planning: {
+          autoPlan: this.autoPlan,
+          failures: this.planFailures,
+          attempts: this.planAttempts,
+          nextRetryAt: this.planRetryAt || null,
+          lastObjectiveId: this.lastPlanObjectiveId,
+          stopped: false
+        }
       },
       bots,
       resources: this.ledger.snapshot(),

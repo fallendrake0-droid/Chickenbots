@@ -95,11 +95,13 @@ class BotActions {
     if (this._deathHandled || this.combat.state === 'DEAD') {
       this.combat.onRespawn();
       const threatsNow = typeof bot.entitiesNear === 'function' ? bot.entitiesNear(16) : [];
+      const hazards = this._spawnHazards();
       this.recovery.recordSpawn({
         position: bot.position,
         threats: threatsNow,
         health: bot.health,
-        food: bot.food
+        food: bot.food,
+        hazards
       });
       this._deathHandled = false;
     }
@@ -128,6 +130,28 @@ class BotActions {
     return result;
   }
 
+  /** Block-level spawn hazards. This is intentionally small and best-effort. */
+  _spawnHazards() {
+    const bot = this.bot;
+    if (!bot.position || typeof bot.getBlock !== 'function') return [];
+    const blockName = (dy) => {
+      try {
+        const block = bot.getBlock({ x: Math.floor(bot.position.x), y: Math.floor(bot.position.y) + dy, z: Math.floor(bot.position.z) });
+        return block && block.name ? String(block.name).replace(/^minecraft:/, '') : null;
+      } catch (_) { return null; }
+    };
+    const feet = blockName(0);
+    const head = blockName(1);
+    const below = blockName(-1);
+    const hazards = [];
+    if ([feet, head, below].some((name) => name && name.includes('lava'))) hazards.push('lava at spawn');
+    if ([feet, head].some((name) => name === 'fire' || name === 'soul_fire')) hazards.push('fire at spawn');
+    if ([feet, head].some((name) => name && name.includes('water'))) hazards.push('water at spawn');
+    if (head && !/(air|water|grass|fern|flower|torch|sign|vine)/.test(head)) hazards.push('suffocation risk');
+    if (!below || /air|cave_air|water|lava/.test(below)) hazards.push('unsupported ground');
+    return hazards;
+  }
+
   /** Capture death evidence exactly once, even if both the adapter and the
    * runtime observed the same event. */
   _recordDeath() {
@@ -138,15 +162,25 @@ class BotActions {
     const killer = threats
       .filter((entity) => entity.hostile || entity.type === 'player')
       .sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999))[0] || null;
+    const assignment = this.team && typeof this.team.getAssignment === 'function' ? this.team.getAssignment(bot.name) : null;
     this.recovery.recordDeath({
       at: Number(last.at) || Date.now(),
       position: last.position || bot.position,
       cause: last.cause || (killer ? `${killer.name || killer.type}` : 'unknown'),
+      confidence: last.confidence || (last.message ? 'confirmed' : killer ? 'likely' : 'unknown'),
+      summary: last.summary || null,
       healthBefore: last.healthBefore ?? null,
       food: last.food ?? bot.food,
       threats,
       lastDamageAt: last.lastDamageAt || bot.lastDamageAt || null,
-      deathMessage: last.message || bot.lastDeathMessage || null
+      deathMessage: last.message || bot.lastDeathMessage || null,
+      task: assignment,
+      navigation: { lastAction: this.lastAction, lastActionAt: this.lastActionAt || null },
+      combat: { state: this.combat.state, target: this.combat.target ? (this.combat.target.name || this.combat.target.type || this.combat.target.id) : null },
+      equipment: last.equipment || null,
+      environment: last.environment || null,
+      velocity: last.velocity || null,
+      onGround: last.onGround ?? null
     });
     this._deathHandled = true;
     if (this.team && typeof this.team.releaseWork === 'function') {
@@ -288,6 +322,87 @@ class BotActions {
     return { ok, phase: phaseName, material, anchor, placed, total: positions.length, missing: absent.map((p) => ({ ...p, reason: missing.find((m) => m.x === p.x && m.y === p.y && m.z === p.z)?.reason || 'not placed' })) };
   }
 
+  /**
+   * Move an ore search to a different surface column. Repeating a scan over the
+   * same bedrock/lava-capped shaft produced long no-progress stalls; three
+   * fresh sites are attempted before the task is allowed to fail honestly.
+   */
+  async _relocateMiningSite(task) {
+    const home = this.home;
+    const position = this.bot.position;
+    if (!home || !position) return null;
+    // Stay with a shaft while it is still making progress; after a real
+    // no-progress window, returning to the surface is better than re-scanning
+    // an exhausted seam forever.
+    if (position.y < Number(home.y) - 6 && (Number(task.stallCycles) || 0) < 12) return null;
+    const attempts = Number(task.relocationAttempts) || 0;
+    if (attempts >= 3) return null;
+    task.relocationAttempts = attempts + 1;
+    const index = Number(this.index) || 0;
+    const distance = 18 + attempts * 8 + index * 3;
+    const angle = (index / 5) * Math.PI * 2 + attempts * 1.3;
+    const x = Math.floor(home.x + Math.cos(angle) * distance);
+    const z = Math.floor(home.z + Math.sin(angle) * distance);
+    const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(x, z) + 1 : home.y;
+    const move = await this.bot.goTo({ x, y, z }, { range: 3, timeoutMs: 20000 });
+    return {
+      pending: true,
+      relocated: move && move.ok !== false,
+      error: move && move.ok === false
+        ? `could not reach a fresh mining site: ${move.error || 'path unavailable'}`
+        : `moving to a fresh mining site at ${x},${y},${z}`
+    };
+  }
+
+  /**
+   * Search a different patch of forest when the local one is exhausted. The
+   * bot holds the task while it walks; the no-progress timer still applies.
+   */
+  async _relocateWoodSite(task) {
+    const home = this.home;
+    const position = this.bot.position;
+    if (!home || !position) return null;
+    const attempts = Number(task.relocationAttempts) || 0;
+    if (attempts >= 3) return null;
+    task.relocationAttempts = attempts + 1;
+    const index = Number(this.index) || 0;
+    const distance = 32 + attempts * 16 + index * 5;
+    const angle = (index / 5) * Math.PI * 2 + Math.PI / 3 + attempts * 1.1;
+    const x = Math.floor(home.x + Math.cos(angle) * distance);
+    const z = Math.floor(home.z + Math.sin(angle) * distance);
+    const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(x, z) + 1 : home.y;
+    const move = await this.bot.goTo({ x, y, z }, { range: 3, timeoutMs: 20000 });
+    return {
+      pending: true,
+      relocated: move && move.ok !== false,
+      error: move && move.ok === false
+        ? `could not reach a fresh forest: ${move.error || 'path unavailable'}`
+        : `searching for trees at ${x},${y},${z}`
+    };
+  }
+
+  /**
+   * Move a bot out of a mine before it attempts surface-only work. Returns null
+   * when the bot is already on the surface, so normal pathing is untouched.
+   */
+  async _relocateForSurfaceWork(reason) {
+    const position = this.bot.position;
+    const home = this.home;
+    if (!position || !home) return null;
+    const dx = position.x - home.x;
+    const dz = position.z - home.z;
+    const horizontal = Math.sqrt(dx * dx + dz * dz);
+    if (position.y >= Number(home.y) - 6 && horizontal <= 64) return null;
+    const move = await this.bot.goTo(home, { range: 3, timeoutMs: 20000 });
+    return {
+      pending: true,
+      relocated: move && move.ok !== false,
+      error: move && move.ok === false
+        ? `could not leave the mine for ${reason}: ${move.error || 'path unavailable'}`
+        : `returning to the surface for ${reason}`
+    };
+  }
+
   async performTask(task, context = {}) {
     if (!task) return { ok: false, error: 'no task' };
     let result;
@@ -298,7 +413,16 @@ class BotActions {
         result.quantity = chopped;
         result.verified = chopped > 0;
         // No reachable tree is a location problem, not a failed work order.
-        if (chopped === 0) { result.ok = true; result.pending = true; }
+        if (chopped === 0) {
+          result.ok = true;
+          result.pending = true;
+          // A bot that ended a mining task underground cannot chop a tree from
+          // a shaft. Walk back to the surface instead of standing still until
+          // the no-progress timer eventually releases the task.
+          let relocation = await this._relocateForSurfaceWork('woodcutting');
+          if (!relocation) relocation = await this._relocateWoodSite(task);
+          if (relocation) result = { ...result, ...relocation, quantity: 0, verified: false };
+        }
         break;
       }
       case 'MINE_ORE': {
@@ -311,12 +435,24 @@ class BotActions {
           result = { ok: true, pending: true, mined: 0, error: 'returning from below the mining band' };
           break;
         }
-        result = await this.mining.mineOresDeep({ radius: 48, limit: 6, minY });
+        result = await this.mining.mineOresDeep({ radius: 48, limit: 6, minY, only: task.params?.ore || null });
         result.quantity = result.mined;
         result.verified = result.mined > 0;
+        // Digging a shaft toward ore is real work even when the target ore is
+        // not reached yet. Do not let the 45s no-progress timer fail a miner
+        // that is actively excavating.
+        result.worked = (result.results || []).some((entry) => entry && entry.ok && (entry.shaft || entry.ore || entry.block));
         // No ore in reach is not a failure: keep the claim and search again
         // next tick instead of burning an attempt and failing the objective.
-        if (result.mined === 0) { result.ok = true; result.pending = true; }
+        // But searching the same blocked column forever is not progress either,
+        // so try a bounded number of fresh surface sites before the stall timer
+        // hands the claim back.
+        if (result.mined === 0) {
+          result.ok = true;
+          result.pending = true;
+          const relocation = await this._relocateMiningSite(task);
+          if (relocation) result = { ...result, ...relocation, quantity: 0, verified: false };
+        }
         break;
       }
       case 'MINE_BLOCK': {
@@ -330,6 +466,7 @@ class BotActions {
         result = await this.mining.mineBlocks({ block: task.params?.block || 'stone', radius: 24, limit: 8, minY: blockMinY });
         result.quantity = result.mined;
         result.verified = result.mined > 0;
+        result.worked = (result.results || []).some((entry) => entry && entry.ok && (entry.block || entry.ore));
         // Same rule as ore: an empty local search must not burn the task's
         // remaining attempts and collapse the whole objective.
         if (result.mined === 0) { result.ok = true; result.pending = true; }
@@ -346,7 +483,12 @@ class BotActions {
         }
         result.quantity = harvested + planted;
         result.verified = result.quantity > 0;
-        if (result.quantity === 0) { result.ok = true; result.pending = true; }
+        if (result.quantity === 0) {
+          result.ok = true;
+          result.pending = true;
+          const relocation = await this._relocateForSurfaceWork('farming');
+          if (relocation) result = { ...result, ...relocation, quantity: 0, verified: false };
+        }
         break;
       }
       case 'FARM_ANIMAL':
@@ -439,8 +581,22 @@ class BotActions {
       }
       case 'PLACE_BED': {
         // One verified placement per call; the task's unit target accumulates
-        // across calls. Never report a pre-existing bed as new work: that used
-        // to leave the task permanently short of its quota.
+        // across calls. A later objective can legitimately reuse the beds that
+        // already exist at home: requiring five *new* beds every plan burned
+        // the retry budget and failed an otherwise healthy objective. Existing
+        // beds are counted from real blocks, never assumed.
+        const wanted = Math.max(1, Number(task.params?.count) || 1);
+        let existing = this.sleep.findBeds({ radius: 24, limit: wanted });
+        if (existing.length < wanted && this.home && Math.hypot(this.bot.position.x - this.home.x, this.bot.position.z - this.home.z) > 8) {
+          // Beds belong at the base, so inspect the base rather than the
+          // bot's current mining shaft before deciding none exist.
+          await this.bot.goTo(this.home, { range: 3, timeoutMs: 20000 });
+          existing = this.sleep.findBeds({ radius: 24, limit: wanted });
+        }
+        if (existing.length >= wanted) {
+          result = { ok: true, quantity: wanted, verified: true, existing, reused: true };
+          break;
+        }
         const bed = await this.sleep.ensureBed({ placeNew: true });
         result = {
           ok: Boolean(bed.ok),
@@ -582,14 +738,15 @@ class BotActions {
     if (!verified) {
       const now = Date.now();
       if (!task.noProgressSince) task.noProgressSince = now;
-      if (progress !== null && progress > (task.lastProgressValue || 0)) {
-        task.lastProgressValue = progress;
+      if ((progress !== null && progress > (task.lastProgressValue || 0)) || result.worked === true) {
+        if (progress !== null && progress > (task.lastProgressValue || 0)) task.relocationAttempts = 0;
+        task.lastProgressValue = progress === null ? task.lastProgressValue : progress;
         task.noProgressSince = now;
         task.stallCycles = 0;
       } else {
         task.stallCycles = (task.stallCycles || 0) + 1;
       }
-      const stallMs = Number(config.team.taskStallMs) || 90000;
+      const stallMs = Number(config.team.taskStallMs) || 45000;
       const stallCycles = Number(config.team.taskStallCycles) || 3;
       if (result.ok !== false && task.stallCycles >= stallCycles && now - task.noProgressSince >= stallMs) {
         const error = `no verified progress in ${Math.round(stallMs / 1000)}s; released for re-planning`;

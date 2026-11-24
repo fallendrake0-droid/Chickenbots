@@ -432,6 +432,13 @@ class RealBot extends BotAdapter {
       this.yaw = bot.entity?.yaw || 0;
       this.pitch = bot.entity?.pitch || 0;
       this.onGround = bot.entity?.onGround;
+      if (bot.entity?.velocity) {
+        this.velocity = {
+          x: Number(bot.entity.velocity.x.toFixed(3)),
+          y: Number(bot.entity.velocity.y.toFixed(3)),
+          z: Number(bot.entity.velocity.z.toFixed(3))
+        };
+      }
     });
     bot.on('health', () => {
       if (this.bot !== bot) return;
@@ -463,6 +470,8 @@ class RealBot extends BotAdapter {
       this.stats.deaths++;
       this.deaths = this._deathCount;
       const at = Date.now();
+      const environment = this._captureEnvironment();
+      const confidence = this.lastDeathMessage ? 'confirmed' : this.lastAttacker ? 'likely' : 'unknown';
       const cause = this.lastAttacker
         ? `${this.lastAttacker.name}${this.lastAttacker.distance !== undefined ? ` (${this.lastAttacker.distance}m)` : ''}`
         : this.lastDeathMessage || 'unknown damage source';
@@ -470,18 +479,30 @@ class RealBot extends BotAdapter {
         at,
         position: { ...this.position },
         cause,
+        confidence,
+        summary: `Died at ${Math.round(this.position.x)},${Math.round(this.position.y)},${Math.round(this.position.z)}: ${cause}`,
         healthBefore: Number.isFinite(this._lastHealth) ? this._lastHealth : null,
         food: this.food,
+        saturation: this.saturation,
         lastDamageAt: this.lastDamageAt || null,
         lastDamageAmount: this.lastDamageAmount || null,
         attacker: this.lastAttacker || null,
         message: this.lastDeathMessage || null,
-        dimension: this.dimension || 'overworld'
+        dimension: this.dimension || 'overworld',
+        velocity: this.velocity || null,
+        onGround: this.onGround ?? null,
+        equipment: this._equipmentSummary(),
+        environment
       };
       this.deathHistory.push(this.lastDeath);
       if (this.deathHistory.length > 40) this.deathHistory.shift();
       this.lastDeathMessage = null;
       this.logger.warn(`[${this.name}] died at ${this.position.x},${this.position.y},${this.position.z} (cause: ${cause})`);
+      // A dead entity must not keep an old pathfinder goal or attack target.
+      try { this.bot.pathfinder?.stop?.(); } catch (_) { /* optional */ }
+      try { this.bot.stopDigging?.(); } catch (_) { /* optional */ }
+      try { this.bot.clearControlStates?.(); } catch (_) { /* optional */ }
+      this.target = null;
       // Mineflayer does not always send client_command on its own. Ask the
       // server for the respawn screen once, then once more if the first packet
       // was lost. The spawn handler clears the timer, so this cannot loop.
@@ -581,6 +602,69 @@ class RealBot extends BotAdapter {
       if (this._chatLog.length > 200) this._chatLog.shift();
       for (const listener of this._chatListeners) listener(text);
     });
+  }
+
+  /**
+   * A compact, real snapshot of the death environment. Block reads are bounded
+   * and best-effort: a failed read is absent evidence, never an invented cause.
+   */
+  _captureEnvironment() {
+    const position = this.position;
+    if (!position || typeof this.getBlock !== 'function') {
+      return { blocks: null, hazards: [], flags: { onGround: this.onGround ?? null, oxygen: this.oxygen ?? null } };
+    }
+    const blockAt = (dx, dy, dz) => {
+      try {
+        const block = this.getBlock({ x: Math.floor(position.x) + dx, y: Math.floor(position.y) + dy, z: Math.floor(position.z) + dz });
+        return block && block.name ? String(block.name).replace(/^minecraft:/, '') : null;
+      } catch (_) { return null; }
+    };
+    const blocks = {
+      feet: blockAt(0, 0, 0),
+      head: blockAt(0, 1, 0),
+      below: blockAt(0, -1, 0)
+    };
+    const names = Object.values(blocks).filter(Boolean);
+    const hazards = [];
+    if (names.some((name) => name.includes('lava'))) hazards.push('lava');
+    if (names.some((name) => name === 'fire' || name === 'soul_fire')) hazards.push('fire');
+    if (names.some((name) => name.includes('water'))) hazards.push('water');
+    if (blocks.head && !/(air|water|grass|fern|flower|torch|sign|vine)/.test(blocks.head)) hazards.push('suffocation');
+    if (this.onGround === false) hazards.push('falling');
+    return {
+      blocks,
+      hazards,
+      flags: {
+        onGround: this.onGround ?? null,
+        oxygen: this.oxygen ?? null,
+        food: this.food ?? null,
+        saturation: this.saturation ?? null,
+        health: this.health ?? null,
+        onFire: Boolean(this.onFire),
+        inLava: Boolean(this.inLava)
+      }
+    };
+  }
+
+  _equipmentSummary() {
+    const worn = [];
+    const slots = this.bot && this.bot.inventory && this.bot.inventory.slots;
+    if (slots) {
+      for (const [slot, label] of [[5, 'head'], [6, 'torso'], [7, 'legs'], [8, 'feet']]) {
+        if (slots[slot] && slots[slot].name) worn.push({ slot: label, item: slots[slot].name, durability: this.itemMeta?.[slots[slot].name]?.durability ?? null });
+      }
+    }
+    return {
+      held: this.equipment?.heldItem || this.heldItem || null,
+      offhand: typeof this.getOffhand === 'function' ? this.getOffhand() : null,
+      armor: worn,
+      toolTiers: {
+        pickaxe: this.equipment?.pickaxe ?? null,
+        axe: this.equipment?.axe ?? null,
+        shovel: this.equipment?.shovel ?? null,
+        sword: this.equipment?.sword ?? null
+      }
+    };
   }
 
   /**

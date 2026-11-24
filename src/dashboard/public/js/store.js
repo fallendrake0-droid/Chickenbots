@@ -259,6 +259,13 @@ export async function runBotAction(name, action) {
   return result;
 }
 
+export async function runQueueAction(action) {
+  const result = await api.queueAction(action);
+  await fetchLogs();
+  refreshState().catch(() => {});
+  return result;
+}
+
 export function bot(name) {
   return (state.snapshot && state.snapshot.bots || []).find((entry) => entry.name === name) || null;
 }

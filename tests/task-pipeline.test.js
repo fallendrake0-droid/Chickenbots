@@ -161,3 +161,172 @@ test('a task that exhausted its retry budget is closed instead of staying PENDIN
   assert.equal(board.getTask(task.id).status, 'FAILED');
   assert.ok((coordinator.tick().failed || []).length === 0, 'a closed task is not reported twice');
 });
+
+test('successful plans keep re-planning instead of disabling autonomous planning', () => {
+  const c = clock();
+  const coordinator = new TeamCoordinator({ now: c.now, autoPlan: true });
+  const created = [];
+  for (let i = 0; i < 5; i++) {
+    let plan = coordinator.ensureObjectives();
+    if (!plan || !plan.created) {
+      // One tick observes the completed objective and schedules the short quiet
+      // period; the next one creates the replacement plan.
+      c.advance(16001);
+      plan = coordinator.ensureObjectives();
+    }
+    if (plan && plan.created) {
+      created.push(plan.objective.id);
+      coordinator.board.getObjective(plan.objective.id).status = 'COMPLETED';
+      c.advance(16000);
+    }
+  }
+  assert.equal(created.length, 5, 'planner must keep producing objectives after completed ones');
+  assert.equal(coordinator.getState().team.planning.stopped, false);
+  assert.equal(coordinator.getState().team.planning.failures, 0);
+});
+
+test('an operator command is recorded on the task that it created', async () => {
+  const { createCommandHandler } = require('../src/commands');
+  const board = new TaskBoard({ now: () => 1000 });
+  const handler = createCommandHandler({ taskBoard: board, bots: new Map(), config });
+  const entry = await handler.execute('task add RETURN_HOME "return to base"', { source: 'dashboard', operator: 'test-operator' });
+  assert.equal(entry.ok, true, JSON.stringify(entry));
+  const task = board.listTasks()[0];
+  assert.equal(task.sourceCommand, 'task add RETURN_HOME "return to base"');
+  assert.equal(task.createdBy, 'test-operator');
+  assert.equal(board.listTasks({ limit: 10 })[0].lastUpdateAt, 1000);
+});
+
+test('the queue command reports the real join queue and rejects unknown bots', async () => {
+  const { createCommandHandler } = require('../src/commands');
+  const bots = new Map(BOT_NAMES.map((name) => [name, { name, ready: true }]));
+  const runtime = {
+    joinCooldownUntil: 0,
+    throttleStrikes: 0,
+    nextJoinAt: 0,
+    state: () => ({ joinQueue: { waiting: ['________'] }, bots: [] }),
+    reconnectBot: async (name) => ({ ok: true, bot: { name } })
+  };
+  const handler = createCommandHandler({ taskBoard: new TaskBoard(), bots, runtime });
+  const status = await handler.execute('queue status', { source: 'dashboard', operator: 'test' });
+  assert.equal(status.ok, true);
+  assert.deepEqual(status.result.joinQueue.waiting, ['________']);
+  const bad = await handler.execute('queue retry nobody', { source: 'dashboard', operator: 'test' });
+  assert.equal(bad.ok, false);
+  assert.match(bad.result.error, /unknown bot|requires a bot name/);
+  const retried = await handler.execute('queue retry all', { source: 'dashboard', operator: 'test' });
+  assert.equal(retried.ok, true);
+  assert.equal(retried.result.results.length, BOT_NAMES.length);
+});
+
+test('surface work relocates an underground bot instead of leaving it stalled', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '10101000', world, position: { x: 10, y: 40, z: 10 }, inventory: {} });
+  const board = new TaskBoard({ now: () => 1000 });
+  const actions = new BotActions({ bot, taskBoard: board, home: { x: 0, y: 65, z: 0 } });
+  const task = board.addTask({ type: 'CHOP_WOOD', units: { target: 64 } }).task;
+  const result = await actions.performTask(task, {});
+  assert.equal(result.verified, false);
+  assert.equal(result.relocated, true, JSON.stringify(result));
+  assert.equal(bot.position.y, 65);
+});
+
+test('an ore search that keeps finding nothing moves to a fresh site, then gives up', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '01010100', world, position: { x: 1, y: 65, z: -1 }, inventory: {} });
+  const board = new TaskBoard({ now: () => 1000 });
+  const actions = new BotActions({ bot, taskBoard: board, home: { x: 0, y: 65, z: 0 } });
+  actions.mining.mineOresDeep = async () => ({ ok: false, mined: 0, skipped: 0, results: [] });
+  const task = board.addTask({ type: 'MINE_ORE', units: { target: 32 } }).task;
+  const first = await actions.performTask(task, {});
+  assert.equal(first.relocated, true, JSON.stringify(first));
+  const movedTo = { ...bot.position };
+  assert.notDeepEqual(movedTo, { x: 1, y: 65, z: -1 });
+  const second = await actions.performTask(task, {});
+  assert.equal(second.relocated, true);
+  task.relocationAttempts = 3;
+  const third = await actions.performTask(task, {});
+  assert.equal(third.relocated, undefined, 'the relocation budget is bounded');
+});
+
+test('a failed objective cancels its remaining work instead of leaving ACTIVE rows behind', () => {
+  const board = new TaskBoard({ now: () => 1000 });
+  const objective = board.createObjective({ id: 'obj-test', title: 'test' });
+  const first = board.addTask({ type: 'RETURN_HOME', objectiveId: objective.id }).task;
+  const second = board.addTask({ type: 'RETURN_HOME', objectiveId: objective.id }).task;
+  const third = board.addTask({ type: 'RETURN_HOME', objectiveId: objective.id }).task;
+  assert.equal(board.claim(second.id, '________').ok, true);
+  assert.equal(board.claim(third.id, '01010100').ok, true);
+  board.fail(first.id, 'unrecoverable test failure', { retry: false });
+  assert.equal(board.getTask(first.id).status, 'FAILED');
+  assert.equal(board.getObjective(objective.id).status, 'FAILED');
+  assert.equal(board.getTask(second.id).status, 'CANCELLED');
+  assert.equal(board.getTask(third.id).status, 'CANCELLED');
+  assert.equal(board.getTask(third.id).claimedBy, null);
+});
+
+test('a bed task verifies existing beds instead of demanding five new ones every plan', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '10101000', world, inventory: { white_bed: 8 }, position: { x: 4, y: 64, z: 4 } });
+  const actions = new BotActions({ bot, taskBoard: new TaskBoard({ now: () => 1000 }), home: { x: 4, y: 64, z: 4 } });
+  const first = await actions.sleep.ensureBed({ placeNew: true });
+  const second = await actions.sleep.ensureBed({ placeNew: true });
+  assert.ok(first.ok && second.ok);
+  const before = bot.countItem('white_bed');
+  const task = { type: 'PLACE_BED', params: { count: 2 }, units: { target: 2 } };
+  const result = await actions.performTask(task, {});
+  assert.equal(result.verified, true, JSON.stringify(result));
+  assert.equal(result.quantity, 2);
+  assert.equal(bot.countItem('white_bed'), before, 'reusing real beds must not consume inventory');
+});
+
+test('ore progress only counts the requested ore, not any ore that happens to be mined', async () => {
+  const { MiningController } = require('../src/actions/mining');
+  const world = new MockWorld();
+  let target = null;
+  for (let x = -60; x <= 60 && !target; x += 2) {
+    for (let z = -60; z <= 60 && !target; z += 2) {
+      for (let y = -20; y < 60; y += 2) {
+        if (world.blockNameAt(x, y, z) === 'iron_ore') { target = { x, y, z }; break; }
+      }
+    }
+  }
+  assert.ok(target, 'mock world must contain iron ore');
+  const bot = new MockBot({ name: '10101000', world, position: target, inventory: { diamond_pickaxe: 1 } });
+  const mining = new MiningController({ bot });
+  const found = mining.findOres({ radius: 16, limit: 10, only: 'iron_ore' });
+  assert.ok(found.length > 0);
+  assert.ok(found.every((ore) => ore.name === 'iron_ore' || ore.name === 'deepslate_iron_ore'));
+});
+
+test('real excavation work resets the stall timer even before the ore quota moves', async () => {
+  const c = clock();
+  const board = new TaskBoard({ claimTtlMs: 60000, now: c.now });
+  const coordinator = new TeamCoordinator({ board, now: c.now, autoPlan: false });
+  coordinator.enable();
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '11001100', world, position: { x: 0, y: 64, z: 0 }, inventory: {} });
+  coordinator.updateBot(bot.name, { connected: true, spawned: true, health: 20, food: 20, position: bot.position, inventory: {} });
+  const actions = new BotActions({ bot, taskBoard: board, team: coordinator });
+  actions.performTask = async () => ({ ok: true, pending: true, verified: false, quantity: 0, worked: true });
+  const task = board.addTask({ type: 'MINE_ORE', units: { target: 32 } }).task;
+  assert.equal(coordinator.assignTask(bot.name, task.id).ok, true);
+  task.noProgressSince = c.now() - 100000;
+  task.stallCycles = 5;
+  const result = await actions.step({ coordinator });
+  assert.notEqual(result.stalled, true, JSON.stringify(result));
+  assert.equal(task.stallCycles, 0);
+  assert.ok(task.noProgressSince > c.now(), 'the no-progress window restarts from real time');
+});
+
+test('woodcutting searches a fresh forest patch when the base is stripped', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '10101000', world, position: { x: 0, y: 65, z: 0 }, inventory: {} });
+  const board = new TaskBoard({ now: () => 1000 });
+  const actions = new BotActions({ bot, taskBoard: board, home: { x: 0, y: 65, z: 0 } });
+  const task = board.addTask({ type: 'CHOP_WOOD', units: { target: 64 } }).task;
+  const result = await actions.performTask(task, {});
+  assert.equal(result.relocated, true, JSON.stringify(result));
+  assert.ok(Math.hypot(bot.position.x, bot.position.z) >= 32, 'the bot must leave the stripped radius');
+  assert.equal(task.relocationAttempts, 1);
+});

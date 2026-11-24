@@ -230,9 +230,12 @@ function deathPanel(name) {
         ['Recovery state', esc(recovery.reason || recovery.state)],
         ['Deaths (2m / 10m)', `${num(recovery.deathsRecent)} / ${num(recovery.deathsLong)}`],
         ['Death loop', recovery.deathLoop ? badge('Detected', 'danger') : badge('No', 'ok')],
-        ['Last cause', esc(last ? last.cause : '—')],
+        ['Last cause', last ? `${esc(last.cause)} ${badge(last.confidence || 'unknown', last.confidence === 'confirmed' ? 'ok' : last.confidence === 'likely' ? 'warn' : 'neutral')}` : '—'],
         ['Last position', esc(last && last.position ? positionText(last.position) : '—'), true],
         ['Last health / food', last ? `${last.healthBefore ?? '—'} / ${last.food ?? '—'}` : '—'],
+        ['Task at death', esc(last && last.task ? (last.task.label || last.task.type || last.task.id || '—') : '—')],
+        ['Hazards', esc(last && last.environment && last.environment.hazards && last.environment.hazards.length ? last.environment.hazards.join(', ') : 'none detected')],
+        ['Equipment', esc(last && last.equipment ? [last.equipment.held, ...(last.equipment.armor || []).map((piece) => piece.item || piece)].filter(Boolean).join(', ') || 'none' : '—')],
         ['Death message', esc(last && last.deathMessage ? last.deathMessage : '—')],
         ['Spawn safety', spawn ? (spawn.safe ? badge('Safe', 'ok') : badge(`Unsafe — ${spawn.reasons.join(', ')}`, 'danger')) : 'not assessed']
       ], { htmlValues: true })}

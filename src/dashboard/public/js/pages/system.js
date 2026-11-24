@@ -128,7 +128,7 @@ export const tasksPage = {
           <div class="table-wrap"><table class="table">
             <thead><tr><th>Task</th><th>Type</th><th>Status</th><th>Owner</th><th>Priority</th><th>Progress</th><th>Attempts</th><th>Last error</th><th>Actions</th></tr></thead>
             <tbody>${filtered.length ? filtered.map((task) => `<tr>
-              <td><div class="list-title">${esc(task.label || task.type)}</div><div class="mono tiny">${esc(task.id)}</div>${task.claimExpiresAt && ['CLAIMED', 'ACTIVE'].includes(task.status) ? `<div class="tiny muted">claim until ${esc(new Date(task.claimExpiresAt).toLocaleTimeString())}</div>` : ''}${task.stallCycles ? `<div class="tiny text-danger">${num(task.stallCycles)} stalled cycle(s)</div>` : ''}</td>
+              <td><div class="list-title">${esc(task.label || task.type)}</div><div class="mono tiny">${esc(task.id)}</div>${task.sourceCommand ? `<div class="tiny muted mono">${esc(task.sourceCommand)}</div>` : ''}${task.claimExpiresAt && ['CLAIMED', 'ACTIVE'].includes(task.status) ? `<div class="tiny muted">claim until ${esc(new Date(task.claimExpiresAt).toLocaleTimeString())}</div>` : ''}${task.stallCycles ? `<div class="tiny text-danger">${num(task.stallCycles)} stalled cycle(s)</div>` : ''}</td>
               <td class="tiny">${esc(task.type)}</td>
               <td>${badge(task.status, task.status === 'COMPLETED' ? 'ok' : task.status === 'FAILED' ? 'danger' : task.status === 'ACTIVE' ? 'accent' : task.status === 'BLOCKED' ? 'warn' : 'neutral', { dot: true })}</td>
               <td class="tiny">${task.claimedBy ? `<a class="link" href="#/bots/${encodeURIComponent(task.claimedBy)}/tasks">${esc(task.claimedBy)}</a>` : '<span class="muted">unclaimed</span>'}</td>
@@ -296,6 +296,27 @@ export const logsPage = {
               const going = diag.status === 'joining' || diag.status === 'authenticating' || diag.status === 'initialising';
               return `<tr><td>${esc(bot.name)}</td><td>${diag.online ? badge(diag.statusLabel || 'Online', 'ok') : badge(diag.statusLabel || 'Offline', going ? 'warn' : 'danger')}</td><td>${diag.authenticated ? badge('Yes', 'ok') : diag.status === 'auth_failed' ? badge('No', 'danger') : badge('Pending', 'warn')}</td><td class="mono">${diag.health ?? '—'}</td><td class="tiny ${diag.lastError ? 'text-danger' : 'muted'}">${esc(diag.lastError || '—')}</td></tr>`;
             }).join('')}</tbody></table></div>
+          </section>
+          <section class="card">
+            <div class="card-header"><div class="card-title">${icon('clock')} Join queue</div><span class="badge badge--outline">${esc(runtime.mode || state.snapshot && state.snapshot.mode || '—')}</span></div>
+            <div class="card-body">
+              ${(() => {
+                const queue = runtime.joinQueue || {};
+                const cooldown = Number(queue.cooldownUntil) > Date.now();
+                const waiting = Array.isArray(queue.waiting) ? queue.waiting : [];
+                return `${kvRows([
+                  ['Waiting', waiting.length ? esc(waiting.join(', ')) : 'none'],
+                  ['Next slot', queue.nextJoinAt ? esc(formatDateTime(queue.nextJoinAt)) : 'now'],
+                  ['Cooldown', cooldown ? badge(`until ${formatDateTime(queue.cooldownUntil)}`, 'warn') : 'clear'],
+                  ['Throttle strikes', num(queue.throttleStrikes || 0)],
+                  ['Join spacing', queue.joinIntervalMs ? `${num(queue.joinIntervalMs)} ms` : '—']
+                ], { htmlValues: true })}
+                <div class="toolbar toolbar--wrap" style="margin-top:12px">
+                  <button class="button button--sm" type="button" data-queue-action="retry-all">${icon('refresh')} Queue reconnect</button>
+                  <button class="button button--sm button--ghost" type="button" data-queue-action="reset-cooldown">${icon('clock')} Clear cooldown</button>
+                </div>`;
+              })()}
+            </div>
           </section>
         </div>
         <section class="card" style="margin-top:16px">

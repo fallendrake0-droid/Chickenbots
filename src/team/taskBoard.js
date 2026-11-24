@@ -132,6 +132,10 @@ class TaskBoard {
       estimatedMs: spec.estimatedMs || null,
       deadlineAt: spec.deadlineAt || null,
       createdAt: this.now(),
+      sourceCommand: spec.sourceCommand ? String(spec.sourceCommand).slice(0, 600) : null,
+      createdBy: spec.createdBy || null,
+      lastUpdateAt: this.now(),
+      lastProgressAt: this.now(),
       startedAt: null,
       completedAt: null,
       lastError: null,
@@ -218,6 +222,7 @@ class TaskBoard {
     task.status = TASK_STATUS.CLAIMED;
     task.attempts += 1;
     task.lastError = null;
+    task.lastUpdateAt = this.now();
     task.stallCycles = 0;
     task.noProgressSince = this.now();
     task.lastProgressValue = task.units.current || 0;
@@ -274,8 +279,10 @@ class TaskBoard {
     if (current !== undefined) {
       const previous = task.units.current || 0;
       task.units.current = Math.max(0, current);
+      task.lastUpdateAt = this.now();
       if (task.units.current > previous) {
         task.noProgressSince = this.now();
+        task.lastProgressAt = this.now();
         task.stallCycles = 0;
       }
     }
@@ -295,6 +302,7 @@ class TaskBoard {
     if (!verified) return { ok: false, error: 'unverified completion rejected' };
     task.status = TASK_STATUS.COMPLETED;
     task.completedAt = this.now();
+    task.lastUpdateAt = task.completedAt;
     task.verification = { verifiedBy: by || task.claimedBy, at: this.now(), notes };
     task.units.current = Math.max(task.units.current, task.units.target);
     this._releaseTaskResources(task);
@@ -308,6 +316,7 @@ class TaskBoard {
     if (!task) return { ok: false, error: 'unknown task' };
     if (task.claimedBy && task.claimedBy !== by) return { ok: false, error: 'not owner' };
     task.lastError = reason || 'unknown failure';
+    task.lastUpdateAt = this.now();
     this._releaseTaskResources(task);
     if (retry && task.attempts < task.maxAttempts) {
       task.status = TASK_STATUS.PENDING;
@@ -325,6 +334,14 @@ class TaskBoard {
       if (obj) {
         obj.status = OBJECTIVE_STATUS.FAILED;
         obj.completedAt = this.now();
+        // A failed objective must not keep spending the team's time. Cancel
+        // the sibling work it can no longer complete, so no ACTIVE rows are
+        // left running under a FAILED objective.
+        for (const other of this.tasks.values()) {
+          if (other.objectiveId !== obj.id || other.id === task.id) continue;
+          if ([TASK_STATUS.COMPLETED, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED].includes(other.status)) continue;
+          this.cancel(other.id, `objective failed: ${task.lastError}`);
+        }
       }
     }
     return { ok: true, retry: false, task };
@@ -349,6 +366,8 @@ class TaskBoard {
     this._releaseTaskResources(task);
     task.status = TASK_STATUS.CANCELLED;
     task.claimedBy = null;
+    task.lastError = reason || 'cancelled';
+    task.lastUpdateAt = this.now();
     this._event('task.cancelled', { taskId, reason });
     return { ok: true, task };
   }

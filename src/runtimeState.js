@@ -201,7 +201,9 @@ function publicTask(task) {
     claimedBy: task.claimedBy, objectiveId: task.objectiveId, region: task.region, units: task.units, dependsOn: task.dependsOn,
     attempts: task.attempts, maxAttempts: task.maxAttempts, lastError: task.lastError, verified: Boolean(task.verification),
     claimedAt: task.claimedAt, claimExpiresAt: task.claimExpiresAt, startedAt: task.startedAt, completedAt: task.completedAt,
-    createdAt: task.createdAt, stallCycles: task.stallCycles || 0, noProgressSince: task.noProgressSince || null,
+    createdAt: task.createdAt, lastUpdateAt: task.lastUpdateAt || null, lastProgressAt: task.lastProgressAt || null,
+    sourceCommand: task.sourceCommand || null, createdBy: task.createdBy || null,
+    stallCycles: task.stallCycles || 0, noProgressSince: task.noProgressSince || null,
     verification: task.verification || null, progressNote: task.progressNote || null
   };
 }

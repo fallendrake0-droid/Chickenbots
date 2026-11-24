@@ -167,7 +167,7 @@ const config = {
     maxObservations: envInt('MAX_OBSERVATIONS', 4000),
     // A task that repeatedly produces no verified progress is released back to
     // the board instead of pinning one bot to a dead area forever.
-    taskStallMs: envInt('TASK_STALL_MS', 90000),
+    taskStallMs: envInt('TASK_STALL_MS', 45000),
     taskStallCycles: envInt('TASK_STALL_CYCLES', 3),
     formation: env('TEAM_FORMATION', 'FOLLOW'),
     // Autonomy is gated on a verified spawn + authentication.

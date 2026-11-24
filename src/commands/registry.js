@@ -145,7 +145,7 @@ class CommandRegistry {
       }, { line, source, operator, started });
     }
     try {
-      const result = await command.execute(args.filter((a) => a !== 'confirm' && a !== '--confirm'), { source, operator, confirmed: explicitConfirm }, this);
+      const result = await command.execute(args.filter((a) => a !== 'confirm' && a !== '--confirm'), { source, operator, confirmed: explicitConfirm, line }, this);
       return this._record({ command: command.name, ...(result || { ok: true }) }, { line, source, operator, started });
     } catch (err) {
       const code = err instanceof CommandError ? err.code : 'EXECUTION_ERROR';

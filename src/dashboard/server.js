@@ -227,6 +227,40 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     });
   });
 
+  app.get('/api/queue', (req, res) => {
+    if (!services.runtime) return res.status(503).json({ ok: false, error: 'runtime unavailable' });
+    const state = services.runtime.state();
+    res.json({ ok: true, joinQueue: state.joinQueue, bots: state.bots.map((bot) => ({ name: bot.name, ready: bot.ready, lastSpawn: bot.lastSpawn || null })), connectionErrors: state.connectionErrors });
+  });
+
+  app.post('/api/queue/:action', sameOrigin, rateLimit, async (req, res) => {
+    if (!services.runtime) return res.status(503).json({ ok: false, error: 'runtime unavailable' });
+    const action = req.params.action;
+    try {
+      if (action === 'reset-cooldown') {
+        const cleared = { cooldownUntil: services.runtime.joinCooldownUntil || null, strikes: services.runtime.throttleStrikes || 0 };
+        services.runtime.joinCooldownUntil = 0;
+        services.runtime.throttleStrikes = 0;
+        services.runtime.nextJoinAt = 0;
+        if (services.logger) services.logger.warn(`join queue cooldown cleared from dashboard (was ${cleared.cooldownUntil ? new Date(cleared.cooldownUntil).toISOString() : 'none'}, ${cleared.strikes} strike(s))`);
+        invalidate();
+        return res.json({ ok: true, cleared, joinQueue: services.runtime.state().joinQueue });
+      }
+      if (action === 'retry-all') {
+        const results = [];
+        for (const bot of services.runtime.bots.values()) {
+          if (bot.ready) continue;
+          results.push({ name: bot.name, ...(await services.runtime.reconnectBot(bot.name)) });
+        }
+        invalidate();
+        return res.json({ ok: true, queued: results.length, results });
+      }
+      return res.status(400).json({ ok: false, error: 'unknown queue action' });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.post('/api/bot/:name/:action', sameOrigin, rateLimit, async (req, res) => {
     if (!services.runtime) return res.status(503).json({ ok: false, error: 'runtime unavailable' });
     const { name, action } = req.params;

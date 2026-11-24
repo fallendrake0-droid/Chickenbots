@@ -69,6 +69,9 @@ test('an unsafe spawn keeps the bot in recovery and records the reason', () => {
   assert.equal(assessment.safe, false);
   assert.equal(recovery.state, RECOVERY_STATES.RECOVERING);
   assert.ok(assessment.reasons.join(' ').includes('zombie'));
+  const hazardous = recovery.assessSpawn({ threats: [], health: 20, food: 20, hazards: ['lava at spawn'] });
+  assert.equal(hazardous.safe, false);
+  assert.ok(hazardous.reasons.includes('lava at spawn'));
 });
 
 test('critical health enters recovery without inventing a death', () => {
@@ -135,6 +138,9 @@ test('RealBot records a real death with attacker evidence and clears it on spawn
   assert.equal(real.lastDeath.position.x, 10);
   assert.equal(real.lastDeath.attacker.name, 'zombie');
   assert.equal(real.lastDeath.dimension, 'overworld');
+  assert.equal(real.lastDeath.confidence, 'likely');
+  assert.ok(real.lastDeath.summary.includes('Died at'));
+  assert.ok(real.lastDeath.environment);
   assert.equal(real.deathHistory.length, 1);
 
   fake.health = 20;
@@ -151,6 +157,8 @@ test('MockBot exposes the same death and respawn evidence shape', () => {
   assert.ok(bot.lastDeath);
   assert.equal(bot.lastDeath.cause, 'zombie (2m)');
   assert.equal(bot.lastDeath.attacker.distance, 2);
+  assert.equal(bot.lastDeath.confidence, 'likely');
+  assert.ok(bot.lastDeath.environment);
   assert.equal(bot.deathHistory.length, 1);
   assert.equal(bot.deaths, 1);
   const spawn = bot.respawn();
