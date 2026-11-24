@@ -167,6 +167,34 @@ test('the client asks for a bounded chunk radius so five joins cannot block the 
   await real.disconnect('test complete');
 });
 
+test('auth confirmation is logged before held movement is released', async () => {
+  const logs = [];
+  const logger = { debug() {}, info(message) { logs.push(String(message)); }, warn() {}, error() {} };
+  const fake = new FakeBot();
+  const real = new RealBot({
+    name: '11001100', createBot: () => fake, logger,
+    loginPassword: 'secret', registerPassword: '', authEnabled: true, authDelayMs: 1, authTimeoutMs: 500
+  });
+  real.connection.begin({ host: 'example.test', port: 25565 });
+  for (const state of [STATES.TCP_CONNECTING, STATES.HANDSHAKING, STATES.CONFIGURATION, STATES.AWAITING_SPAWN, STATES.AUTHENTICATING]) {
+    assert.equal(real.connection.transition(state), true);
+  }
+  real.bot = fake;
+  real.connected = true;
+  real.spawned = true;
+  real._spawnedThisSession = true;
+  real._lockMovement();
+  real._suppressedMovement = 1;
+  fake.chat = () => { for (const listener of real._chatListeners) listener('You are now logged in'); };
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const confirmed = logs.findIndex((line) => line.includes('password authentication confirmed'));
+  const released = logs.findIndex((line) => line.includes('released movement after auth'));
+  assert.ok(confirmed >= 0 && released >= 0, logs.join('\n'));
+  assert.ok(confirmed < released, 'the confirmation line must come first');
+  await real.disconnect('test complete');
+});
+
 test('a spawn that arrives before the spawn waiter is not lost when auth is still pending', async () => {
   const real = new RealBot({ name: '________', createBot: () => new FakeBot(), loginPassword: 'secret', registerPassword: '' });
   real.connection.begin({ host: 'example.test', port: 25565 });

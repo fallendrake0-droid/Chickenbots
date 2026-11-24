@@ -1419,9 +1419,11 @@ class RealBot extends BotAdapter {
     if (this.connection.state === STATES.AUTHENTICATING) {
       this._transition(STATES.READY, 'password authentication confirmed', { stage: 'ready' });
     }
+    // Report the confirmation before releasing the held movement packets: the
+    // previous order made the log read as if movement was released first.
+    this.logger.info(`[${this.name}] password authentication confirmed${registered ? ' (registered)' : ''}`);
     this._unlockMovement();
     if (this.bot) this.bot.physicsEnabled = true;
-    this.logger.info(`[${this.name}] password authentication confirmed${registered ? ' (registered)' : ''}`);
     return { ok: true, required: true, registered };
   }
 
