@@ -110,8 +110,8 @@ const config = {
     // commonly 30-60s on Aternos). Every bot in this fleet shares one source
     // IP, so joins must be at least this far apart or the server rejects them
     // and an existing session can be dropped in the storm.
-    joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 45000),
-    joinJitterMs: envInt('MC_JOIN_JITTER_MS', 10000),
+    joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 10000),
+    joinJitterMs: envInt('MC_JOIN_JITTER_MS', 2000),
     // Registration / login (Aternos + AuthMe style plugins). There is no
     // built-in password and no default credential: live connections refuse to
     // start with auth enabled unless a password is supplied through the

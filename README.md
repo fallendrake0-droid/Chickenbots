@@ -290,7 +290,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
-| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `45000` / `10000` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so five bots on one host must join slowly or the server rejects them. |
+| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `10000` / `2000` | minimum gap between login sockets. Paper's `connection-throttle` is per source IP, so five bots on one host must join slowly or the server rejects them. |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `5000` / `1000` | gap before queuing each bot's initial connection task; the join queue still enforces `MC_JOIN_INTERVAL_MS` |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | first fleet-wide pause after a throttle or a socket that never reaches spawn; repeats double the pause up to the maximum |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | AuthMe-style login after spawn; bots stay frozen and unready until confirmed. No credential is built in: a live connecting run refuses to start until these are set in `.env` or the environment. Login-only by default. Set `MC_AUTH_ENABLED=false` to disable. |
@@ -485,7 +485,7 @@ commissioning.
 
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
   latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
-  Bots join **one socket at a time**, at least `MC_JOIN_INTERVAL_MS` (45s by default) apart, because
+  Bots join **one socket at a time**, at least `MC_JOIN_INTERVAL_MS` (10s by default) apart, because
   Paper's `connection-throttle` is enforced per source IP and all five bots share the host's IP.
   A throttle or a socket that never reaches spawn pauses **every** join and doubles that pause on each
   repeat (90s, 180s, … up to 10 minutes). If you control the server, set

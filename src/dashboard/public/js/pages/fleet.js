@@ -190,7 +190,7 @@ function profileSummary(bot, actions, team, name) {
             ${kvRows([
               ['Connected', bot.connected ? badge('Yes', 'ok') : badge('No', 'danger')],
               ['Spawned', bot.spawned ? badge('Yes', 'ok') : badge('No', 'warn')],
-              ['Authenticated', bot.authenticated ? badge('Yes', 'ok') : badge('No', 'danger')],
+              ['Authenticated', bot.authenticated ? badge('Yes', 'ok') : botStatus(bot).key === 'auth_failed' ? badge('No', 'danger') : badge('Pending', 'warn')],
               ['Dimension', esc(bot.dimension || '—')],
               ['Position', esc(positionText(bot.position)), true],
               ['Deaths', num(bot.deaths || 0)]
@@ -624,7 +624,7 @@ export const connectionsPage = {
         <div class="grid grid--stats">
           ${statCard({ label: 'Configured roster', value: num((config.roster || []).length || 5), iconName: 'users', tone: 'neutral', context: 'Fixed usernames from config' })}
           ${statCard({ label: 'Ready', value: `${num(rows.filter((bot) => bot.online).length)}<small> / ${rows.length}</small>`, iconName: 'check-circle', tone: rows.length && rows.every((bot) => bot.online) ? 'success' : 'warning', context: 'Connected + authenticated + spawned' })}
-          ${statCard({ label: 'Auth failures', value: num(rows.filter((bot) => bot.connected && !bot.authenticated).length), iconName: 'key', tone: rows.some((bot) => bot.connected && !bot.authenticated) ? 'warning' : 'success', context: 'Connected but not authenticated' })}
+          ${statCard({ label: 'Auth failures', value: num(rows.filter((bot) => bot.status === 'auth_failed').length), iconName: 'key', tone: rows.some((bot) => bot.status === 'auth_failed') ? 'warning' : 'success', context: 'Password rejected or timed out' })}
           ${statCard({ label: 'Errors reported', value: num(rows.filter((bot) => bot.lastError).length), iconName: 'alert', tone: rows.some((bot) => bot.lastError) ? 'danger' : 'success', context: 'Latest adapter error per bot' })}
         </div>
         <section class="card">
@@ -638,7 +638,7 @@ export const connectionsPage = {
                 return `<tr>
                   <td><a class="link" href="#/bots/${encodeURIComponent(bot.name)}">${esc(bot.name)}</a></td>
                   <td><span class="status">${statusDotFor(status)}${badge(status.label, status.tone)}</span></td>
-                  <td>${bot.authenticated ? badge('Yes', 'ok') : badge('No', 'danger')}</td>
+                  <td>${bot.authenticated ? badge('Yes', 'ok') : botStatus(bot).key === 'auth_failed' ? badge('No', 'danger') : badge('Pending', 'warn')}</td>
                   <td>${bot.spawned ? badge('Yes', 'ok') : badge('No', 'warn')}</td>
                   <td class="mono tiny">${esc(positionText(bot.position))}</td>
                   <td class="mono tiny">${bot.uptimeMs ? esc(duration(bot.uptimeMs)) : '—'}</td>

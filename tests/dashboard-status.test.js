@@ -45,6 +45,12 @@ test('connection status is a single honest verdict for every lifecycle state', (
   assert.equal(auth.status, 'auth_failed');
   assert.equal(auth.online, false);
 
+  // A ready entity proves the session is live even when a legacy boolean or a
+  // stale auth error is still hanging around from an earlier attempt.
+  const readyWithStaleAuth = connectionStatus({ ...base, authenticated: false, lastError: 'no login confirmation' });
+  assert.equal(readyWithStaleAuth.status, 'online');
+  assert.equal(readyWithStaleAuth.online, true);
+
   const dead = connectionStatus({ ...base, health: 0 });
   assert.equal(dead.status, 'dead');
   assert.equal(dead.online, false);

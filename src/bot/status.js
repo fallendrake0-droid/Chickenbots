@@ -47,6 +47,15 @@ function connectionStatus(bot, { now = Date.now(), staleAfterMs = config.server.
   if (!spawned) {
     return result('joining', authenticated ? 'Connected, waiting for spawn' : 'Connected, authenticating and waiting for spawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
   }
+  // A ready client entity is the strongest signal: the socket, spawn and
+  // authentication must all have succeeded even if one legacy boolean was
+  // stale. Never label a live, ready bot as "Auth failed".
+  if (ready) {
+    if (Number.isFinite(bot.health) && bot.health <= 0) {
+      return result('dead', 'Spawned but dead; waiting to respawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
+    }
+    return result('online', 'Connected, authenticated and spawned', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
+  }
   if (!authenticated) {
     const key = AUTH_ERROR_RE.test(String(lastError || '')) ? 'auth_failed' : 'authenticating';
     return result(key, lastError || 'Waiting for password authentication', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
@@ -54,10 +63,7 @@ function connectionStatus(bot, { now = Date.now(), staleAfterMs = config.server.
   if (Number.isFinite(bot.health) && bot.health <= 0) {
     return result('dead', 'Spawned but dead; waiting to respawn', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
   }
-  if (!ready) {
-    return result('initialising', 'Spawned but the client entity is not ready yet', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
-  }
-  return result('online', 'Connected, authenticated and spawned', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
+  return result('initialising', 'Spawned but the client entity is not ready yet', { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError });
 }
 
 function result(status, detail, { now, lastEventAt, lastEventAgeMs, staleAfterMs, lastError = null }) {

@@ -679,7 +679,7 @@ class TeamRuntime {
       name: bot.name,
       connected: Boolean(bot.connected),
       spawned: Boolean(bot.spawned),
-      authenticated: bot.authenticated !== false,
+      authenticated: status.online || bot.authenticated !== false,
       ready: Boolean(bot.ready),
       online: status.online,
       status: status.status,

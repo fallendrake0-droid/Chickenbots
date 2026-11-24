@@ -153,6 +153,9 @@ class RealBot extends BotAdapter {
    */
   _applySpawnAuth() {
     this.authenticated = Boolean(this.authConfirmed || !this.passwordRequired);
+    if (this.authenticated && /auth|login|password|register|credential/i.test(String(this.lastError || ''))) {
+      this.lastError = null;
+    }
     return this.authenticated;
   }
 
@@ -614,6 +617,8 @@ class RealBot extends BotAdapter {
     if (!this.connected || !this.spawned) return { ok: false, error: this.lastError || 'disconnected before password confirmation' };
     this.authenticated = true;
     this.authConfirmed = true;
+    this.lastError = null;
+    this.kickKind = null;
     this._unlockMovement();
     if (this.bot) this.bot.physicsEnabled = true;
     this.logger.info(`[${this.name}] password authentication confirmed${registered ? ' (registered)' : ''}`);

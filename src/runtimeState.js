@@ -14,10 +14,19 @@ function statusSnapshot(services) {
     const status = connectionStatus(bot);
     try {
       const summary = typeof bot.summary === 'function' ? bot.summary() : { name: bot.name, position: bot.position };
-      // The connection verdict is computed once, server-width, and attached to
+      // The connection verdict is computed once, server-side, and attached to
       // every summary. Clients render this instead of re-deriving "online"
-      // from three flags in several places.
-      return { ...summary, ...status };
+      // from three flags in several places. A ready/online session is
+      // authenticated by definition, so a stale legacy flag cannot paint a
+      // live bot as "Auth failed".
+      return {
+        ...summary,
+        ...status,
+        connected: status.online || summary.connected === true,
+        spawned: status.online || summary.spawned === true,
+        authenticated: status.online || summary.authenticated === true,
+        ready: status.online || summary.ready === true
+      };
     } catch (err) {
       // A broken disconnected adapter must not blank the whole dashboard and
       // leave the previous (possibly all-online) snapshot on screen.
