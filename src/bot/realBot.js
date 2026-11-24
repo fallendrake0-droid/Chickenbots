@@ -1119,7 +1119,10 @@ class RealBot extends BotAdapter {
         // after "ready" and rewrote the session clock. A real death produces a
         // `death` event first, so only honour the packet when one was seen.
         const deathSinceSpawn = Boolean(this.lastDeath && this.lastDeath.at >= this.spawnAt);
-        if (this._spawnedThisSession && this.connection.state === STATES.READY && !deathSinceSpawn) {
+        // This also happens while the password exchange is still pending; that
+        // is still a join-time respawn, not a death, and must not print
+        // "respawned" before the bot is even authenticated.
+        if (this._spawnedThisSession && this.connection.state !== STATES.RESPAWNING && !deathSinceSpawn) {
           this.connection.event('respawn_ignored', 'respawn packet without a death; not treated as a respawn');
           this.logger.debug(`[${this.name}] TRACE in respawn without a death; ignored`);
           return;

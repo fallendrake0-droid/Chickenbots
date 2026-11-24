@@ -367,6 +367,32 @@ test('a respawn packet without a death is ignored and the spawn stays a duplicat
   await real.disconnect('test');
 });
 
+test('a join-time respawn packet while auth is pending is not called a respawn', async () => {
+  const logs = [];
+  const logger = { debug() {}, info(message) { logs.push(String(message)); }, warn() {}, error() {} };
+  const fake = new FakeBot();
+  const real = new RealBot({
+    name: '01010100', createBot: () => fake, logger,
+    loginPassword: 'secret', registerPassword: '', authEnabled: true, authTimeoutMs: 500
+  });
+  const pending = real.connect({ timeoutMs: 500 });
+  await new Promise((resolve) => setImmediate(resolve));
+  fake._client.emit('connect');
+  fake.emit('login');
+  fake.emit('spawn');
+  assert.equal(real.connection.state, STATES.AUTHENTICATING);
+
+  // The server sends this between the first spawn and the password prompt.
+  fake._client.emit('respawn');
+  assert.equal(real.connection.state, STATES.AUTHENTICATING, 'a join-time respawn must not move the lifecycle');
+  fake.emit('spawn');
+  assert.ok(!logs.some((line) => /respawned at/.test(line)), 'auth-pending joins must not print respawned');
+  assert.ok(real.connection.snapshot().timeline.some((entry) => entry.event === 'respawn_ignored'));
+  assert.ok(real.connection.snapshot().timeline.some((entry) => entry.event === 'spawn_duplicate'));
+  await real.disconnect('test complete');
+  await pending.catch(() => null);
+});
+
 test('a kick captures the ready state before cleanup resets it', async () => {
   const { real, fake } = newReal();
   const pending = real.connect({ timeoutMs: 500 });
