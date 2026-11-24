@@ -98,7 +98,9 @@ class TeamRuntime {
 
   get allBotsReady() {
     if (this.bots.size !== BOT_NAMES.length) return false;
-    return [...this.bots.values()].every((bot) => bot.connected && bot.spawned && bot.authenticated !== false);
+    // Same verdict the dashboard renders: a fresh, spawned, authenticated
+    // session. No separate flag arithmetic that can disagree with the UI.
+    return [...this.bots.values()].every((bot) => connectionStatus(bot).online);
   }
 
   /**
@@ -108,7 +110,7 @@ class TeamRuntime {
   get autonomyAllowed() {
     if (this.allBotsReady) return true;
     if (!this.autonomyArmed) return false;
-    return [...this.bots.values()].some((bot) => bot.connected && bot.spawned && bot.authenticated !== false && bot.health > 0);
+    return [...this.bots.values()].some((bot) => connectionStatus(bot).online);
   }
 
   async init() {
