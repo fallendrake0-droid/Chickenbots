@@ -113,6 +113,9 @@ test('build command rejects missing materials and completes a real 5-bot build w
     const designs = runtime.library.list({ tier: 'Beginner', limit: 120 });
     const sorted = designs.sort((a, b) => a.blocks - b.blocks);
     const design = sorted[0];
+    // Start from empty inventories so the missing-material gate is exercised
+    // even when the smallest design happens to use blocks the roster spawns with.
+    for (const bot of runtime.bots.values()) bot.inventory = {};
     const empty = await runtime.executeCommand(`build ${design.id} 80 72 80 confirm`);
     assert.equal(empty.result.ok, false);
     assert.ok(/materials missing|no .* available/.test(empty.result.error), empty.result.error);
