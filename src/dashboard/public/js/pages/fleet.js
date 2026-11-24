@@ -22,6 +22,17 @@ export const botsPage = {
           eyebrow: 'Fleet', title: 'All Bots', description: 'Live state for every bot in the roster — connection, vitals, assignment and position.',
           actions: `<button class="button" type="button" data-new-task>${icon('plus')} New task</button><button class="button button--primary" type="button" data-command-palette>${icon('terminal')} Command</button>`
         })}
+        <div class="card fleet-actions" style="margin-bottom:16px">
+          <div class="row gap-2 wrap">
+            <strong style="margin-right:6px">Fleet actions</strong>
+            <button class="button button--sm" type="button" data-fleet-command="chop oak">${icon('axe')} Chop oak — all</button>
+            <button class="button button--sm" type="button" data-fleet-command="mine iron">${icon('pickaxe')} Mine iron — all</button>
+            <button class="button button--sm" type="button" data-command="return home all">${icon('home')} Return home</button>
+            <button class="button button--sm" type="button" data-command="bot all status">${icon('wifi')} Fleet status</button>
+            <span class="grow"></span>
+            <span class="tiny muted">One command fans out with bounded concurrency; results are per bot.</span>
+          </div>
+        </div>
         <div class="grid grid--stats">
           ${statCard({ label: 'Online', value: `${online.length}<small> / ${fleet.length || 10}</small>`, iconName: 'wifi', tone: fleet.length && online.length === fleet.length ? 'success' : online.length ? 'warning' : 'danger', context: `${fleet.filter((bot) => !botOnline(bot)).length} not online` })}
           ${statCard({ label: 'Average health', value: `${avgHealth.toFixed(1)}<small>/20</small>`, iconName: 'heart', tone: avgHealth >= 16 ? 'success' : avgHealth >= 10 ? 'warning' : 'danger', progressValue: avgHealth, progressMax: 20 })}
@@ -187,14 +198,26 @@ function profileSummary(bot, actions, team, name) {
         <section class="card">
           <div class="card-header"><div class="card-title">${icon('wifi')} Connection</div>${botStatusBadge(bot)}</div>
           <div class="card-body">
-            ${kvRows([
-              ['Connected', bot.connected ? badge('Yes', 'ok') : badge('No', 'danger')],
-              ['Spawned', bot.spawned ? badge('Yes', 'ok') : badge('No', 'warn')],
-              ['Authenticated', bot.authenticated ? badge('Yes', 'ok') : botStatus(bot).key === 'auth_failed' ? badge('No', 'danger') : badge('Pending', 'warn')],
-              ['Dimension', esc(bot.dimension || '—')],
-              ['Position', esc(positionText(bot.position)), true],
-              ['Deaths', num(bot.deaths || 0)]
-            ], { htmlValues: true })}
+            ${(() => {
+              const status = botStatus(bot);
+              const manualAuth = bot.authPending === true || bot.authRequiredManual === true;
+              const lastPacket = Number.isFinite(bot.lastEventAgeMs)
+                ? `${Math.max(0, Math.round(bot.lastEventAgeMs / 1000))}s ago`
+                : bot.lastEventAt ? timeAgo(bot.lastEventAt) : '—';
+              return kvRows([
+                ['Overall status', badge(status.label, status.tone), true],
+                ['Transport', bot.transportConnected === true || bot.connected === true ? badge('Connected', 'ok') : badge('Closed', 'danger')],
+                ['Server player list', bot.serverPlayerListed === true ? badge('Listed', 'ok') : badge('Not listed', 'neutral')],
+                ['Spawned in world', bot.spawned === true ? badge('Yes', 'ok') : badge('No', 'warn')],
+                ['Manual auth', manualAuth ? badge('Required', 'danger') : badge('Not required', 'ok')],
+                ['Authenticated', manualAuth ? badge('Blocked', 'danger') : bot.authenticated === true ? badge('Yes', 'ok') : status.key === 'auth_failed' ? badge('No', 'danger') : badge('Pending', 'warn')],
+                ['Gameplay ready', bot.gameplayReady === true ? badge('Yes', 'ok') : badge('No', 'neutral')],
+                ['Last packet', esc(lastPacket)],
+                ['Dimension', esc(bot.dimension || '—')],
+                ['Position', esc(positionText(bot.position)), true],
+                ['Deaths', num(bot.deaths || 0)]
+              ], { htmlValues: true });
+            })()}
             <div class="row gap-2" style="margin-top:12px">
               <button class="button" type="button" data-bot-action="reconnect" data-bot="${esc(name)}">${icon('refresh')} Reconnect</button>
               <button class="button button--danger" type="button" data-bot-action="disconnect" data-bot="${esc(name)}" data-confirm="true">${icon('wifi-off')} Disconnect</button>

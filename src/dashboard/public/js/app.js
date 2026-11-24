@@ -396,15 +396,23 @@ async function onFleetCommand(button) {
   setButtonLoading(button, true);
   const failures = [];
   let ok = 0;
-  for (const name of botNames()) {
-    try {
-      const result = await runCommand(`${base} ${name}`);
-      const payload = payloadOf(result);
-      if (payload && payload.ok === false) failures.push(`${name}: ${payload.error || 'rejected'}`);
-      else ok++;
-    } catch (err) {
-      failures.push(`${name}: ${err.message}`);
+  try {
+    // One command reaches the whole fleet. The registry fans out with bounded
+    // concurrency and returns a structured row per bot; the browser must not
+    // issue ten separate commands (that is what "one command per bot" means).
+    const [verb, ...rest] = base.split(/\s+/);
+    const line = `${verb} all${rest.length ? ` ${rest.join(' ')}` : ''}`;
+    const result = await runCommand(line);
+    const payload = payloadOf(result);
+    const rows = Array.isArray(payload && payload.results) ? payload.results : [];
+    for (const row of rows) {
+      if (row && row.ok === false) failures.push(`${row.bot || 'fleet'}: ${row.error || row.code || 'rejected'}`);
+      else if (row && row.ok === true) ok++;
     }
+    if (!rows.length && payload && payload.ok !== false) ok = botNames().length;
+    if (!rows.length && payload && payload.ok === false) failures.push(payload.error || 'rejected');
+  } catch (err) {
+    failures.push(err.message);
   }
   setButtonLoading(button, false);
   if (failures.length) notify('warn', `${ok} succeeded`, failures.slice(0, 3).join(' · '), 9000);

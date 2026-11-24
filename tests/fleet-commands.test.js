@@ -75,6 +75,7 @@ test('one command fans out the same real action to the whole fleet with per-bot 
     assert.equal(status.result.bots.length, 10);
     assert.equal(status.result.online, 10);
     assert.equal(status.result.ready, 10);
+    assert.ok(status.result.results.every((row) => row.ok === true && row.online === true));
 
     const eat = await runtime.commands.execute('eat all', { source: 'internal' });
     assert.equal(eat.result.ok, true, JSON.stringify(eat.result).slice(0, 400));
@@ -85,6 +86,21 @@ test('one command fans out the same real action to the whole fleet with per-bot 
     const home = await runtime.commands.execute('return home all', { source: 'internal' });
     assert.equal(home.result.ok, true, JSON.stringify(home.result).slice(0, 400));
     assert.equal(home.result.completed, 10);
+
+    const inventory = await runtime.commands.execute('bot all inventory', { source: 'internal' });
+    assert.equal(inventory.result.completed, 10, JSON.stringify(inventory.result).slice(0, 400));
+    assert.ok(inventory.result.results.every((row) => row.inventory && row.inventory.capacity));
+
+    const collect = await runtime.commands.execute('bot all collect', { source: 'internal' });
+    assert.equal(collect.result.completed, 10, JSON.stringify(collect.result).slice(0, 400));
+
+    const defend = await runtime.commands.execute('bot all defend', { source: 'internal' });
+    assert.equal(defend.result.bots, 10, JSON.stringify(defend.result).slice(0, 400));
+    assert.equal(defend.result.results.length, 10);
+
+    const explore = await runtime.commands.execute('explore all 1', { source: 'internal' });
+    assert.equal(explore.result.bots, 10, JSON.stringify(explore.result).slice(0, 400));
+    assert.equal(explore.result.results.length, 10);
   } finally {
     await runtime.shutdown('test');
   }

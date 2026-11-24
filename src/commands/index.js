@@ -286,7 +286,9 @@ async function runFleetActions(services, target, run, { concurrency = config.com
 function fleetStatus(services) {
   const results = [...services.bots.values()].map((bot) => {
     const status = connectionStatus(bot);
-    return { bot: bot.name, ...status };
+    // A status query succeeds even when a bot is offline; the online/ready
+    // fields carry the verdict. `ok` keeps the fleet result row shape uniform.
+    return { bot: bot.name, ok: true, ...status };
   });
   return {
     ok: true,
@@ -331,6 +333,14 @@ async function runBotAction(services, bot, args, context = {}) {
     return { ok: result.ok !== false, ...result, position: { ...bot.position } };
   }
   if (action === 'eat') return actions.survival.eat();
+  if (action === 'inventory' || action === 'inv') {
+    return { ok: true, bot: bot.name, inventory: actions.inventory.status() };
+  }
+  if (action === 'collect') {
+    if (typeof bot.collectDrops !== 'function') return { ok: false, error: 'this adapter cannot collect drops' };
+    const result = await bot.collectDrops(6);
+    return { ok: result.ok !== false, ...result };
+  }
   if (action === 'mine') {
     const ore = normalizeOre(args[2]);
     if (!ore) { const result = await actions.mining.mineNearby({ radius: 24, limit: 8 }); return { ok: Boolean(result.ok), ...result, status: actions.mining.status() }; }
@@ -808,12 +818,17 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'defend', category: 'combat', summary: 'Defend against hostile mobs (PvP stays off); stop cancels', usage: 'defend [bot] | defend stop [bot|all]',
+    name: 'defend', category: 'combat', summary: 'Defend against hostile mobs (PvP stays off); stop cancels', usage: 'defend [bot|all] | defend stop [bot|all]',
     execute: async (args) => {
       if (String(args[0] || '').toLowerCase() === 'stop') {
         const target = String(args[1] || 'all').toLowerCase();
         const targets = target === 'all' || target === 'fleet' ? allActions(services) : [actionsFor(services, pickBot(services, args[1]).name)];
         return { ok: true, stopped: targets.map((actions) => actions.combat.stop()) };
+      }
+      if (isFleetTarget(args[0])) {
+        return runFleetActions(services, 'all', (actions) => runBotAction(
+          services, actions.bot, [actions.bot.name, 'defend'], {}
+        ));
       }
       const bot = pickBot(services, args[0]);
       return runBotAction(services, bot, [bot.name, 'defend'], {});
@@ -821,7 +836,7 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'explore', category: 'exploration', summary: 'Explore the spiral and record discoveries; stop cancels', usage: 'explore [bot] [steps] | explore stop [bot|all]',
+    name: 'explore', category: 'exploration', summary: 'Explore the spiral and record discoveries; stop cancels', usage: 'explore [bot|all] [steps] | explore stop [bot|all]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
       if (first === 'stop') {
@@ -829,10 +844,16 @@ function registerAll(services, registry) {
         const targets = target === 'all' || target === 'fleet' ? allActions(services) : [actionsFor(services, pickBot(services, args[1]).name)];
         return { ok: true, stopped: targets.map((actions) => actions.exploration.stop()) };
       }
-      const named = isBotName(services, args[0]) ? args[0] : null;
-      const bot = pickBot(services, named);
-      const rawSteps = named ? args[1] : args[0];
+      const fleet = isFleetTarget(args[0]);
+      const named = fleet ? null : (isBotName(services, args[0]) ? args[0] : null);
+      const rawSteps = fleet ? args[1] : (named ? args[1] : args[0]);
       const steps = rawSteps === undefined ? 4 : intArg(rawSteps, 'steps', { min: 1, max: 20 });
+      if (fleet) {
+        return runFleetActions(services, 'all', (actions) => runBotAction(
+          services, actions.bot, [actions.bot.name, 'explore', String(steps)], {}
+        ));
+      }
+      const bot = pickBot(services, named);
       return runBotAction(services, bot, [bot.name, 'explore', String(steps)], {});
     }
   });
