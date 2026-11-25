@@ -240,3 +240,24 @@ files, `perf:status` and a local dashboard run. **No live result.**
 **Still open:** every live criterion in `LIVE_ACCEPTANCE_REPORT.md`; live
 `launch-actions`/`FARM_CROP`/safety timing, EPIPE/reconnect, AuthMe/SimpleAuth,
 Geyser/ViaVersion/GrimAC, browser/canvas, and `BUG-27-10`/`BUG-27-12`.
+
+## Round 36 — cold-cache contract, task pre-emption and distinct auth adapters
+
+**Evidence:** 428/428 tests, lint 171 files, `commands:audit` 45/46
+(0 failures), `validate` 10/10, `deploy:check` 13/13, `check:secrets` 214
+files, `perf:status`. **No live result.** The supplied capture was produced by
+a tree older than `863145b`; its log strings do not exist in this checkout.
+
+| ID | Priority | Area | Symptom (live log) | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-36-01 | P0 | Cold dashboard | First request after startup could run every live status scan | `BotActions.status()` had a cold fallback that called all twelve controllers synchronously | `status()` is cache-only; `warmStatus()` is the explicit fill path and returns `statusCache.empty` when cold | poisoned-controller cold test; warm snapshot test | FIXED (unit) |
+| BUG-36-02 | P0 | Safety during long tasks | A 26 s `FARM_CROP` had no safety pass until it returned; zombie deaths followed | Safety ran only before a task; `_startBotStep` awaited the task with no periodic emergency check | `SAFETY_PREEMPT_MS=500` timer cancels non-combat tasks on damage/hazard/low health, marks the assignment for re-planning and returns the bot to safety; combat tasks ignore ordinary damage | pre-emption reason matrix + real 1.2 s task cancellation test | FIXED (unit); live UNVERIFIED |
+| BUG-36-03 | P1 | Auth adapters | AuthMe and SimpleAuth both used the generic single-password registration form | `RealBot` always passed `MC_LOGIN_COMMAND`/`MC_REGISTER_COMMAND` defaults, erasing profile templates | AuthMe defaults to the confirmation form, SimpleAuth to one password; `MC_AUTH_LOGIN_TEMPLATE`/`MC_AUTH_REGISTER_TEMPLATE` override either and are validated before sockets open | `plugin-compat.test.js` three new cases | FIXED (unit) |
+| BUG-36-04 | P0 | Movement ownership | A timed-out safety pass could overlap a newly started task | `_startBotStep` continued after `safetyTick()` returned `timedOut` | Return on `timedOut`, `dead`, `notReady` or `recovering`; the next tick re-assesses | timed-out-safety regression test | FIXED (unit) |
+| BUG-36-05 | P1 | Farm scan evidence | No regression test guarded the 25 ms soil budget | The fix existed but could regress silently | 1 ms-per-lookup world asserts bounded lookups/elapsed for `_localSoil` | `farming.test.js` 33/33 with runtime-safety | FIXED (test) |
+
+**Still open:** every live criterion in `LIVE_ACCEPTANCE_REPORT.md`; a fresh
+five-bot run on `863145b` or later must prove the startup summary, snapshot
+sections, task pre-emption, planner re-open and death-cause strings. EPIPE/
+reconnect, AuthMe/SimpleAuth against the real server, Geyser/ViaVersion/GrimAC,
+browser/canvas and `BUG-27-10`/`BUG-27-12` remain open.

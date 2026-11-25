@@ -103,8 +103,9 @@ class BotActions {
   statusNames() { return STATUS_CONTROLLERS; }
 
   /**
-   * Refresh one (or a named) controller status into the cache. Never called
-   * from the dashboard request path except the cold fallback in status().
+   * Refresh one (or a named) controller status into the cache. This is the
+   * only place controller.status() may run; it is invoked from the runtime
+   * warm-up and one controller at a time from the state-sync tick.
    */
   refreshStatus({ name = null, limit = 1 } = {}) {
     const names = name ? [name] : STATUS_CONTROLLERS;
@@ -130,13 +131,22 @@ class BotActions {
     return refreshed;
   }
 
+  /**
+   * Fill the whole cache explicitly (startup, CLI/tests). Kept separate from
+   * status() so a cold dashboard can never run twelve live scans by accident.
+   */
+  warmStatus() {
+    for (const target of STATUS_CONTROLLERS) this.refreshStatus({ name: target });
+    this._statusWarmedAt = Date.now();
+    return this.status();
+  }
+
   status() {
-    // Cold callers (tests, a CLI before the runtime tick) still get every
-    // section, but production warms all twelve before the dashboard starts.
-    if (!this._statusCache.size) {
-      for (const target of STATUS_CONTROLLERS) this.refreshStatus({ name: target });
-      this._statusWarmedAt = Date.now();
-    }
+    // Cache-only by contract. A cold cache returns null sections and
+    // statusCache.entries=0; it must never call a controller. The previous
+    // cold fallback ran all twelve status methods (including world scans)
+    // inside the first dashboard request, which is how a 5.2s snapshot froze
+    // the Minecraft sockets.
     const at = (name) => this._statusCache.get(name);
     const ages = [...this._statusCache.values()].map((entry) => Date.now() - entry.at);
     return {
@@ -157,7 +167,8 @@ class BotActions {
         warmedAt: this._statusWarmedAt || null,
         refreshedAt: this._statusRefreshedAt || null,
         maxAgeMs: ages.length ? Math.max(...ages) : null,
-        entries: this._statusCache.size
+        entries: this._statusCache.size,
+        empty: this._statusCache.size === 0
       },
       lastAction: this.lastAction,
       lastActionAt: this.lastActionAt

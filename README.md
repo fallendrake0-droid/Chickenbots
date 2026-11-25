@@ -352,6 +352,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH_PROFILE` | `none` | `none`, `offline`, `microsoft`, `manual`, `authme`, `simpleauth` or `generic`. Plugin profiles are challenge-driven and never send a password without a server prompt. See `AUTHENTICATION_PROFILES.md`. |
 | `MC_AUTH_REGISTRATION_ENABLED` | `false` | registration is opt-in and requires a registration template |
 | `MC_AUTH_MAX_ATTEMPTS` | `2` | credential attempts per challenge, clamped to 1–5 to avoid lockout loops |
+| `MC_AUTH_LOGIN_TEMPLATE` / `MC_AUTH_REGISTER_TEMPLATE` | profile default | optional per-server command forms; must contain `{password}`. Blank uses AuthMe's confirmation form or SimpleAuth's single-password form. The older `MC_LOGIN_COMMAND` / `MC_REGISTER_COMMAND` names are honoured when explicitly set |
 | `MC_CREDENTIALS_FILE` | `.mc-auth.json` | ignored per-bot credential file; never committed and never echoed |
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | legacy single-fleet credentials, used only when a plugin profile is explicitly selected |
 | `MC_AUTH_ENABLED` | `false` | optional explicit enable for legacy/profile paths; the default profile already decides |
@@ -365,6 +366,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `AUTONOMY_CONCURRENCY` | `4` | maximum bots inside a long controller action at once. Others run safety work and rotate into the next free slot |
 | `ACTION_TIMEOUT_MS` | `60000` | hard budget for one autonomous controller step. A hung path or dig is cancelled, movement is stopped and the concurrency slot is released. Operator commands run in their own exclusive slot and cancel the autonomous step instead of racing it |
 | `EMERGENCY_BUDGET_MS` | `6000` | hard budget for one safety pass (eat, flee, defend). It is propagated to combat and pathfinding as a deadline, and a watchdog cancels movement at `budget + 750ms`; routine task work keeps the longer `ACTION_TIMEOUT_MS` |
+| `SAFETY_PREEMPT_MS` | `500` | while a task is running, check for damage, lava, fire, a fall or critical health this often. A hit cancels a non-combat task so the next safety pass owns movement; combat tasks still yield to critical health and hazards |
 | `PATHFINDER_THINK_TIMEOUT_MS` / `PATHFINDER_TICK_TIMEOUT_MS` / `PATHFINDER_SEARCH_RADIUS` | `2500` / `10` / `64` | cooperative A* budget: total decision time, slice per event-loop turn, and maximum search radius |
 | `CLIENT_STALL_GUARD_MS` / `CLIENT_STALL_RESUME_MS` | `2500` / `1500` | if the 20 tps client tick loop arrives this late, stop the stale path, re-anchor to the last server position and hold movement for the resume window. A 5s+ freeze also probes the socket with a real swing so a dead session reconnects instead of showing as online |
 | `MC_RECONNECT_*` | see below | reconnect backoff. Supervision now runs on its own 1.5s timer, independent of long mining or movement actions |

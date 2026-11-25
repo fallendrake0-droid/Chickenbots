@@ -1,6 +1,6 @@
 # Chickenbots V6 — plugin compatibility
 
-**No plugin was tested against a live server in rounds 34–35.** The arena sandbox
+**No plugin was tested against a live server in rounds 34–36.** The arena sandbox
 cannot reach the target host. This document separates what the client can
 actually observe from what an operator configured; it does not claim plugin
 certification.
@@ -22,7 +22,7 @@ one, and the client does not infer Geyser from it.
 | ViaVersion / ViaBackwards | Always a separate capability object | `UNKNOWN` | Not inferred from the status name; the protocol number reported by the version probe is authoritative |
 | Geyser | Separate capability object | `UNKNOWN` | A Java endpoint does not prove Geyser is installed |
 | Floodgate | Separate capability object | `UNKNOWN` | Not exposed by the play protocol; no identity is forged |
-| AuthMe / SimpleAuth | Configured profile plus a matched challenge | `CONFIGURED`, then `DETECTED` when a prompt is observed | No password is sent without the challenge |
+| AuthMe / SimpleAuth | Configured profile plus a matched challenge | `CONFIGURED`, then `DETECTED` when a prompt is observed | No password is sent without the challenge. AuthMe and SimpleAuth have distinct registration defaults; per-server forms are configurable |
 | GrimAC / other anti-cheat | `antiCheat` remains `UNKNOWN` until a kick reason identifies it | `UNKNOWN` / detected from evidence | No bypass, packet forgery, position spoofing or ground-state forgery. Movement is bounded and legitimate; `invalid_player_movement` is treated as a real rejection |
 | Geyser Bedrock transport | `bedrock` capability | `NOT_SUPPORTED` unless a Bedrock transport is actually configured | Java client only |
 
@@ -45,8 +45,9 @@ one, and the client does not infer Geyser from it.
 
 ## Test evidence
 
-- `tests/plugin-compat.test.js` — profile validation, brand-based software
-  detection, conservative `UNKNOWN` for Via/Geyser/Floodgate/Grim, Java edition,
+- `tests/plugin-compat.test.js` — profile validation, distinct AuthMe/SimpleAuth
+  registration forms and template overrides, brand-based software detection,
+  conservative `UNKNOWN` for Via/Geyser/Floodgate/Grim, Java edition,
   `BEDROCK_TRANSPORT_NOT_IMPLEMENTED` path.
 - `tests/connection-lifecycle.test.js` — duplicate-session/reconnect state.
 - `tests/protocol-compression.test.js` — inbound decompression off the event

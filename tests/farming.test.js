@@ -306,3 +306,25 @@ test('two fed adults produce a real baby and babies are not force-fed', async ()
   assert.equal(again.fed.length, 0);
   assert.equal(bot.countItem('wheat'), before, 'babies and cooling adults consume nothing');
 });
+
+test('the farm soil scan is time-bounded instead of walking the whole cube', () => {
+  const { FarmingController } = require('../src/actions/farming');
+  let lookups = 0;
+  const bot = {
+    name: '10101000',
+    position: { x: 0, y: 64, z: 0 },
+    inventory: {},
+    getBlock(pos) {
+      lookups++;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+      return { name: pos.y === 64 ? 'dirt' : 'air' };
+    }
+  };
+  const controller = new FarmingController({ bot });
+  const started = Date.now();
+  const soil = controller._localSoil({ x: 0, y: 64, z: 0 }, 12, 400, { budgetMs: 25 });
+  const elapsed = Date.now() - started;
+  assert.ok(Array.isArray(soil));
+  assert.ok(lookups < 1000, `budgeted soil scan visited ${lookups} positions`);
+  assert.ok(elapsed < 500, `budgeted soil scan took ${elapsed}ms`);
+});

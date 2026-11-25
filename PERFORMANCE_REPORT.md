@@ -1,4 +1,4 @@
-# Chickenbots V6 — performance report (rounds 34–35)
+# Chickenbots V6 — performance report (rounds 34–36)
 
 **Scope: simulation only.** The Arena sandbox cannot reach
 `EmpiSMP.aternos.me:32990`, so no live event-loop, tick-latency or join-time
@@ -28,6 +28,36 @@ Node 22.22.3, five `MockBot`s, no dashboard, this sandbox:
 
 Per-section cost in the routine snapshot: `actions` **0 ms**, `bots` 0 ms,
 `builds` 0 ms, `runtime` 0 ms; all sections 0 ms at millisecond resolution.
+
+### Result after round 36
+
+`perf:status` now measures the cache-only cold contract directly:
+
+| Measurement | Result |
+|---|---|
+| Cold snapshot before warm-up | **63 ms**; `actions` **0 ms** (empty cache), `builds` **49 ms** |
+| Startup warm-up | **64 ms** |
+| Routine snapshot p50 / p95 / max | **2 / 3 / 3 ms** |
+| Acceptance target | p95 < **50 ms** — **PASS in simulation** |
+
+The drop from 96 ms to 63 ms is not a benchmark trick: the cold snapshot no
+longer runs twelve controller status methods. It returns `statusCache.empty`
+and the dashboard renders freshness null until startup warm-up fills it.
+
+### Round 36 correction: cold is not a snapshot path
+
+`BotActions.status()` is now cache-only. The 96 ms cold number above is
+`perf:status` filling the cache for the first time via `refreshStatus`; it is
+not a dashboard request. A cold dashboard returns null sections with
+`statusCache.empty: true` instead of running twelve live scans. This removes
+the last way a first HTTP/SSE request could reproduce the capture's
+`actions=4237 ms` block. A new regression test poisons every controller and
+asserts zero calls from a cold `status()`.
+
+Task pre-emption adds one 500 ms interval per running task. It only reads scalar
+bot fields and the coordinator assignment; it performs no world scan. When it
+fires, it cancels the task and returns the bot to the existing safety path, so
+the safety budget and movement arbiter are unchanged.
 
 ### Round 35 live-evidence fixes (simulation measurements)
 

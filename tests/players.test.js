@@ -210,6 +210,9 @@ test('the dashboard exposes players and per-bot player watch', async () => {
   const runtime = await createRuntime({ simulate: true, dashboard: false });
   try {
     const { statusSnapshot } = require('../src/runtimeState');
+    // Status is cache-only by contract; the runtime warms it before serving a
+    // dashboard. A cold snapshot intentionally reports no controller sections.
+    await runtime._warmStatusCaches();
     const snapshot = statusSnapshot(runtime.services);
     assert.equal(snapshot.players.count, 0);
     assert.ok(Array.isArray(snapshot.players.rows));

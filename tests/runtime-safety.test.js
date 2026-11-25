@@ -357,3 +357,74 @@ test('team rescue and healing are dispatched, never awaited by the tick', async 
   await task;
   assert.equal(runtime.teamDispatches.size, 0);
 });
+
+test('a running task yields when damage or a hazard appears mid-action', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const now = Date.now();
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 20 }, now - 1000), null);
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 8 }, now - 1000), 'health 8');
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 20, inLava: true }, now - 1000), 'lava');
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 20, onFire: true }, now - 1000), 'fire');
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 20, lastDamageAt: now }, now - 1000), 'damage taken');
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 20, lastDamageAt: now - 5000 }, now), null, 'old damage must not cancel new work');
+  assert.equal(runtime._safetyPreemptReason({ ready: false, health: 20, inLava: true }, now), null);
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 20, lastDamageAt: now }, now - 1000, { damage: false }), null,
+    'a combat task is allowed to take damage');
+  assert.equal(runtime._safetyPreemptReason({ ready: true, health: 4, lastDamageAt: now }, now - 1000, { damage: false }), 'health 4');
+});
+
+test('a long task is cancelled by the per-bot safety pre-emption timer', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  runtime.ticks = 20;
+  const bot = { name: '________', ready: true, connected: true, spawned: true, authenticated: true, health: 20, lastDamageAt: 0 };
+  runtime.bots = new Map([[bot.name, bot]]);
+  let stepStarted = 0;
+  let stepFinished = 0;
+  let cancelled = null;
+  const actions = {
+    bot,
+    recovery: { canWork: () => true, needsReplan: false },
+    safetyTick: async () => {
+      // The bot is hurt while the safety pass is still running; pre-emption
+      // starts only after the pass so it cannot cancel its own assessment.
+      bot.health = 7;
+      return { stages: {} };
+    },
+    step: async () => {
+      stepStarted = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      stepFinished = Date.now();
+      return { ok: true };
+    }
+  };
+  runtime.coordinator.getAssignment = () => ({ type: 'FARM_CROP' });
+  runtime._cancelBotWork = (name, reason) => { cancelled = { name, reason, at: Date.now() }; };
+  const task = runtime._startBotStep(actions);
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.ok(cancelled, 'the pre-emption timer must fire while the task is awaited');
+  assert.equal(cancelled.name, '________');
+  assert.match(cancelled.reason, /safety pre-empt: health 7/);
+  assert.equal(actions.recovery.needsReplan, true, 'the old assignment is released for re-planning');
+  assert.ok(cancelled.at - stepStarted < 1000, 'pre-emption must not wait for the 1.2s task');
+  await task;
+  assert.ok(stepFinished >= stepStarted);
+  const state = runtime.state();
+  assert.equal(state.bots.find((entry) => entry.name === '________').safetyPreemption.reason, 'health 7');
+});
+
+test('a timed-out safety pass does not start a task beside the stuck await', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const bot = { name: '________', ready: true, connected: true, spawned: true, authenticated: true, health: 20 };
+  runtime.bots = new Map([[bot.name, bot]]);
+  let steps = 0;
+  const actions = {
+    bot,
+    recovery: { canWork: () => true, needsReplan: false },
+    safetyTick: async () => ({ ok: false, timedOut: true, stages: { deadline: 6000 } }),
+    step: async () => { steps++; return { ok: true }; }
+  };
+  runtime.coordinator.getAssignment = () => ({ type: 'FARM_CROP' });
+  await runtime._startBotStep(actions);
+  assert.equal(steps, 0, 'no task may own movement until the next safety pass');
+  assert.equal(runtime.botSteps.has(bot.name), false);
+});

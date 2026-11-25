@@ -68,7 +68,9 @@ class RealBot extends BotAdapter {
     credentials = null,
     authRegistrationEnabled = config.server.authRegistrationEnabled,
     authMaxAttempts = config.server.authMaxAttempts,
-    authRetryDelayMs = config.server.authRetryDelayMs
+    authRetryDelayMs = config.server.authRetryDelayMs,
+    authLoginTemplate = config.server.authLoginTemplate,
+    authRegisterTemplate = config.server.authRegisterTemplate
   } = {}) {
     super({ name, logger: logger || new Logger({ level: config.logging.level }), speed: 1 });
     if (!BOT_NAMES.includes(name)) throw new Error(`refusing to create a bot outside the fixed team roster: ${name}`);
@@ -97,13 +99,17 @@ class RealBot extends BotAdapter {
     }
     this.loginPassword = loginPassword;
     this.registerPassword = registerPassword;
-    this.authProfile = resolveAuthProfile(selectedProfile, {
+    // Only pass an override when the operator explicitly configured one.
+    // Passing the legacy `/login` default for every profile silently erased
+    // AuthMe's confirmation form and made SimpleAuth a renamed AuthMe.
+    const profileOverrides = {
       maxAttempts: selectedProfile === 'generic' && authCommandsEnabled === true ? 3 : authMaxAttempts,
       retryDelayMs: authRetryDelayMs,
-      registrationEnabled: authRegistrationEnabled === true || registerOnFirstJoin === true,
-      loginTemplate: config.server.loginCommand,
-      registerTemplate: config.server.registerCommand
-    });
+      registrationEnabled: authRegistrationEnabled === true || registerOnFirstJoin === true
+    };
+    if (authLoginTemplate) profileOverrides.loginTemplate = authLoginTemplate;
+    if (authRegisterTemplate) profileOverrides.registerTemplate = authRegisterTemplate;
+    this.authProfile = resolveAuthProfile(selectedProfile, profileOverrides);
     const profileWantsAuth = selectedProfile !== 'none' && this.authProfile.pluginAuth;
     this.authCommandsEnabled = authEnabled === false ? false : (authCommandsEnabled === true || profileWantsAuth);
     this.authEnabled = this.authCommandsEnabled

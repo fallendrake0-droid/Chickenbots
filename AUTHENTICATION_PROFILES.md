@@ -16,8 +16,8 @@ unit coverage.
 | `offline` | offline | never | — | no | server explicitly allows offline mode |
 | `microsoft` | Microsoft | never | — | no | normal authenticated Java account |
 | `manual` | as configured | never | yes | no | operator authenticates manually; socket stays open and gameplay is gated |
-| `authme` | offline/microsoft as configured | yes | **yes** | opt-in | AuthMe prompt observed |
-| `simpleauth` | offline/microsoft as configured | yes | **yes** | opt-in | SimpleAuth prompt observed |
+| `authme` | offline/microsoft as configured | yes | **yes** | opt-in | AuthMe prompt observed; registration asks for the password twice |
+| `simpleauth` | offline/microsoft as configured | yes | **yes** | opt-in | SimpleAuth prompt observed; registration uses its single-password form |
 | `generic` | as configured | yes | optional | opt-in | explicit operator templates; used by legacy parser tests |
 
 `generic` is proactive for backwards compatibility with the isolated parser
@@ -31,6 +31,12 @@ MC_AUTH_REGISTRATION_ENABLED=false
 MC_AUTH_MAX_ATTEMPTS=2
 MC_AUTH_RETRY_DELAY_MS=1500
 MC_CREDENTIALS_FILE=.mc-auth.json
+# Optional per-server forms. Blank uses the profile default:
+#   authme     /login {password}   /register {password} {password}
+#   simpleauth /login {password}   /register {password}
+MC_AUTH_LOGIN_TEMPLATE=
+MC_AUTH_REGISTER_TEMPLATE=
+# Legacy names are still honoured when explicitly set.
 MC_LOGIN_COMMAND=/login {password}
 MC_REGISTER_COMMAND=/register {password} {password}
 ```

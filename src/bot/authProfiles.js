@@ -110,7 +110,10 @@ const PROFILE_DEFINITIONS = Object.freeze({
     maxAttempts: 2,
     retryDelayMs: 1500,
     loginTemplate: '/login {password}',
-    registerTemplate: '/register {password}',
+    // AuthMe's documented registration form asks for the password twice. A
+    // server with a custom single-argument form can override this with
+    // MC_AUTH_REGISTER_TEMPLATE.
+    registerTemplate: '/register {password} {password}',
     loginSuccessRe: LOGIN_SUCCESS_RE,
     registerSuccessRe: REGISTER_SUCCESS_RE,
     failureRe: FAILURE_RE,
@@ -127,6 +130,8 @@ const PROFILE_DEFINITIONS = Object.freeze({
     maxAttempts: 2,
     retryDelayMs: 1500,
     loginTemplate: '/login {password}',
+    // SimpleAuth's common form takes one password; it is deliberately not a
+    // renamed AuthMe confirmation command. Override per server if needed.
     registerTemplate: '/register {password}',
     loginSuccessRe: LOGIN_SUCCESS_RE,
     registerSuccessRe: REGISTER_SUCCESS_RE,

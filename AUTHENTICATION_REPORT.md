@@ -1,4 +1,4 @@
-# Chickenbots V6 — authentication report (rounds 34–35)
+# Chickenbots V6 — authentication report (rounds 34–36)
 
 **Status: unit/simulation evidence only. No AuthMe, SimpleAuth or live login was
 run from this sandbox.**
@@ -14,6 +14,12 @@ by the code and the tests that prove them.
   never inferred from a failed online login.
 - `authme`/`simpleauth` require an observed challenge before a password command.
   A challenge timeout returns `AUTH_PROMPT_TIMEOUT` and sends nothing.
+- AuthMe and SimpleAuth now have distinct registration defaults: AuthMe asks for
+  the password twice, SimpleAuth uses its single-password form. Either can be
+  overridden with `MC_AUTH_LOGIN_TEMPLATE` / `MC_AUTH_REGISTER_TEMPLATE`; both
+  are rejected at configuration time unless they contain `{password}`. Passing
+  the legacy generic command no longer silently erases the selected profile's
+  form.
 - `manual` keeps the socket open but gates gameplay until the operator acts.
 - `generic` exists for legacy parser compatibility; runtime configuration should
   use a named profile.
@@ -29,7 +35,7 @@ by the code and the tests that prove them.
   unless `MC_AUTH_REGISTRATION_ENABLED=true` and a registration password exists.
 - Passwords are redacted from commands, errors and logs. Credentials come from
   environment variables or an ignored credentials file; `check:secrets` passes
-  over 213 tracked files.
+  over 214 tracked files.
 
 ## Evidence
 
@@ -45,7 +51,9 @@ by the code and the tests that prove them.
 - prompt-waiter abort on socket close;
 - permanent-vs-transient retry classification;
 - no auto-registration when disabled;
-- no password echoed into an error result.
+- no password echoed into an error result;
+- AuthMe confirmation and SimpleAuth single-password registration forms;
+- per-server template override reaching the live profile.
 
 ## Not verified
 

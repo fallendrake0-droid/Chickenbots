@@ -197,6 +197,29 @@ test('a dashboard snapshot reads the warmed status cache and never calls a live 
   assert.equal(snapshot.inventory.bots.length, actions.length, 'inventory is served from the cache');
 });
 
+test('a cold status cache never runs a live controller on the snapshot path', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    const actions = runtime.actions.list()[0];
+    let calls = 0;
+    for (const name of actions.statusNames()) {
+      const controller = actions[name];
+      if (controller && typeof controller.status === 'function') {
+        controller.status = () => { calls++; throw new Error('cold dashboard scan'); };
+      }
+    }
+    const cold = actions.status();
+    assert.equal(calls, 0, 'status() must be cache-only even before warm-up');
+    assert.equal(cold.statusCache.empty, true);
+    assert.equal(cold.statusCache.entries, 0);
+    assert.equal(cold.survival, null);
+    await actions.warmStatus();
+    assert.equal(actions.status().statusCache.entries, actions.statusNames().length);
+  } finally {
+    await runtime.shutdown('test complete');
+  }
+});
+
 test('action scans are near-first and hard-bounded on a slow world', () => {
   let lookups = 0;
   const bot = {

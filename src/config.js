@@ -215,6 +215,11 @@ const config = {
     authRegistrationEnabled: envBool('MC_AUTH_REGISTRATION_ENABLED', false),
     authMaxAttempts: envInt('MC_AUTH_MAX_ATTEMPTS', 2),
     authRetryDelayMs: envInt('MC_AUTH_RETRY_DELAY_MS', 1500),
+    // Optional per-server command forms. Empty means use the selected
+    // profile's documented default. The older MC_LOGIN_COMMAND /
+    // MC_REGISTER_COMMAND names still work when explicitly present.
+    authLoginTemplate: env('MC_AUTH_LOGIN_TEMPLATE', process.env.MC_LOGIN_COMMAND ? env('MC_LOGIN_COMMAND') : ''),
+    authRegisterTemplate: env('MC_AUTH_REGISTER_TEMPLATE', process.env.MC_REGISTER_COMMAND ? env('MC_REGISTER_COMMAND') : ''),
     credentialsFile: CREDENTIAL_FILE,
     credentials: CREDENTIALS.credentials,
     credentialsError: CREDENTIALS.error,
@@ -334,6 +339,10 @@ const config = {
     // quickly. This is a hard target propagated into combat/path calls, not a
     // report-only timeout.
     emergencyBudgetMs: envInt('EMERGENCY_BUDGET_MS', 6000),
+    // A long farming/mining step must not delay the first safety response.
+    // The runtime checks the bot's damage/hazard state on this cadence while a
+    // task is running and cancels the task if an emergency appears.
+    safetyPreemptMs: envInt('SAFETY_PREEMPT_MS', 500),
     sleepStart: 12541,
     sleepEnd: 23459,
     bedSearchRadius: 32,
@@ -536,6 +545,14 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   }
   text('server.loginCommand', server.loginCommand, 255);
   text('server.registerCommand', server.registerCommand, 255);
+  if (server.authLoginTemplate) {
+    text('server.authLoginTemplate', server.authLoginTemplate, 255);
+    if (!/\{password\}/.test(server.authLoginTemplate)) fail('server.authLoginTemplate', 'must contain {password}');
+  }
+  if (server.authRegisterTemplate) {
+    text('server.authRegisterTemplate', server.authRegisterTemplate, 255);
+    if (!/\{password\}/.test(server.authRegisterTemplate)) fail('server.authRegisterTemplate', 'must contain {password}');
+  }
   integer('server.reconnect.maxAttempts', reconnect.maxAttempts, 0, 10000);
   integer('server.reconnect.baseDelayMs', reconnect.baseDelayMs, 0, 3600000);
   integer('server.reconnect.maxDelayMs', reconnect.maxDelayMs, 1, 3600000);
@@ -569,6 +586,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('team.taskStallMs', team.taskStallMs, 1000, 3600000);
   integer('team.taskStallCycles', team.taskStallCycles, 1, 100);
   integer('survival.emergencyBudgetMs', survival.emergencyBudgetMs, 1000, 30000);
+  integer('survival.safetyPreemptMs', survival.safetyPreemptMs, 100, 5000);
   boolean('workZone.enabled', workZone.enabled);
   integer('workZone.size', workZone.size, 16, 1000);
   integer('workZone.margin', workZone.margin, 0, 16);

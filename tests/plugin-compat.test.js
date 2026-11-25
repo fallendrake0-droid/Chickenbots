@@ -122,6 +122,43 @@ test('authme waits for a real challenge before sending a password', async () => 
   assert.deepEqual(commands, [], 'no password command may be sent without a challenge');
 });
 
+test('authme and simpleauth use distinct registration forms and allow overrides', () => {
+  assert.equal(resolveAuthProfile('authme').registerTemplate, '/register {password} {password}');
+  assert.equal(resolveAuthProfile('simpleauth').registerTemplate, '/register {password}');
+  const custom = new RealBot({
+    name: '________', authProfile: 'simpleauth',
+    authLoginTemplate: '/auth {password}', authRegisterTemplate: '/new {password} {password}'
+  });
+  assert.equal(custom.authProfile.loginTemplate, '/auth {password}');
+  assert.equal(custom.authProfile.registerTemplate, '/new {password} {password}');
+});
+
+test('authme registration sends the documented confirmation form', async () => {
+  const { real, commands } = authBot({
+    profile: 'authme', prompt: true, registerPassword: 'register-secret', registration: true,
+    reply: (() => { let registered = false; return (line) => {
+      if (line.startsWith('/register')) { registered = true; return 'Successfully registered.'; }
+      return registered ? 'Login successful.' : 'You are not registered.';
+    }; })()
+  });
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(commands, ['/login secret', '/register register-secret register-secret', '/login secret']);
+});
+
+test('simpleauth registration keeps its single-password form', async () => {
+  const { real, commands } = authBot({
+    profile: 'simpleauth', prompt: true, registerPassword: 'register-secret', registration: true,
+    reply: (() => { let registered = false; return (line) => {
+      if (line.startsWith('/register')) { registered = true; return 'Successfully registered.'; }
+      return registered ? 'Login successful.' : 'You are not registered.';
+    }; })()
+  });
+  const result = await real._handleLoginCommands();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(commands, ['/login secret', '/register register-secret', '/login secret']);
+});
+
 test('authme sends only once when the challenge is observed and confirms login', async () => {
   const { real, commands } = authBot({ prompt: true, reply: () => 'Login successful.' });
   const result = await real._handleLoginCommands();

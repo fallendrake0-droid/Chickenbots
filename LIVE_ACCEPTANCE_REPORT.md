@@ -2,8 +2,10 @@
 
 **Status: NOT RUN. No live result is claimed.**
 
-_Round 35 update: the second supplied live log (18:27–19:39 UTC) is addressed in
-`V6_ROUND_35_REPORT.md`; simulation-only performance numbers are in
+_Round 36 update: the supplied live capture was produced by a tree older than
+commit `863145b`; its planner, startup and death-cause log strings do not exist
+in this checkout. `V6_ROUND_36_REPORT.md` lists the exact evidence and the
+fresh-run checks. Simulation-only performance numbers are in
 `PERFORMANCE_REPORT.md`; plugin/auth evidence is in `PLUGIN_COMPATIBILITY.md`
 and `AUTHENTICATION_REPORT.md`. None of that substitutes for a live run._
 
@@ -12,14 +14,15 @@ cannot reach `EmpiSMP.aternos.me:32990`. All live criteria below remain open.
 
 ## What *was* run
 
-- 420 unit/regression tests (round 35).
+- 428 unit/regression tests (round 36).
 - Lint over 171 files.
 - `npm run validate`, `deploy:check`, `check:secrets`.
 - A fresh five-bot deterministic simulation with real command dispatch.
 - HTTP exercise of the dashboard (`/api/state` ten times plus `status` and
   `chop all` commands); state/settings/logs/world/diagnostics endpoints.
 - CLI one-shot simulation status.
-- `perf:status`: cold 96 ms, warm-up 5 ms, warm p50/p95/max 2/7/7 ms.
+- `perf:status`: cold 63 ms (`actions` 0 from the empty cache, `builds` 49), warm-up 64 ms, warm p50/p95/max 2/3/3 ms.
+- Cold-status and task-pre-emption regressions; AuthMe/SimpleAuth form tests.
 - A status-cache freshness check (`maxActionStatusAgeMs` 8.7 s, fresh true).
 
 ## What was **not** run
@@ -52,7 +55,17 @@ Then follow `V6_LIVE_ACCEPTANCE.md` (the detailed checklist) and record:
 9. `bot all chop oak`, `bot all mine iron`, inventory, batch commands with real
    world-verification evidence.
 10. Dashboard `/api/state`, `/api/settings`, `/api/world`, SSE reconnect and the
-    3D canvas.
+    3D canvas. Confirm `sections.actions` is small and
+    `freshness.actionStatusFresh` is true.
+11. Confirm the startup library line contains `(aggregate summary; manifest
+    stays lazy)` and is not a multi-second manifest parse.
+12. While a farm/mining step is running, take damage and confirm
+    `task pre-empted by safety` appears and the next safety pass runs before
+    any new task.
+13. Force a planner failure and confirm `re-opening the same objective` with an
+    unchanged objective id.
+14. Confirm a death with only an item/object proximity cause is recorded as
+    `UNKNOWN_CAUSE`.
 
 ## Pass/fail rule
 

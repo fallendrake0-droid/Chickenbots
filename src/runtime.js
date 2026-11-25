@@ -112,6 +112,7 @@ class TeamRuntime {
     // Team rescue/healing are dispatched, never awaited by the runtime tick.
     this.teamDispatches = new Set();
     this.safetyStages = new Map();
+    this.preemptions = new Map();
     this.commandLocks = new Set();
     // Commands for the same bot must queue, not race. The lock alone only
     // excluded autonomy; two dashboard clicks could still both call into the
@@ -1063,10 +1064,54 @@ class TeamRuntime {
     }
   }
 
+  /**
+   * Evidence that a running task must yield to safety. A task can await a
+   * pathfinder for 26s (the live FARM_CROP log); the safety pass only runs
+   * before the task, so without this check a zombie can kill the bot while it
+   * is harvesting. Returns a short reason or null.
+   */
+  _safetyPreemptReason(bot, since = 0, { damage = true } = {}) {
+    if (!bot || bot.ready === false || !(Number(bot.health) > 0)) return null;
+    if (bot.inLava) return 'lava';
+    if (bot.onFire) return 'fire';
+    if (Number(bot.fallDistance) >= 6) return 'falling';
+    const health = Number(bot.health);
+    const fleeAt = Number(config.survival.fleeHealth) || 10;
+    if (Number.isFinite(health) && health <= fleeAt) return `health ${health}`;
+    // A combat task expects to take hits; cancelling it on every damage event
+    // would make the team unable to defend anything. Health and hazards still
+    // pre-empt it.
+    if (!damage) return null;
+    const damagedAt = Number(bot.lastDamageAt) || 0;
+    if (damagedAt > since && Date.now() - damagedAt <= 5000) return 'damage taken';
+    return null;
+  }
+
   _startBotStep(actions) {
     const bot = actions.bot;
     const name = bot.name;
     const started = Date.now();
+    let inTask = false;
+    let taskStartedAt = 0;
+    let preempted = false;
+    const preemptTimer = setInterval(() => {
+      if (!inTask || preempted) return;
+      const assignment = this.coordinator.getAssignment(name);
+      const taskType = String((assignment && assignment.type) || '');
+      const combatTask = /COMBAT|DEFEND|GUARD|PVE|PVP|RESCUE|ARENA|DUEL|RETREAT/i.test(taskType);
+      const reason = this._safetyPreemptReason(bot, taskStartedAt, { damage: !combatTask });
+      if (!reason) return;
+      preempted = true;
+      const at = Date.now();
+      this.preemptions.set(name, { at, reason });
+      while (this.preemptions.size > 20) this.preemptions.delete(this.preemptions.keys().next().value);
+      this.logger.warn(`[${name}] task pre-empted by safety (${reason}); releasing it for the next safety pass`);
+      // The old assignment must not be resumed blindly after the emergency.
+      // step() consumes this flag, releases the task and returns to safety.
+      try { actions.recovery.needsReplan = true; } catch (_) { /* optional */ }
+      this._cancelBotWork(name, `safety pre-empt: ${reason}`);
+    }, Math.max(100, Number(config.survival.safetyPreemptMs) || 500));
+    if (typeof preemptTimer.unref === 'function') preemptTimer.unref();
     // A controller that never settles must not own a concurrency slot while
     // its pathfinder is dead. Cancel the movement at the configured budget; a
     // rejected path lets the action return and the slot free honestly.
@@ -1092,6 +1137,14 @@ class TeamRuntime {
         clearTimeout(safetyWatchdog);
         this._recordSafetyStages(name, safetyResult, safetyStarted);
         if (bot.health <= 0) return;
+        // A timed-out safety pass may still have an adapter await in flight;
+        // starting a task now would create two movement owners. Recovery and
+        // pre-join states likewise own the bot until the next safety pass.
+        if (safetyResult && (safetyResult.timedOut || safetyResult.dead || safetyResult.notReady || safetyResult.recovering)) return;
+        // Only now does task work begin, so pre-emption cannot cancel the
+        // safety pass that is still deciding what to do.
+        inTask = true;
+        taskStartedAt = Date.now();
         const assignment = this.coordinator.getAssignment(name);
         if (assignment) {
           const assignmentType = assignment.type || 'task';
@@ -1104,6 +1157,7 @@ class TeamRuntime {
         // One controller failure must not stop the other bots.
         this.logger.warn(`[${name}] action tick failed: ${err.message}`);
       } finally {
+        clearInterval(preemptTimer);
         clearTimeout(watchdog);
         clearTimeout(safetyWatchdog);
         const elapsed = Date.now() - started;
@@ -1423,6 +1477,7 @@ class TeamRuntime {
           health: bot.health, deaths: bot.deaths || 0, lastSpawn: bot.lastSpawn || null,
           stageTimings: bot.stageTimings || null,
           safety: this.safetyStages.get(bot.name) || null,
+          safetyPreemption: this.preemptions.get(bot.name) || null,
           retry: this.retryMeta.get(bot.name) || null,
           connection: connection ? {
             generation: connection.generation, state: connection.state, label: connection.label, detail: connection.detail,
