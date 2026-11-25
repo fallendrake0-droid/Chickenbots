@@ -679,7 +679,13 @@ class MockBot extends BotAdapter {
     return { ok: true };
   }
 
+  serverPlayers() {
+    return Array.isArray(this.serverPlayerList) ? this.serverPlayerList.slice() : [];
+  }
+
   async chat(message) { return this.say(message); }
+
+  cancelMotion() { return { ok: true, cancelled: true }; }
 
   async setControlState(control, state) { this.controls = this.controls || {}; this.controls[control] = state; return { ok: true }; }
 

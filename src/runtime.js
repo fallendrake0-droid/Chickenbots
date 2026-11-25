@@ -11,6 +11,7 @@ const { ExcavationManager } = require('./excavate/manager');
 const { ConstructionManager } = require('./construction/manager');
 const { SchematicLibrary } = require('./schematics/library');
 const { ActionRegistry } = require('./actions');
+const { PlayerRegistry } = require('./players/registry');
 const { TeamCombatCoordinator } = require('./combat/team');
 const { createCommandHandler } = require('./commands');
 const { monitorEventLoopDelay } = require('perf_hooks');
@@ -213,10 +214,11 @@ class TeamRuntime {
       this.home = { x: 0, y: 64, z: 0 };
     }
     this.excavation.attachBot && [...this.bots.values()].forEach((bot) => this.excavation.attachBot(bot.name, bot));
+    this.players = new PlayerRegistry();
     this.actions = new ActionRegistry({
       memory: this.memory, taskBoard: this.board, ledger: this.ledger, team: this.coordinator,
       home: this.home, library: this.library, logger: this.logger, builders: this.builders,
-      excavationManager: this.excavation, world: this.world
+      excavationManager: this.excavation, world: this.world, players: this.players
     });
     let index = 0;
     for (const bot of this.bots.values()) {
@@ -251,7 +253,8 @@ class TeamRuntime {
       coordinator: this.coordinator, leadership: this.coordinator.leadership, memory: this.memory,
       taskBoard: this.board, ledger: this.ledger, comms: this.comms, excavation: this.excavation,
       library: this.library, bots: this.bots, actions: this.actions, builders: this.builders,
-      construction: this.construction, combatTeam: this.combatTeam, imported: this.imported, world: this.world, runtime: this
+      construction: this.construction, combatTeam: this.combatTeam, players: this.players,
+      imported: this.imported, world: this.world, runtime: this
     };
     this.services = services;
     this.commands = createCommandHandler(services);
@@ -315,7 +318,7 @@ class TeamRuntime {
       const requested = config.server.requestedViewDistance;
       const effective = config.server.viewDistance;
       if (String(requested) !== String(effective)) {
-        this.logger.warn(`chunk view distance ${requested} requested but capped to ${effective} (MC_VIEW_DISTANCE_MAX) so ten bots cannot replay the 26s chunk freeze`);
+        this.logger.warn(`chunk view distance ${requested} requested but capped to ${effective} (MC_VIEW_DISTANCE_MAX) so five bots cannot replay the 26s chunk freeze`);
       }
       this.logger.info(`live protection: chunk view ${effective}, autonomy warm-up ${(config.autonomy.warmupMs / 1000).toFixed(0)}s, ${config.autonomy.maxConcurrentActions} concurrent actions, reconnect supervisor 1.5s`);
     }
@@ -340,7 +343,7 @@ class TeamRuntime {
   /**
    * Resolve (and cache) the server version before opening any login sockets.
    * Aternos answers status pings with protocol -1 while the instance is asleep,
-   * so wait for a real version instead of letting all ten bots fail in turn.
+   * so wait for a real version instead of letting every bot fail in turn.
    */
   async _ensureServerVersion() {
     if (this.serverVersion) return true;
@@ -684,6 +687,13 @@ class TeamRuntime {
         this.logger.warn(`[${bot.name}] state sync took ${elapsed}ms; the snapshot for one bot is blocking the tick`);
       }
     }
+    // Player sightings are shared by every controller and the Players page.
+    // Entity scans are cheap but still O(entities), so refresh on a 2.25s
+    // cadence rather than every 750ms state sync.
+    if (this.players && this.stateSyncTicks % 3 === 0) {
+      try { this.players.observeBots(this.bots.values()); }
+      catch (err) { this.logger.warn(`player observation failed: ${err.message}`); }
+    }
     this.lastSyncMs = Date.now() - snapshotStarted;
   }
 
@@ -846,7 +856,10 @@ class TeamRuntime {
       // into an unloaded column is both useless and a synchronous burst, so a
       // bot without its local column stays on safety work for this tick.
       const worldBlocked = typeof actions.bot.isChunkReady === 'function' && !actions.bot.isChunkReady();
-      if (!worldBlocked && launched < cap && this.botSteps.size < cap) {
+      // An operator player-watch (follow/guard/escort) must pre-empt task work
+      // for that bot; it runs inside the safety pass so emergencies still win.
+      const playerWatch = Boolean(actions.players && actions.players.isActive());
+      if (!worldBlocked && !playerWatch && launched < cap && this.botSteps.size < cap) {
         this._startBotStep(actions);
         launched++;
       } else {
@@ -1174,7 +1187,7 @@ class TeamRuntime {
   }
 
   resume() {
-    if (!this.autonomyAllowed) return { ok: false, error: 'no ready bots; the ten-bot connection gate is still closed' };
+    if (!this.autonomyAllowed) return { ok: false, error: 'no ready bots; the fleet connection gate is still closed' };
     this.paused = false;
     return { ok: true, paused: false, tick: this.ticks };
   }

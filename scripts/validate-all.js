@@ -40,7 +40,7 @@ function consistency() {
     checks.push({ name, ok, detail });
     process.stdout.write(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}\n`);
   };
-  check('roster is exactly ten fixed usernames', () => ({ ok: JSON.stringify(config.team.names) === JSON.stringify(['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001']) && config.team.names.length === 10, detail: config.team.names.join(', ') }));
+  check('roster is exactly five fixed usernames', () => ({ ok: JSON.stringify(config.team.names) === JSON.stringify(['________', '10101000', '01010100', '11001100', '00110000']) && config.team.names.length === 5, detail: config.team.names.join(', ') }));
   check('default server preserved', () => ({ ok: config.server.host === 'EmpiSMP.aternos.me' && config.server.port === 32990 && config.server.version === 'auto', detail: `${config.server.host}:${config.server.port}` }));
   check('configuration validates', () => {
     const { validateConfig } = require('../src/config');
@@ -72,7 +72,7 @@ function consistency() {
   });
   check('dashboard exposes every navigation page', () => {
     const js = fs.readFileSync(path.join(ROOT, 'src/dashboard/public/js/router.js'), 'utf8');
-    const pages = ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Fishing', 'Exploration', 'Sleep', 'Builder Overview', 'Builder Projects', 'Site Survey', 'Site Preparation', 'Lighting', 'Material Planning', 'Storage', 'Team Assignments', 'QA & Security', 'Home Base', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings'];
+    const pages = ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Players', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Fishing', 'Exploration', 'Sleep', 'Builder Overview', 'Builder Projects', 'Site Survey', 'Site Preparation', 'Lighting', 'Material Planning', 'Storage', 'Team Assignments', 'QA & Security', 'Home Base', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings'];
     const missing = pages.filter((page) => !js.includes(page));
     return { ok: missing.length === 0, detail: missing.length ? missing.join(', ') : `${pages.length}/${pages.length}` };
   });

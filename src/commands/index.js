@@ -393,7 +393,7 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
   }
   if (action === 'chop') {
     const types = args.slice(2).join(' ') || null;
-    const result = await actions.woodcutting.tick({ maxTrees: 2, types });
+    const result = await actions.woodcutting.tick({ maxTrees: 2, types, relocate: true });
     // woodcutting.tick reports ok:true for "idle, no tree in range". A command
     // must not turn that into a claimed success: only removed logs count.
     const chopped = (result.results || []).reduce((sum, entry) => sum + (entry.chopped || 0), 0);
@@ -403,7 +403,7 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
       ok: verified,
       chopped,
       verified,
-      error: verified ? undefined : (result.reason || 'no tree was chopped and verified')
+      error: verified ? undefined : (result.reason || (result.relocations || []).map((move) => move.error).filter(Boolean).join('; ') || 'no tree was chopped and verified')
     };
   }
   if (action === 'farm') {
@@ -1050,6 +1050,7 @@ function registerAll(services, registry) {
   registerExcavation(registry, services);
   registerBuild(registry, services);
   registerCombat(registry, services);
+  registerPlayers(registry, services);
   registerConstruction(registry, services);
   registerSchematics(registry, services);
 
@@ -1755,6 +1756,165 @@ function registerCombat(registry, services) {
         return { ok: true, arena };
       }
       return { ok: true, arenas: list[0] ? list[0].pvp.arenas : [] };
+    }
+  });
+}
+
+function registerPlayers(registry, services) {
+  const registryForPlayers = () => {
+    if (!services.players) throw new CommandError('player directory unavailable');
+    return services.players;
+  };
+  const defaultTarget = () => pickBot(services).name;
+  const controllerTargets = (target) => targetActions(services, target)
+    .map((actions) => actions.players)
+    .filter(Boolean);
+  const targetOrDefault = (token) => (token && (isFleetTarget(token) || isBotName(services, token)) ? token : undefined);
+  const validPlayer = (value) => {
+    const name = String(value || '').trim();
+    if (!/^[A-Za-z0-9_]{1,32}$/.test(name)) throw new CommandError(`invalid player name '${value}'`);
+    return name;
+  };
+  const validItem = (value) => {
+    const name = String(value || '').trim().toLowerCase();
+    if (!/^[a-z0-9_:]{1,64}$/.test(name)) throw new CommandError(`invalid item name '${value}'`);
+    return name;
+  };
+  const runFor = async (target, fn) => {
+    const list = targetActions(services, target);
+    const results = [];
+    for (const actions of list) {
+      if (!actions.players) { results.push({ bot: actions.bot.name, ok: false, error: 'player controller unavailable' }); continue; }
+      const health = connectionStatus(actions.bot);
+      if (!health.gameplayReady) {
+        results.push({
+          bot: actions.bot.name, ok: false, skipped: true, code: 'BOT_NOT_READY',
+          status: health.status, statusLabel: health.statusLabel,
+          error: `not gameplay-ready (${health.statusLabel}): ${health.statusDetail}`
+        });
+        continue;
+      }
+      const run = services.runtime && typeof services.runtime.runExclusive === 'function'
+        ? () => services.runtime.runExclusive(actions.bot.name, () => fn(actions))
+        : () => fn(actions);
+      try { results.push({ bot: actions.bot.name, ...(await run()) }); }
+      catch (err) { results.push({ bot: actions.bot.name, ok: false, error: err.message }); }
+    }
+    const summary = runFleetSummary(results);
+    return { ok: summary.ok, ...summary, results };
+  };
+  const runFleetSummary = (results) => {
+    const completed = results.filter((row) => row.ok === true).length;
+    return {
+      completed,
+      failed: results.filter((row) => row.ok === false).length,
+      total: results.length,
+      ok: completed > 0 && results.every((row) => row.ok !== false)
+    };
+  };
+
+  registry.register({
+    name: 'players', aliases: ['player'], category: 'players', maxArgs: 64,
+    summary: 'See real players and follow, guard, escort, feed, give loot or message them',
+    usage: 'players [list|near [radius]|info <player>|follow <player> [bot|all] [distance]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>]',
+    execute: async (args) => {
+      const sub = String(args[0] || 'list').toLowerCase();
+      const directory = registryForPlayers();
+      if (sub === 'list' || sub === 'status') {
+        const status = directory.status();
+        return { ok: true, ...status, players: status.rows };
+      }
+      if (sub === 'near') {
+        const radius = args[1] === undefined ? 64 : intArg(args[1], 'radius', { min: 1, max: 128 });
+        const rows = directory.list({ limit: 200 }).filter((row) => row.distance !== null && row.distance <= radius);
+        return { ok: true, radius, players: rows, count: rows.length };
+      }
+      if (sub === 'info') {
+        const name = validPlayer(args[1]);
+        const entry = directory.get(name);
+        if (!entry) throw new CommandError(`${name} has not been seen by the fleet`);
+        const watch = controllerTargets('all').map((controller) => controller.status()).filter((row) => row.target === name);
+        return { ok: true, player: directory.list({ limit: 200 }).find((row) => row.name === name) || null, watch };
+      }
+      if (sub === 'stop') {
+        const target = targetOrDefault(args[1]) || 'all';
+        // Stop must clear a watch even for a bot that is currently offline;
+        // otherwise it would resume following a stale player after reconnect.
+        const results = targetActions(services, target).map((actions) => ({
+          bot: actions.bot.name,
+          ...(actions.players ? actions.players.stop() : { ok: false, error: 'player controller unavailable' })
+        }));
+        return { command: 'players stop', ok: results.every((row) => row.ok !== false), completed: results.length, results };
+      }
+      if (sub === 'follow' || sub === 'guard' || sub === 'escort') {
+        const name = validPlayer(args[1]);
+        const target = targetOrDefault(args[2]) || defaultTarget();
+        const numeric = args[3] !== undefined || (args[2] !== undefined && /^\d+$/.test(String(args[2])));
+        const value = numeric ? Number(args[3] !== undefined ? args[3] : args[2]) : undefined;
+        return {
+          command: `players ${sub}`, target: name,
+          ...(await runFor(target, (actions) => {
+            if (sub === 'guard') return actions.players.guard(name, { radius: value });
+            if (sub === 'escort') return actions.players.guard(name, { radius: 10, distance: 2 });
+            return actions.players.follow(name, { distance: value });
+          }))
+        };
+      }
+      if (sub === 'come') {
+        const name = validPlayer(args[1]);
+        const target = targetOrDefault(args[2]) || defaultTarget();
+        return { command: 'players come', target: name, ...(await runFor(target, (actions) => actions.players.come(name))) };
+      }
+      if (sub === 'give') {
+        const name = validPlayer(args[1]);
+        const item = validItem(args[2]);
+        const rest = args.slice(3);
+        const trailing = targetOrDefault(rest[rest.length - 1]);
+        if (trailing) rest.pop();
+        const count = rest[0] === undefined ? 1 : intArg(rest[0], 'count', { min: 1, max: 2304 });
+        const target = trailing || defaultTarget();
+        return { command: 'players give', target: name, item, count, ...(await runFor(target, (actions) => actions.players.give(name, item, count))) };
+      }
+      if (sub === 'drop' || sub === 'loot') {
+        const name = validPlayer(args[1]);
+        let rest = args.slice(2);
+        const trailing = targetOrDefault(rest[rest.length - 1]);
+        if (trailing) rest.pop();
+        let item = 'loot';
+        let count = null;
+        if (rest[0] !== undefined && /^\d+$/.test(String(rest[0]))) {
+          count = intArg(rest[0], 'count', { min: 1, max: 2304 });
+        } else if (rest[0] !== undefined) {
+          item = validItem(rest[0]);
+          if (rest[1] !== undefined) count = intArg(rest[1], 'count', { min: 1, max: 2304 });
+        }
+        const target = trailing || defaultTarget();
+        return { command: 'players drop', target: name, item, ...(await runFor(target, (actions) => actions.players.dropLoot(name, { item, count }))) };
+      }
+      if (sub === 'message' || sub === 'msg' || sub === 'tell') {
+        const name = validPlayer(args[1]);
+        const tokens = args.slice(2);
+        let sender = defaultTarget();
+        const flag = tokens.indexOf('--bot');
+        if (flag >= 0) {
+          const value = tokens[flag + 1];
+          if (!value) throw new CommandError('--bot needs a roster name or all');
+          // A message from the whole fleet would spam the player five times.
+          // "all" therefore means "the leader speaks for the fleet".
+          sender = isFleetTarget(value) ? defaultTarget() : value;
+          if (!isBotName(services, sender)) throw new CommandError(`--bot needs a roster name, got '${value}'`);
+          tokens.splice(flag, 2);
+        }
+        const text = tokens.join(' ');
+        if (!text) throw new CommandError('players message needs text');
+        return { command: 'players message', target: name, ...(await runFor(sender, (actions) => actions.players.message(name, text))) };
+      }
+      if (sub === 'greet' || sub === 'wave') {
+        const name = validPlayer(args[1]);
+        const target = targetOrDefault(args[2]) || defaultTarget();
+        return { command: 'players greet', target: name, ...(await runFor(target, (actions) => actions.players.greet(name))) };
+      }
+      throw new CommandError(`unknown players action '${sub}'`);
     }
   });
 }

@@ -1,6 +1,7 @@
 'use strict';
 
 const { Logger } = require('../logger');
+const { BOT_NAMES } = require('../config');
 const { findBlocks } = require('./common');
 
 const LOG_PATTERN = /_log$/;
@@ -25,21 +26,25 @@ function normalizeLogTypes(value) {
 }
 
 /**
- * Tree harvesting with replanting. Chop from the top down (so the trunk drops
- * are not lost), take leaves only when saplings are short, and replant on the
- * original dirt/grass block. Every tree is recorded in shared memory.
+ * Tree harvesting with replanting. Chop from the lowest reachable log upward
+ * (mining reach cannot touch a crown), verify each removed block, take leaves
+ * only when the whole trunk fell, and replant on the original dirt/grass
+ * block. Every completed tree is recorded in shared memory.
  */
 class WoodcuttingController {
-  constructor({ bot, memory = null, ledger = null, logger = null, reserveTarget = 64 } = {}) {
+  constructor({ bot, memory = null, ledger = null, logger = null, reserveTarget = 64, home = null, index = 0 } = {}) {
     if (!bot) throw new Error('WoodcuttingController requires a bot');
     this.bot = bot;
     this.memory = memory;
     this.ledger = ledger;
     this.logger = logger || new Logger({ level: 'warn' });
     this.reserveTarget = reserveTarget;
+    this.home = home ? { ...home } : null;
+    this.index = Number(index) || 0;
     this.stats = { treesChopped: 0, logsCollected: 0, replanted: 0, saplingsCollected: 0, leavesCleared: 0 };
     this.replanted = [];
     this.stopRequested = false;
+    this._searchAttempts = 0;
   }
 
   status() {
@@ -81,6 +86,39 @@ class WoodcuttingController {
       .slice(0, limit);
   }
 
+  /**
+   * A command that has no tree in its 24-block working radius must walk to a
+   * fresh forest instead of returning `no trees nearby` forever. Each bot uses
+   * its own bearing so five bots do not pile onto the same trunk.
+   */
+  async relocateForTrees({ range = 40 } = {}) {
+    const bot = this.bot;
+    const position = bot.position;
+    if (!position) return { ok: false, error: 'bot has no position' };
+    const origin = this.home || position;
+    const distance = Math.max(24, Number(range) || 40) + this._searchAttempts * 24;
+    const angle = (this.index / BOT_NAMES.length) * Math.PI * 2 + Math.PI / 3 + this._searchAttempts * 1.15;
+    const x = Math.floor(origin.x + Math.cos(angle) * distance);
+    const z = Math.floor(origin.z + Math.sin(angle) * distance);
+    const surface = typeof bot.surfaceAt === 'function' ? bot.surfaceAt(x, z) : null;
+    const y = Number.isFinite(Number(surface)) ? Number(surface) : Math.floor(position.y);
+    const move = await bot.goTo({ x, y, z }, {
+      range: 3, timeoutMs: 20000, priority: 'operator', owner: `wood-search:${this.bot.name}`
+    });
+    if (move && move.ok === false) {
+      return { ok: false, x, y, z, error: `could not reach a fresh forest: ${move.error || 'path unavailable'}` };
+    }
+    this._searchAttempts++;
+    return { ok: true, x, y, z, moved: true };
+  }
+
+  /**
+   * Chop the lowest reachable logs first. The old top-down order asked the bot
+   * to path to the crown of a tall tree, which is outside mining reach; the
+   * first failure aborted the whole tree and the command honestly reported
+   * "no tree was chopped". Bottom-up also lets a partially blocked trunk still
+   * yield verified logs instead of losing the entire tree.
+   */
   async chopTree(base, { maxHeight = 24 } = {}) {
     const baseBlock = this.bot.getBlock(base);
     if (!baseBlock) return { ok: false, error: `world returned no block at ${base.x},${base.y},${base.z}` };
@@ -97,13 +135,31 @@ class WoodcuttingController {
     if (!logs.length) return { ok: false, error: 'no trunk found' };
     let chopped = 0;
     let failure = null;
-    for (const log of logs.slice().reverse()) {
+    for (const log of logs) {
       if (this.stopRequested) break;
-      const move = await this.bot.goTo(log, { range: 4 });
-      if (move && move.ok === false) { failure = `cannot reach ${log.x},${log.y},${log.z}: ${move.error}`; break; }
+      const eye = { x: this.bot.position.x, y: Number(this.bot.position.y) + 1.6, z: this.bot.position.z };
+      const reach = Math.hypot(log.x + 0.5 - eye.x, log.y + 0.5 - eye.y, log.z + 0.5 - eye.z);
+      if (reach > 4.5) {
+        // Stand beside the trunk once, then re-measure. Upper logs beyond arm's
+        // reach are left standing rather than aborting the logs already won.
+        const move = await this.bot.goTo({ x: log.x + 1, y: log.y, z: log.z + 1 }, { range: 2, timeoutMs: 12000 });
+        if (move && move.ok === false) {
+          failure = `cannot reach ${log.x},${log.y},${log.z}: ${move.error}`;
+          break;
+        }
+        const eye2 = { x: this.bot.position.x, y: Number(this.bot.position.y) + 1.6, z: this.bot.position.z };
+        const reach2 = Math.hypot(log.x + 0.5 - eye2.x, log.y + 0.5 - eye2.y, log.z + 0.5 - eye2.z);
+        if (reach2 > 4.5) { failure = `log at ${log.x},${log.y},${log.z} is above mining reach`; break; }
+      }
       const dig = await this.bot.digBlock(log);
-      if (dig.ok) chopped++;
-      else { failure = dig.error || `dig failed at ${log.x},${log.y},${log.z}`; }
+      // A dig packet is not proof. Count only a log the world no longer shows.
+      const after = this.bot.getBlock(log);
+      const removed = !after || !LOG_PATTERN.test(after.name);
+      if (dig.ok && removed) chopped++;
+      else {
+        failure = dig.error || `block at ${log.x},${log.y},${log.z} is still ${after ? after.name : 'unknown'}`;
+        if (dig.ok) break;
+      }
     }
     // Clear leaves that are still attached to the top of the stump.
     let leaves = 0;
@@ -165,17 +221,44 @@ class WoodcuttingController {
     return placed;
   }
 
-  async tick({ radius = 24, maxTrees = 2, types = null } = {}) {
+  async tick({ radius = 24, maxTrees = 2, types = null, relocate = false, maxRelocations = 1 } = {}) {
     this._begin();
-    const trees = this.findTrees({ radius, limit: maxTrees, types });
-    if (!trees.length) return { ok: true, idle: true, reason: 'no trees nearby', status: this.status() };
+    const radii = [radius];
+    if (radius < 48) radii.push(48);
+    let trees = [];
+    let scannedRadius = radius;
+    for (const scanRadius of radii) {
+      trees = this.findTrees({ radius: scanRadius, limit: maxTrees, types });
+      scannedRadius = scanRadius;
+      if (trees.length) break;
+    }
+    let relocations = [];
+    while (!trees.length && relocate && relocations.length < maxRelocations && !this.stopRequested) {
+      const moved = await this.relocateForTrees();
+      relocations.push(moved);
+      if (!moved.ok) break;
+      // The fresh site is validated by the same bounded scan; a path that
+      // arrived somewhere without logs is reported as such, not as success.
+      trees = this.findTrees({ radius: 32, limit: maxTrees, types });
+      scannedRadius = 32;
+    }
+    if (!trees.length) {
+      return {
+        ok: true, idle: true, reason: relocations.length ? 'no trees at the fresh forest site' : 'no trees nearby',
+        searchedRadius: scannedRadius, relocations, status: this.status()
+      };
+    }
+    this._searchAttempts = 0;
     const results = [];
     for (const tree of trees) {
       if (this.stopRequested) break;
       results.push(await this.chopTree(tree.base));
       if (this.bot.health <= 8) break;
     }
-    return { ok: results.some((r) => r.ok), stopped: this.stopRequested, results, status: this.status() };
+    return {
+      ok: results.some((r) => r.ok), stopped: this.stopRequested, results,
+      searchedRadius: scannedRadius, relocations, status: this.status()
+    };
   }
 }
 

@@ -51,7 +51,7 @@ async function main() {
   if (live && !simulate) {
     liveLock = acquireLiveLock();
     if (!liveLock.ok) {
-      logger.error(`another live runtime is already running (pid ${liveLock.pid}); use its dashboard instead of opening a second set of ten logins`);
+      logger.error(`another live runtime is already running (pid ${liveLock.pid}); use its dashboard instead of opening a second set of logins`);
       return 2;
     }
   }

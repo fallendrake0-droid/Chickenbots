@@ -6,7 +6,7 @@
  * The viewer does not need every voxel in render distance; it needs the
  * exposed surface, its block types and the entities standing on it. Scanning
  * one column per (x,z) and stopping at the first solid/fluid block keeps a
- * 41x41 view cheap enough to serve while ten bots are working. The result is
+ * 41x41 view cheap enough to serve while five bots are working. The result is
  * a heightfield plus a small entity list, never invented terrain.
  */
 const CACHE_MS = 1500;

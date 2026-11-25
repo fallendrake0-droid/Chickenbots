@@ -16,7 +16,7 @@ const { COMBAT_STATES, ACTION_PRIORITY } = require('../src/combat/constants');
 const { TeamRuntime } = require('../src/runtime');
 const { RealBot } = require('../src/bot/realBot');
 
-const NAMES = ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001'];
+const NAMES = ['________', '10101000', '01010100', '11001100', '00110000'];
 
 function flatBot(name = NAMES[0], inventory = {}, position = { x: 0, y: 64, z: 0 }, meta = null) {
   const world = new MockWorld({ flat: true, seed: 101 });
@@ -269,7 +269,7 @@ test('five-bot coordinator uses unique roles, one focus target and non-overlappi
   assert.equal(new Set(plans.map((plan) => `${plan.offset.x},${plan.offset.z}`)).size >= 4, true);
   assert.equal(plans.every((plan) => plan.focus && plan.focus.id === plans[0].focus.id), true, 'focus fire must be shared');
   const status = coordinator.status();
-  assert.equal(status.bots.length, 10);
+  assert.equal(status.bots.length, NAMES.length);
   assert.equal(status.enabled, true);
   assert.ok(status.locks.length >= 1);
   const first = await coordinator.rescue(controllers[3]);
@@ -280,7 +280,7 @@ test('five-bot coordinator uses unique roles, one focus target and non-overlappi
 });
 
 
-test('combat commands control the real ten-bot fleet and never authorise a teammate', async () => {
+test('combat commands control the real five-bot fleet and never authorise a teammate', async () => {
   const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
   await runtime.init();
   try {
@@ -290,11 +290,11 @@ test('combat commands control the real ten-bot fleet and never authorise a teamm
       assert.ok(help.categories.combat.some((command) => command.name === name), `${name} command is missing`);
     }
     const controllers = runtime.actions.list().map((entry) => entry.combat);
-    assert.equal(controllers.length, 10);
+    assert.equal(controllers.length, NAMES.length);
 
     const status = await run('combat status');
     assert.equal(status.ok, true, status.result?.error);
-    assert.equal(status.result.bots.length, 10);
+    assert.equal(status.result.bots.length, NAMES.length);
     assert.equal(status.result.bots.every((row) => row.armed === true), true);
 
     const off = await run('pve off');
@@ -334,7 +334,7 @@ test('combat commands control the real ten-bot fleet and never authorise a teamm
 
     const totems = await run('totem status');
     assert.equal(totems.ok, true);
-    assert.equal(totems.result.bots.length, 10);
+    assert.equal(totems.result.bots.length, NAMES.length);
 
     const food = await run('food status 10101000');
     assert.equal(food.ok, true);
@@ -358,7 +358,7 @@ test('combat commands control the real ten-bot fleet and never authorise a teamm
     assert.equal(duel.result.code, 'CONFIRMATION_REQUIRED');
     const team = await run('team combat status');
     assert.equal(team.ok, true);
-    assert.equal(team.result.combat.bots.length, 10);
+    assert.equal(team.result.combat.bots.length, NAMES.length);
   } finally {
     await runtime.shutdown('test');
   }
@@ -403,7 +403,7 @@ test('team focus accepts an authorised player and auto-rescue chooses a healthy 
   const tooSoon = await coordinator.autoRescue({ cooldownMs: 8000 });
   assert.equal(tooSoon.reason, 'rescue cooldown');
   const roles = coordinator.assignRoles({ force: true });
-  assert.equal(Object.keys(roles).length, 10);
+  assert.equal(Object.keys(roles).length, NAMES.length);
 });
 
 

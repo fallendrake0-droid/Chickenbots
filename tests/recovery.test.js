@@ -235,7 +235,8 @@ test('the action watchdog can stop long controller loops', () => {
   const actions = new BotActions({ bot, world });
   const result = actions.cancelCurrent('test budget');
   assert.equal(result.ok, true);
-  assert.deepEqual(result.stopped.sort(), ['farming', 'mining', 'woodcutting']);
+  assert.deepEqual(result.stopped.sort(), ['farming', 'mining', 'players', 'woodcutting']);
+  assert.equal(actions.players.isActive(), false, 'a watchdog also clears a player watch');
   assert.equal(actions.woodcutting.stopRequested, true);
   assert.equal(actions.mining.stopRequested, true);
   assert.equal(actions.farming.stopRequested, true);

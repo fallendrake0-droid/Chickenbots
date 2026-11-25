@@ -13,6 +13,7 @@ const { InventoryManager } = require('./inventory');
 const { FishingController } = require('./fishing');
 const { HomeBaseManager } = require('./homeBase');
 const { RecoveryManager } = require('./recovery');
+const { PlayerController } = require('../players/controller');
 const { distance } = require('../util/vec');
 
 /**
@@ -25,7 +26,7 @@ class BotActions {
   constructor({
     bot, index = 0, memory = null, taskBoard = null, ledger = null, team = null, home = null,
     library = null, logger = null, builders = null, excavationManager = null, world = null,
-    combatTeam = null, comms = null
+    combatTeam = null, comms = null, players = null
   } = {}) {
     if (!bot) throw new Error('BotActions requires a bot');
     this.bot = bot;
@@ -50,8 +51,9 @@ class BotActions {
     this._escapeCursor = 0;
     this.survival = new SurvivalController({ bot, memory, logger: this.logger });
     this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp, pve: config.autonomy.pve });
+    this.players = new PlayerController({ bot, registry: players, combat: this.combat, logger: this.logger });
     this.mining = new MiningController({ bot, memory, ledger, logger: this.logger });
-    this.woodcutting = new WoodcuttingController({ bot, memory, ledger, logger: this.logger });
+    this.woodcutting = new WoodcuttingController({ bot, memory, ledger, logger: this.logger, home: this.home, index });
     this.farming = new FarmingController({ bot, memory, home: this.home, logger: this.logger });
     this.sleep = new SleepController({ bot, memory, taskBoard, home: this.home, logger: this.logger });
     this.fishing = new FishingController({ bot, memory, ledger, logger: this.logger });
@@ -68,6 +70,7 @@ class BotActions {
     this.home = home;
     if (this.sleep) this.sleep.home = home ? { ...home } : null;
     if (this.farming) this.farming.home = home ? { ...home } : null;
+    if (this.woodcutting) this.woodcutting.home = home ? { ...home } : null;
     if (this.inventory) this.inventory.updateHome(home);
     this.exploration.home = home;
     this.homeBase.setHome(home);
@@ -85,6 +88,7 @@ class BotActions {
       fishing: this.fishing.status(),
       exploration: this.exploration.status(),
       inventory: this.inventory.status(),
+      players: this.players.status(),
       homeBase: this.homeBase.status(),
       recovery: this.recovery.status(),
       lastAction: this.lastAction,
@@ -99,7 +103,7 @@ class BotActions {
    */
   cancelCurrent(reason = 'action timeout') {
     const stopped = [];
-    for (const name of ['mining', 'woodcutting', 'farming']) {
+    for (const name of ['mining', 'woodcutting', 'farming', 'players']) {
       const controller = this[name];
       if (controller && typeof controller.stop === 'function') {
         try { controller.stop(); stopped.push(name); } catch (_) { /* optional */ }
@@ -234,6 +238,11 @@ class BotActions {
         equipmentRescan
       };
     }
+    // Operator player-watch (follow/guard/escort) runs after the threat and
+    // recovery gates, so a guard bot still flees lava or a creeper first.
+    // Survival (eat/heal) runs immediately after the watch movement.
+    const playerWatch = await this.players.tick();
+    lap('player-watch');
     const survival = await this.survival.tick();
     lap('survival');
     const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
@@ -245,7 +254,7 @@ class BotActions {
     lap('defend');
     const result = {
       ok: true, survival, follow, defence, threatCount: assessment.threats.length,
-      stages, totalMs: Date.now() - startedAt, equipmentRescan,
+      playerWatch, stages, totalMs: Date.now() - startedAt, equipmentRescan,
       recovery: this.recovery.status()
     };
     if (survival.actions.length || defence) {

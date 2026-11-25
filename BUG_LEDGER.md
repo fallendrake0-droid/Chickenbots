@@ -20,7 +20,7 @@ a live server accepted it.
 | BUG-27-15 | P1 | Movement retries | Repeated `invalid_player_movement` kicks could reopen the join queue forever | Movement was categorised as retryable with no strike limit | Three consecutive movement rejections across sessions pause retries until an explicit dashboard reconnect; a ready session clears the count | `three consecutive movement rejections...` | FIXED (unit) |
 | BUG-27-16 | P1 | Registration | A `not registered` login reply could auto-send `/register` even when registration was disabled | The recovery branch ignored the registration flag | Auto-create now requires `MC_AUTH_REGISTRATION_ENABLED`; otherwise the result is `AUTH_NOT_REGISTERED` | `a not-registered reply does not auto-create...` | FIXED (unit) |
 | BUG-27-17 | P1 | Auth retry loop | `AUTH_REJECTED`, `AUTH_NOT_REGISTERED`, `AUTH_MISSING_CREDENTIAL` and a missing challenge could be retried by the supervisor | Only `AUTH_FAILED` was recognised as permanent | Central `shouldPauseAuthRetry` pauses those codes; a transient confirmation timeout still retries | `permanent auth failures pause retries...` | FIXED (unit) |
-| BUG-27-09 | P1 | Fleet chop | Repeated `bot all chop oak` runs returned 10/10, 9/10, 8/10 and 8/10; misses report `no trees nearby` | Tree allocation exhausts nearby trees for the last bots | Reported honestly as a partial fleet result; no fabricated completion | command captures in `COMMAND_AUDIT.md` | OPEN |
+| BUG-27-09 | P1 | Fleet chop | Repeated `bot all chop oak` runs returned 10/10, 9/10, 8/10 and 8/10; misses report `no trees nearby` | Tree allocation exhausts nearby trees for the last bots | Round 31: per-bot search widens to 48 blocks and relocates to a distinct forest bearing | round-31 chop/relocation tests | FIXED (unit) |
 | BUG-27-10 | P2 | Long simulation | An 89-minute simulation logged one 1,155.5 ms event-loop block at `MINE_ORE`; the final-build simulation hit 1,433.4 ms (p99 62.7 ms) | Large block/scan work inside an action phase | Not fixed in this pass; bounded-stage instrumentation remains | metrics in `V6_ROUND_27_REPORT.md` | OPEN |
 | BUG-27-11 | P0 | Live movement | Real `invalid_player_movement` kicks were reported on the live server | Cannot reproduce without a reachable server | Packet-order fixes from round 26 remain; new category/diagnostics added | round-26 tests; live still untested | UNVERIFIED LIVE |
 | BUG-27-12 | P0 | Live survival | Repeated zombie deaths and `NaNm` were reported live | Mock-world tests cannot prove live threat timing | Round-26 spawn/recovery fixes remain; no new live claim | round-26 tests | UNVERIFIED LIVE |
@@ -80,8 +80,8 @@ secret check 190 files.
 | BUG-29-42 | P1 | Block scanning | `findBlocks(null)` threw; unbounded radius hung a sync scan | Default evaluated `bot.position`; no clamp | Null/non-finite returns `[]`; radius ≤128, limit ≤2000 | `connection.test.js` | FIXED (unit) |
 | BUG-29-43 | P2 | Exploration | `Infinity` steps created an unbounded navigation loop | No step clamp | Steps clamped to 1…64 | `v4-features.test.js` | FIXED (unit) |
 
-Open from previous rounds: **BUG-27-09** (fleet chop exhausts nearby trees),
-**BUG-27-10** (maximum event-loop block, previously 1,433.4 ms at `MINE_ORE`),
+Open from previous rounds: **BUG-27-09** (fleet chop exhausts nearby trees;
+fixed in round 31), **BUG-27-10** (maximum event-loop block, previously 1,433.4 ms at `MINE_ORE`),
 and all live-only items. Full detail: `V6_ROUND_29_REPORT.md`.
 
 
@@ -106,10 +106,33 @@ dropped at once and join stages hit 30 s/45 s timeouts.
 | BUG-30-06 | P2 | Diagnostics | Slow snapshots named no subsystem; watchdog blamed `state-sync` for a timer block | No section timings; `_lastPhase` only tracks the tick | Per-section timings in the snapshot; warning breakdown; `recordExternalWork('dashboard-snapshot')` | `dashboard-performance.test.js`, `dashboard-status.test.js` | FIXED (unit) |
 | BUG-30-07 | P2 | Status scan ordering | A bounded scan could spend its budget on deep buried layers | `findBlocks` iterated y bottom-up | Walk y outward from the bot | `dashboard-performance.test.js` | FIXED (unit) |
 
-Open from previous rounds remain unchanged: **BUG-27-09** (fleet chop exhausts
-nearby trees), **BUG-27-10** (1,433.4 ms long-simulation maximum at `MINE_ORE`),
-and all live-only items. Stall-aware grace for join-stage timeouts is listed as
-a candidate in `V6_ROUND_30_REPORT.md` but was not implemented.
+Open from previous rounds remain unchanged: **BUG-27-10** (1,433.4 ms
+long-simulation maximum at `MINE_ORE`) and all live-only items. Stall-aware
+grace for join-stage timeouts is listed as a candidate in
+`V6_ROUND_30_REPORT.md` but was not implemented.
+
+
+## Round 31 — five-bot roster, reachable chopping and player controls
+
+**Starting head:** `d16458d`
+**Evidence:** unit tests, deterministic simulation and a local dashboard
+served on `0.0.0.0:3000`. No live server was reached.
+**Gate:** 387/387 tests, lint 163 files, consistency 10/10, deploy 13/13,
+secret check 197 files.
+
+| ID | Sev | Component | Symptom / reproduction | Root cause | Fix | Regression test | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-31-01 | P0 | Fleet roster | Operator asked for five bots; the runtime, doctor, deploy check, dashboard copy and tests still required ten names | Fixed ten-name roster in `src/config.js` | Reduced to the first five names (`________`, `10101000`, `01010100`, `11001100`, `00110000`); all roster assertions now use the five-name list or `BOT_NAMES.length` | `team.test.js`, `controllers.test.js`, `dashboard-status.test.js`, `fleet-commands.test.js`, `deploy-check` | FIXED (unit) |
+| BUG-31-02 | P0 | Woodcutting reach | `chop` could report `no tree was chopped` on a real trunk | `chopTree` started at the crown and aborted on the first unreachable top log | Chop lowest log upward, stand beside the trunk when needed, stop only at a genuinely unreachable upper log, verify each removal with `getBlock` | `woodcutting-safety.test.js` tall-trunk test | FIXED (unit) |
+| BUG-31-03 | P1 | Chop search | Direct `chop`/`bot all chop` returned `no trees nearby` and never looked farther | `woodcutting.tick()` only scanned 24 blocks; the command had no relocation path | Widen to 48 blocks; `chop` passes `relocate: true`; each bot walks its own bearing and honestly reports an empty fresh site | `tick widens the search...`, `relocate walks...`, `bot all chop` simulation | FIXED (unit) |
+| BUG-31-04 | P0 | Player interactions | No way to follow, guard, escort, give loot or message a real player from the dashboard | No player directory or per-bot player controller existed | Added `PlayerRegistry`, `PlayerController`, runtime wiring, `playerWatch` snapshot, `players` commands and the Players page | `players.test.js` (follow, guard, give, loot, message, command, snapshot) | FIXED (unit) |
+| BUG-31-05 | P0 | Loot drops | A loot drop could strip the team's working reserves or silently drop only one stack | No reserve accounting; one `tossItem` call per item | Protect gear/food/reserves; stack-sized verified toss loop with `partial`/`remaining` | `loot drop keeps tools, totems, food and configured reserves` | FIXED (unit) |
+| BUG-31-06 | P1 | Player directory | A server-list player with no entity showed `health: 0` and a fake distance | `Number(null)` passed the finite check; per-bot distances were historical | Ignore null health/ping; clear a bot's distance when it stops seeing the player | `players.test.js` directory test | FIXED (unit) |
+| BUG-31-07 | P1 | Player chat | A `players message` could execute a server command or spam the player five times with `--bot all` | Leading `/` was accepted; `all` was rejected/ambiguous | Reject chat-command injection; `--bot all` sends one message from the leader | `message refuses chat-command injection ...` | FIXED (unit) |
+| BUG-27-09 | P1 | Fleet chop | Repeated `bot all chop oak` runs returned partial fleets with `no trees nearby` | Tree allocation exhausted the nearby set | Direct command now widens to 48 blocks and relocates to a fresh bearing; per-bot results still report honest failures | round-31 chop/relocation tests | FIXED (unit) |
+
+Live-only items remain **UNVERIFIED LIVE** because the sandbox cannot reach
+`EmpiSMP.aternos.me:32990`.
 
 
 ## Preserved fixes

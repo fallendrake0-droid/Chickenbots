@@ -102,7 +102,7 @@ async function main() {
     process.stdout.write(`  Simulation ready: ${state.bots.filter((b) => b.ready).length}/${BOT_NAMES.length} bots, home ${state.home.x},${state.home.y},${state.home.z}\n`);
     process.stdout.write('  Try: node src/cli.js --simulate\n\n');
   } else if (args.connect) {
-    process.stdout.write('  Autonomy is gated until all ten bots connect, authenticate and spawn.\n');
+    process.stdout.write('  Autonomy is gated until all five bots connect, authenticate and spawn.\n');
     process.stdout.write(`  Connection errors are shown on the dashboard diagnostics tab.\n\n`);
   }
   let shuttingDown = false;

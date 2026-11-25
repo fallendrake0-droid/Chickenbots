@@ -164,6 +164,10 @@ function statusSnapshot(services) {
     survival: actionStatus.map((a) => a.survival),
     combat: actionStatus.map((a) => a.combat),
     recovery: actionStatus.map((a) => a.recovery).filter(Boolean),
+    // Seen players are directory data only. Following or guarding a player
+    // never adds them to the PvP target list.
+    players: services.players ? services.players.status() : { count: 0, online: 0, rows: [], stats: null },
+    playerWatch: actionStatus.map((a) => a.players).filter(Boolean),
     combatTeam: combatTeamStatus,
     inventory: {
       ledger: services.ledger ? services.ledger.snapshot() : null,

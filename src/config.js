@@ -111,10 +111,13 @@ function viewDistanceNumber(value) {
 const REQUESTED_VIEW_DISTANCE = envViewDistance('MC_VIEW_DISTANCE', 2);
 const VIEW_DISTANCE_MAX = envInt('MC_VIEW_DISTANCE_MAX', 2);
 
-/** The ten bot usernames are fixed. Never rename, never add bots. */
+/**
+ * The five bot usernames are fixed. The roster was reduced from ten to five
+ * so one process holds two chunks per bot without replaying the chunk-burst
+ * stalls seen in the 2026-11-25 live run. Never rename, never add bots.
+ */
 const BOT_NAMES = Object.freeze([
-  '________', '10101000', '01010100', '11001100', '00110000',
-  '11101000', '11101010', '10001000', '11001010', '11101001'
+  '________', '10101000', '01010100', '11001100', '00110000'
 ]);
 
 const DEFAULT_RESERVES = Object.freeze({
@@ -240,7 +243,7 @@ const config = {
     }
   },
   commands: {
-    // Fleet fan-out is bounded: ten bots mining at once saturates the host and
+    // Fleet fan-out is bounded: five bots mining at once saturates the host and
     // the server's chunk pipeline. Four at a time still completes a fleet task
     // quickly, with per-bot results so a partial failure is visible.
     fleetConcurrency: envInt('FLEET_CONCURRENCY', 4),
@@ -461,7 +464,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
     fail('server.requestedViewDistance', "must be tiny, short, normal, far or an integer from 2 to 32");
   }
   if (Number.isInteger(server.viewDistanceMax) && viewDistanceNumber(requestedViewDistance) > server.viewDistanceMax) {
-    warn('server.viewDistance', `requested ${requestedViewDistance} is capped to ${server.viewDistanceMax} chunks for a ten-bot process`);
+    warn('server.viewDistance', `requested ${requestedViewDistance} is capped to ${server.viewDistanceMax} chunks for a five-bot process`);
   }
   integer('server.loginTimeoutMs', server.loginTimeoutMs, 1000, 600000);
   integer('server.configurationTimeoutMs', server.configurationTimeoutMs, 1000, 600000);

@@ -54,10 +54,10 @@ async function main() {
     return `Node ${process.versions.node}`;
   });
 
-  check('roster is the fixed ten usernames', () => {
+  check('roster is the fixed five usernames', () => {
     const { config, BOT_NAMES } = requireLocal('src/config.js');
-    const expected = ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001'];
-    assert(BOT_NAMES.length === 10, `roster has ${BOT_NAMES.length} names`);
+    const expected = ['________', '10101000', '01010100', '11001100', '00110000'];
+    assert(BOT_NAMES.length === 5, `roster has ${BOT_NAMES.length} names`);
     assert(expected.every((name, index) => BOT_NAMES[index] === name), 'roster order changed');
     assert(config.team.names.every((name, index) => name === expected[index]), 'configured team names changed');
     return expected.join(', ');
@@ -111,6 +111,15 @@ async function main() {
     for (const family of families) assert(commands.includes(`name: '${family}'`), `${family} command is missing`);
     for (const auto of ['weapon', 'totem', 'potions', 'food']) assert(commands.includes(`'${auto}'`), `auto ${auto} is missing`);
     return `${modules.length} modules, ${families.length} command families`;
+  });
+
+  check('player interaction modules and players command are present', () => {
+    for (const file of ['src/players/registry.js', 'src/players/controller.js', 'src/dashboard/public/js/pages/players.js']) read(file);
+    const commands = read('src/commands/index.js');
+    assert(commands.includes("name: 'players'"), 'players command is missing');
+    const router = read('src/dashboard/public/js/router.js');
+    assert(router.includes("path: 'players'"), 'Players dashboard route is missing');
+    return 'directory, controller, page and route';
   });
 
   check('live world viewer and bounded snapshot API are present', () => {
@@ -203,13 +212,13 @@ async function main() {
       return `mode ${health.mode || 'unknown'}`;
     });
 
-    await probe('live state exposes ten bots and construction state', async () => {
+    await probe('live state exposes five bots and construction state', async () => {
       const body = await getJson('/api/state');
       assert(body.ok === true, 'state did not report ok');
-      assert(Array.isArray(body.state.bots) && body.state.bots.length === 10, `got ${body.state.bots?.length} bots`);
+      assert(Array.isArray(body.state.bots) && body.state.bots.length === 5, `got ${body.state.bots?.length} bots`);
       assert(body.state.construction, 'construction snapshot missing');
       assert(Array.isArray(body.state.construction.projects), 'construction projects missing');
-      assert(Array.isArray(body.state.combat) && body.state.combat.length === 10, 'combat state is missing');
+      assert(Array.isArray(body.state.combat) && body.state.combat.length === 5, 'combat state is missing');
       assert(body.state.combatTeam && Array.isArray(body.state.combatTeam.bots), 'team combat state is missing');
       return `${body.state.bots.length} bots, ${body.state.construction.projects.length} project(s), ${body.state.combat.length} combat controllers`;
     });
@@ -221,7 +230,7 @@ async function main() {
       for (const name of ['builder', 'site', 'materials', 'storage', 'build']) {
         assert(names.has(name), `${name} command family is missing`);
       }
-      for (const name of ['combat', 'pve', 'pvp', 'target', 'follow', 'gear', 'totem', 'guard', 'duel', 'arena']) {
+      for (const name of ['combat', 'pve', 'pvp', 'target', 'follow', 'gear', 'totem', 'guard', 'duel', 'arena', 'players']) {
         assert(names.has(name), `${name} combat command is missing`);
       }
       return `${names.size} command families`;

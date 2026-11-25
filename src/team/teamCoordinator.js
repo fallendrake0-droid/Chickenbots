@@ -282,7 +282,7 @@ class TeamCoordinator {
     }
     if (now < this.planRetryAt) return null;
     // One task is claimed by one bot, so the quota is the largest single-bot
-    // stock, not the fleet total. Summing ten bots' five beds would create a
+    // stock, not the fleet total. Summing five bots' five beds would create a
     // ten-bed task no individual bot could ever finish.
     let bedStock = 0;
     for (const state of this.botStates.values()) bedStock = Math.max(bedStock, sumCategory(state.inventory || {}, 'bed'));

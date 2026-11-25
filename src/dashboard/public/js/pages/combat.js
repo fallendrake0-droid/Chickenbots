@@ -216,7 +216,7 @@ export const combatPage = {
     return `<div class="page">
       ${pageHeader({
         eyebrow: 'Combat operations', title: 'Combat overview',
-        description: 'PvE and explicit PvP state for the ten-bot team. Health, food, weapons, totems, targets and events all come from the live combat controller.',
+        description: 'PvE and explicit PvP state for the five-bot team. Health, food, weapons, totems, targets and events all come from the live combat controller.',
         actions: `<a class="button" href="#/combat-team">${icon('users')} Team fight</a><a class="button button--primary" href="#/combat-targets">${icon('target')} Targets</a>`
       })}
       ${combatSummaryStrip()}
@@ -247,7 +247,7 @@ export const combatTeamPage = {
     return `<div class="page">
       ${pageHeader({
         eyebrow: 'Combat operations', title: 'Team fight',
-        description: 'Role assignment, focus fire, rescue priority and formation state for all ten controllers.',
+        description: 'Role assignment, focus fire, rescue priority and formation state for every controller.',
         actions: `${commandButton('Enable', 'team combat on', 'play', { primary: true })}${commandButton('Disable', 'team combat off', 'pause')}${commandButton('Regroup', 'team combat regroup', 'users')}${commandButton('Retreat', 'team combat retreat', 'arrow-left', { danger: true })}`
       })}
       ${statCard({ label: 'Formation', value: humanize(team.formation || team.mode || '—'), iconName: 'layout', tone: team.enabled ? 'success' : 'neutral', context: team.enabled ? 'Team coordination active' : 'Coordination disabled' })}

@@ -71,36 +71,36 @@ test('one command fans out the same real action to the whole fleet with per-bot 
   try {
     const status = await runtime.commands.execute('bot all status', { source: 'internal' });
     assert.equal(status.result.ok, true);
-    assert.equal(status.result.count, 10);
-    assert.equal(status.result.bots.length, 10);
-    assert.equal(status.result.online, 10);
-    assert.equal(status.result.ready, 10);
+    assert.equal(status.result.count, config.team.names.length);
+    assert.equal(status.result.bots.length, config.team.names.length);
+    assert.equal(status.result.online, config.team.names.length);
+    assert.equal(status.result.ready, config.team.names.length);
     assert.ok(status.result.results.every((row) => row.ok === true && row.online === true));
 
     const eat = await runtime.commands.execute('eat all', { source: 'internal' });
     assert.equal(eat.result.ok, true, JSON.stringify(eat.result).slice(0, 400));
-    assert.equal(eat.result.bots, 10);
-    assert.equal(eat.result.completed, 10);
+    assert.equal(eat.result.bots, config.team.names.length);
+    assert.equal(eat.result.completed, config.team.names.length);
     assert.deepEqual(eat.result.results.map((row) => row.bot), config.team.names);
 
     const home = await runtime.commands.execute('return home all', { source: 'internal' });
     assert.equal(home.result.ok, true, JSON.stringify(home.result).slice(0, 400));
-    assert.equal(home.result.completed, 10);
+    assert.equal(home.result.completed, config.team.names.length);
 
     const inventory = await runtime.commands.execute('bot all inventory', { source: 'internal' });
-    assert.equal(inventory.result.completed, 10, JSON.stringify(inventory.result).slice(0, 400));
+    assert.equal(inventory.result.completed, config.team.names.length, JSON.stringify(inventory.result).slice(0, 400));
     assert.ok(inventory.result.results.every((row) => row.inventory && row.inventory.capacity));
 
     const collect = await runtime.commands.execute('bot all collect', { source: 'internal' });
-    assert.equal(collect.result.completed, 10, JSON.stringify(collect.result).slice(0, 400));
+    assert.equal(collect.result.completed, config.team.names.length, JSON.stringify(collect.result).slice(0, 400));
 
     const defend = await runtime.commands.execute('bot all defend', { source: 'internal' });
-    assert.equal(defend.result.bots, 10, JSON.stringify(defend.result).slice(0, 400));
-    assert.equal(defend.result.results.length, 10);
+    assert.equal(defend.result.bots, config.team.names.length, JSON.stringify(defend.result).slice(0, 400));
+    assert.equal(defend.result.results.length, config.team.names.length);
 
     const explore = await runtime.commands.execute('explore all 1', { source: 'internal' });
-    assert.equal(explore.result.bots, 10, JSON.stringify(explore.result).slice(0, 400));
-    assert.equal(explore.result.results.length, 10);
+    assert.equal(explore.result.bots, config.team.names.length, JSON.stringify(explore.result).slice(0, 400));
+    assert.equal(explore.result.results.length, config.team.names.length);
   } finally {
     await runtime.shutdown('test');
   }
@@ -117,8 +117,8 @@ test('a batch runs multiple fleet actions in order and reports every step', asyn
 
     const tasks = await runtime.commands.execute('task fleet CHOP_WOOD types=oak', { source: 'internal' });
     assert.equal(tasks.result.ok, true);
-    assert.equal(tasks.result.tasks, 10);
-    assert.equal(tasks.result.assigned.filter((row) => row.ok).length, 10);
+    assert.equal(tasks.result.tasks, config.team.names.length);
+    assert.equal(tasks.result.assigned.filter((row) => row.ok).length, config.team.names.length);
   } finally {
     await runtime.shutdown('test');
   }
@@ -139,7 +139,7 @@ test('a not-ready bot is skipped by fleet commands and cannot execute a direct g
     const fleet = await runtime.commands.execute('eat all', { source: 'internal' });
     assert.equal(fleet.result.ok, false);
     assert.equal(fleet.result.skipped, 1);
-    assert.equal(fleet.result.completed, 9);
+    assert.equal(fleet.result.completed, config.team.names.length - 1);
     assert.equal(fleet.result.results.find((row) => row.bot === '________').code, 'BOT_NOT_READY');
   } finally {
     await runtime.shutdown('test');
@@ -163,10 +163,11 @@ test('fleet mining removes real ore blocks and reports per-bot evidence', async 
 
     const mined = await runtime.commands.execute('bot all mine iron', { source: 'internal' });
     const result = mined.result;
-    assert.ok(result.completed >= 8, JSON.stringify(result.results));
-    assert.ok(result.results.filter((row) => row.ok && row.mined > 0).length >= 8);
+    const expected = Math.max(3, config.team.names.length - 2);
+    assert.ok(result.completed >= expected, JSON.stringify(result.results));
+    assert.ok(result.results.filter((row) => row.ok && row.mined > 0).length >= expected);
     const removed = targets.filter((target) => runtime.world.blockNameAt(target.x, target.y, target.z) !== 'iron_ore');
-    assert.ok(removed.length >= 8, `only ${removed.length} deposits disappeared`);
+    assert.ok(removed.length >= expected, `only ${removed.length} deposits disappeared`);
   } finally {
     await runtime.shutdown('test');
   }

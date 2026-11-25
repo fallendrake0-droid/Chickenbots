@@ -20,7 +20,7 @@ function clock(start = 1000000) {
 }
 
 test('bot identities are exact and frozen', () => {
-  assert.deepEqual([...BOT_NAMES], ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001']);
+  assert.deepEqual([...BOT_NAMES], ['________', '10101000', '01010100', '11001100', '00110000']);
   assert.throws(() => BOT_NAMES.push('extra'));
 });
 
@@ -301,14 +301,14 @@ test('formation slots are unique and separation avoids stacking', () => {
   for (const name of BOT_NAMES) positions[name] = { x: 0, z: 0 };
   const slots = computeSlots({ leader: '________', members: BOT_NAMES, formation: 'DEFENSIVE', heading: 0, positions });
   const unique = new Set(slots.slots.map((s) => `${s.position.x},${s.position.z}`));
-  assert.equal(unique.size, 10);
+  assert.equal(unique.size, BOT_NAMES.length);
   assert.equal(slots.slots[0].name, '________');
   const seps = separation(positions, { minDistance: 2 });
   assert.ok(Object.values(seps).some((v) => v.x !== 0 || v.z !== 0));
   for (const formation of ['FOLLOW', 'COMPACT', 'EXPLORATION', 'MINING', 'BUILDING', 'RETREAT', 'REGROUP']) {
     const s = computeSlots({ leader: BOT_NAMES[0], members: BOT_NAMES, formation, positions });
-    assert.equal(s.slots.length, 10, formation);
-    assert.equal(new Set(s.slots.map((x) => `${x.position.x},${x.position.z}`)).size, 10, formation);
+    assert.equal(s.slots.length, BOT_NAMES.length, formation);
+    assert.equal(new Set(s.slots.map((x) => `${x.position.x},${x.position.z}`)).size, BOT_NAMES.length, formation);
   }
 });
 
@@ -393,7 +393,7 @@ test('coordinator assigns, reassigns after disconnect, and preserves objectives'
   coordinator.setDisconnected(assignedBot, 'socket reset');
   assert.equal(coordinator.getAssignment(assignedBot), null);
   const state = coordinator.getState();
-  assert.equal(state.team.online, 9);
+  assert.equal(state.team.online, BOT_NAMES.length - 1);
   assert.ok(state.team.objectives.length >= 1);
   // The remaining bots still work: nobody is blocked by the loss.
   coordinator.tick();

@@ -98,7 +98,7 @@ export default {
         <div class="section grid grid--main-side">
           <div>
             ${sectionHead('Fleet overview', {
-              subtitle: 'All ten fixed usernames, with their current activity and vitals.',
+              subtitle: 'All five fixed usernames, with their current activity and vitals.',
               actions: `<a class="button button--sm" href="#/bots">All bots ${icon('arrow-right')}</a>`
             })}
             <div class="grid grid--bots">

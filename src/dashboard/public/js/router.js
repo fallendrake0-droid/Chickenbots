@@ -7,6 +7,7 @@ import {
   woodcuttingPage, farmingPage, fishingPage, explorationPage, sleepPage
 } from './pages/gameplay.js';
 import { combatPage, combatTeamPage, combatGearPage, combatSuppliesPage, combatTargetsPage } from './pages/combat.js';
+import { playersPage } from './pages/players.js';
 import { builderPage, buildingPage, homeBasePage, schematicsPage, buildProjectsPage, projectHistoryPage, projectDetailPage } from './pages/construction.js';
 import {
   operationsOverview, builderProjectsPage, siteSurveyPage, sitePreparationPage,
@@ -31,6 +32,7 @@ export const NAV_GROUPS = [
     label: 'Fleet',
     items: [
       { path: 'bots', label: 'All Bots', icon: 'users' },
+      { path: 'players', label: 'Players', icon: 'user-plus' },
       { path: 'team', label: 'Team Management', icon: 'crown' },
       { path: 'profiles', label: 'Bot Profiles', icon: 'user' },
       { path: 'connections', label: 'Connection Management', icon: 'wifi' }
@@ -116,6 +118,7 @@ export function resolveRoute(hash = location.hash) {
     case 'world': return { ...base, page: worldPage, label: 'Live World' };
     case 'activity': return { ...base, page: activityPage, label: 'Live Activity' };
     case 'notifications': return { ...base, page: notificationsPage, label: 'Notifications' };
+    case 'players': return { ...base, page: playersPage, label: 'Players' };
     case 'bots':
       if (!rest.length) return { ...base, page: botsPage, label: 'All Bots' };
       return { ...base, page: profilePage, label: `${rest[0]} profile`, title: rest[0] };

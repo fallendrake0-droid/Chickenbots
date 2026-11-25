@@ -978,7 +978,7 @@ class RealBot extends BotAdapter {
         auth: this.auth,
         version: this.version === 'auto' ? undefined : this.version,
         // Bounds the inbound chunk burst at spawn and reconnect. Mineflayer's
-        // default is 'far' (12), which is expensive for ten bots at once.
+        // default is 'far' (12), which is expensive for five bots at once.
         viewDistance: config.server.viewDistance,
         checkTimeoutInterval: config.server.keepAliveMs,
         hideErrors: false,
@@ -2642,6 +2642,9 @@ class RealBot extends BotAdapter {
     return this.goTo(entity.position, { range, ...options });
   }
 
+  /** Operator-facing stop for follow/escort movement. */
+  cancelMotion(reason = 'operator') { return this._cancelMotion(reason); }
+
   _cancelMotion(reason = 'cancelled', { stop = true } = {}) {
     if (!this._motion && !stop) return false;
     this._motionToken += 1;
@@ -3058,6 +3061,18 @@ class RealBot extends BotAdapter {
     if (!this.bot) return { ok: false, error: 'not connected' };
     this.bot.chat(String(message).slice(0, 250));
     return { ok: true };
+  }
+
+  /**
+   * Server-side player list (name, ping, gamemode). This survives render
+   * distance, unlike entity scans, so the dashboard can list players who are
+   * online but out of sight. Positions still come only from real entities.
+   */
+  serverPlayers() {
+    if (!this.bot || !this.bot.players) return [];
+    return Object.entries(this.bot.players)
+      .filter(([name, player]) => name !== this.name && player)
+      .map(([name, player]) => ({ name, ping: player.ping, gamemode: player.gamemode }));
   }
 
   async chat(message) { return this.say(message); }

@@ -2,7 +2,7 @@
 
 Ten autonomous Minecraft bots that survive, prepare a real site, run materials and warehouse
 logistics, light and secure the ground, then build a validated schematic on a vanilla **Overworld**
-server. V6 adds a complete ten-bot combat engine — PvE threat profiles, explicit-only PvP,
+server. V6 adds a complete five-bot combat engine — PvE threat profiles, explicit-only PvP,
 weapon/armour evaluation, offhand totems, consumables, team roles, focus fire, rescue and retreat —
 on top of the V5 construction crew and the existing survival, excavation and builder stack. Everything
 is local, deterministic and configuration-driven. There is **no AI service, no API key and no cloud inference** anywhere in the
@@ -29,7 +29,7 @@ dashboard:       http://127.0.0.1:3000      (loopback by default; preview opts i
 ```bash
 npm install
 cp .env.example .env          # optional; defaults already match the required server
-npm start                     # live: connects all ten bots
+npm start                     # live: connects all five bots
 npm start -- --simulate       # deterministic local simulation (no network)
 npm run cli -- --simulate     # interactive command shell
 npm test                      # full test suite
@@ -49,7 +49,7 @@ Useful scripts:
 
 | script | what it actually does |
 | --- | --- |
-| `npm start` | creates the runtime, connects the ten bots, starts autonomy + dashboard |
+| `npm start` | creates the runtime, connects the five bots, starts autonomy + dashboard |
 | `npm start -- --simulate` | boots the deterministic mock world and the full dashboard |
 | `npm run cli -- --simulate "status"` | runs one command through the shared validated handler |
 | `npm test` | all layer tests (team, excavation, construction, schematics, builder, survival, combat, controllers) |
@@ -99,10 +99,13 @@ src/
     totems.js               offhand equip/verify, activation evidence, replacement and team ledger
     players.js              explicit PvP authorisation, teammates, protection, arena and server rules
     team.js                 five roles, shared focus, formation offsets, rescue, retreat, regroup
+  players/
+    registry.js             seen-player directory: entity sightings + server player list, no PvP authority
+    controller.js           follow, guard, escort, come, greet, give, drop-loot and message controls
   builder/builder.js        cooperative phased construction with real material transfers
   actions/                  survival, combat, mining, woodcutting, farming, fishing, sleep, exploration, inventory, home base
   commands/                 registry.js (validation/confirmation) + index.js (all commands)
-  dashboard/                Express API + modular operations console (38 routed pages)
+  dashboard/                Express API + modular operations console (39 routed pages)
 scripts/                    lint, validation, schematic generation/statistics
 tests/                      team, excavation, construction, schematics, builder, survival, controllers, autonomy
 ```
@@ -166,7 +169,7 @@ tests/                      team, excavation, construction, schematics, builder,
 
 ### Combat engine (V6)
 
-The combat controller is one coordinator per bot plus a team coordinator over all ten. Every value it
+The combat controller is one coordinator per bot plus a team coordinator over all five. Every value it
 reports is read from the adapter or the real inventory — no guessed mob health, no invented totem
 pops, no hidden aim assist.
 
@@ -211,6 +214,7 @@ Commands (all real state):
 combat [status|on|off|start|stop|mode <TEAM_FIGHT|DEFENSIVE|GUARD|FOLLOW|ARENA|BOSS|ESCORT|RETREAT>|guard x y z|duel <player>|rescue|heal]
 pve [on|off|status]            pvp [on|off|status]         target [add|remove|protect|unprotect|clear|list] <player>
 follow <bot|player> [distance] | follow stop
+players [list|near [radius]|info <player>|follow <player> [bot|all] [distance]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
 gear [status|optimise|durability|progression|layout] [bot]         totem [status|reserve [n]|refill]
 food [status] [bot]            potions [status] [bot]        guard x y z [bot] | guard stop
 duel <player> confirm          arena on [radius] | arena off
@@ -329,7 +333,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
 | `MC_AUTH` | `offline` | Mineflayer connection auth: `offline` or `microsoft`. This is not plugin authentication. |
-| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `2000` / `750` | positive, jittered gap between login sockets. A ten-bot burst is not the default; a real server throttle still opens a bounded fleet-wide pause. |
+| `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `2000` / `750` | positive, jittered gap between login sockets. A five-bot burst is not the default; a real server throttle still opens a bounded fleet-wide pause. |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `1500` / `750` | gap before queuing each bot's initial connection task |
 | `FLEET_CONCURRENCY` | `4` | maximum bots executing one fleet command at the same time; every bot still gets its own structured result |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | fleet-wide pause after a throttle or a socket that never reaches spawn. One outage episode records **one** strike no matter how many bots fail in it; a genuinely separate outage (after a bot became ready) escalates the bounded, jittered pause up to the maximum |
@@ -340,11 +344,11 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | legacy single-fleet credentials, used only when a plugin profile is explicitly selected |
 | `MC_AUTH_ENABLED` | `false` | optional explicit enable for legacy/profile paths; the default profile already decides |
 | `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | delay before an auth attempt and the challenge/confirmation timeout |
-| `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so ten bots do not retry together |
+| `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so five bots do not retry together |
 | `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
 | `MC_VIEW_DISTANCE` | `2` | requested chunk radius: an integer 2–32, or `tiny` (6), `short` (8), `normal` (10), `far` (12). Ten bots at 6 kept 1,690 chunk columns in one process and froze the event loop for 26s, so an old env value is logged and capped by `MC_VIEW_DISTANCE_MAX` |
-| `MC_VIEW_DISTANCE_MAX` | `2` | hard cap for the effective radius. Raise it only after the Connections page shows the host can absorb the chunk burst; a ten-bot process is the constraint, not one bot |
+| `MC_VIEW_DISTANCE_MAX` | `2` | hard cap for the effective radius. Raise it only after the Connections page shows the host can absorb the chunk burst; a five-bot process is the constraint, not one bot |
 | `AUTONOMY_WARMUP_MS` | `20000` | live delay after the tenth bot is ready before any pathfinder starts, so the spawn chunk burst finishes first. Simulation and unit tests skip it |
 | `AUTONOMY_CONCURRENCY` | `4` | maximum bots inside a long controller action at once. Others run safety work and rotate into the next free slot |
 | `ACTION_TIMEOUT_MS` | `60000` | hard budget for one autonomous controller step. A hung path or dig is cancelled, movement is stopped and the concurrency slot is released. Operator commands run in their own exclusive slot and cancel the autonomous step instead of racing it |
@@ -381,8 +385,8 @@ reproduced here. Treat that historical value as compromised, rotate the Minecraf
 the ten accounts, and keep the new value only in an untracked `.env`. `npm run check:secrets` fails if
 a credential-shaped value or the old demo value is committed again.
 
-The ten usernames are frozen in `src/config.js`. `RealBot` throws if asked to construct any other
-name, and the runtime always builds exactly the same ten bots.
+The five usernames are frozen in `src/config.js`. `RealBot` throws if asked to construct any other
+name, and the runtime always builds exactly the same five bots.
 
 ---
 
@@ -409,6 +413,7 @@ defend [bot|stop]              explore [bot] [steps] | explore stop [bot|all]
 combat [status|on|off|start|stop|mode|guard|duel|rescue]   pve [on|off|status]   pvp [on|off|status]
 target [add|remove|protect|unprotect|clear|list] <player>                   arena on [radius]|off
 follow <bot|player> [distance] | follow stop
+players [list|near [radius]|info <player>|follow <player> [bot|all] [distance]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
 gear [status|optimise|durability|progression|layout] [bot]    totem [status|reserve [n]|refill]   food|potions [status] [bot]
 guard x y z [bot] | guard stop             duel <player> confirm
 team combat [status|on|off|retreat|regroup|rescue|heal|attack <player>]
@@ -453,6 +458,8 @@ node src/cli.js --simulate "gear status 10101000"
 node src/cli.js --simulate "totem status"
 node src/cli.js --simulate "target add FriendlyRival"
 node src/cli.js --simulate "follow 10101000 4"
+node src/cli.js --simulate "players list"
+node src/cli.js --simulate "players guard Alex all 8"
 node src/cli.js --simulate "gear progression 10101000"
 node src/cli.js --simulate "team combat heal"
 node src/cli.js --simulate "team combat retreat"
@@ -465,7 +472,7 @@ node src/cli.js --simulate "task list"
 
 ## Dashboard
 
-A modular operations console served from `src/dashboard/public/` with 38 routed pages, grouped so
+A modular operations console served from `src/dashboard/public/` with 39 routed pages, grouped so
 that related tasks sit together rather than in one long tab strip:
 
 * **Overview** – fleet summary, live vitals chart, activity feed and objectives.
@@ -473,7 +480,10 @@ that related tasks sit together rather than in one long tab strip:
   heightfield, chunk accounting, live bots/entities, orbit/zoom/pan, click-to-select and follow,
   FPS/frame/triangle/draw-call instrumentation and a 2D fallback when WebGL is unavailable.
 * **Activity** – live activity, notifications and logs.
-* **Fleet** – all bots, team board, profiles and connection management.
+* **Fleet** – all bots, **Players**, team board, profiles and connection management. The Players
+  page lists every player any bot has seen (plus server-list players with no position yet) and
+  offers follow, guard, escort, come, greet, give-item, drop-loot and message controls. It also
+  shows which bot is following or guarding which player.
 * **Gameplay** – survival, inventory, mining, excavation, woodcutting, farming, fishing,
   exploration and sleep.
 * **Combat Operations** – combat overview and live engagement log, team roles/focus/retreat,
@@ -618,7 +628,7 @@ commissioning.
 ## Limitations / next commissioning step
 
 * Live server behaviour depends on the actual Aternos plugins, ViewDistance, pathfinding and
-  latency; the runtime surfaces connection errors and refuses autonomy until all ten bots are ready.
+  latency; the runtime surfaces connection errors and refuses autonomy until all five bots are ready.
   Bots are spaced by `MC_CONNECT_STAGGER_MS` and `MC_JOIN_INTERVAL_MS` (positive by default, with jitter). If Paper/Aternos applies a
   per-IP join throttle, that throttle or a socket that never reaches spawn pauses **every** join. All failures in the same
   outage are one strike, so four bots timing out do not turn a 90s pause into 10 minutes; a bot that
@@ -674,7 +684,7 @@ commissioning.
   `/api/diagnostics/export` downloads a redacted state + log bundle for support.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login
   socket. A sleeping/starting Aternos instance commonly reports protocol `-1`; the runtime waits for a
-  real version instead of sending ten bots into mineflayer's autoVersion crash path. While the probe
+  real version instead of sending five bots into mineflayer's autoVersion crash path. While the probe
   is unresolved the reconnect supervisor does not start login sockets, so a sleeping server is not
   charged as ten bot connection attempts or retry backoff.
   The resolved version must be listed in `minecraft-protocol`'s supported-version set. If a proxy

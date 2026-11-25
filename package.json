@@ -1,7 +1,7 @@
 {
   "name": "chickenbots",
   "version": "6.0.0",
-  "description": "Chickenbots V6 - ultimate ten-bot Minecraft combat engine: PvE profiles, explicit PvP authorisation, weapons and armour, offhand totems, supplies, team roles, focus fire, rescue and retreat",
+  "description": "Chickenbots V6 - ultimate five-bot Minecraft combat engine: PvE profiles, explicit PvP authorisation, weapons and armour, offhand totems, supplies, team roles, focus fire, rescue and retreat",
   "type": "commonjs",
   "main": "src/index.js",
   "engines": {

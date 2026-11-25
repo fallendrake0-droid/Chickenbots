@@ -1,0 +1,169 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const { PlayerRegistry } = require('../src/players/registry');
+const { PlayerController } = require('../src/players/controller');
+const { MockWorld } = require('../src/bot/mockWorld');
+const { MockBot } = require('../src/bot/mockBot');
+const { CombatController } = require('../src/actions/combat');
+const { createRuntime } = require('../src/runtime');
+
+function player(name = 'Alex', position = { x: 5, y: 65, z: 0 }) {
+  return { id: `player-${name}`, type: 'player', username: name, name, position: { ...position }, health: 20, alive: true, hostile: false };
+}
+
+function fixture(inventory = { iron_sword: 1, oak_log: 200 }, { playerPosition = { x: 5, y: 65, z: 0 } } = {}) {
+  const world = new MockWorld({ flat: true, seed: 901 });
+  const bot = new MockBot({ name: '10101000', world, inventory, position: { x: 0, y: 65, z: 0 } });
+  const alex = player('Alex', playerPosition);
+  world.entities.push(alex);
+  bot.serverPlayerList = [{ name: 'Alex', ping: 44, gamemode: 0 }, { name: 'Steve', ping: 120, gamemode: 1 }];
+  const registry = new PlayerRegistry();
+  registry.observeBot(bot);
+  const combat = new CombatController({ bot });
+  const controller = new PlayerController({ bot, registry, combat });
+  return { world, bot, alex, registry, combat, controller };
+}
+
+test('player directory excludes the team and records server-list players without positions', () => {
+  const { registry } = fixture();
+  const rows = registry.list();
+  assert.deepEqual(rows.map((row) => row.name).sort(), ['Alex', 'Steve']);
+  const alex = rows.find((row) => row.name === 'Alex');
+  assert.equal(alex.online, true);
+  assert.deepEqual(alex.position, { x: 5, y: 65, z: 0 });
+  assert.equal(alex.health, 20);
+  assert.equal(alex.ping, 44);
+  assert.equal(alex.gamemode, 'survival');
+  assert.deepEqual(alex.seenBy, ['10101000']);
+  const steve = rows.find((row) => row.name === 'Steve');
+  assert.equal(steve.position, null, 'server list gives no position');
+  assert.equal(steve.health, null, 'missing health must not become zero');
+  assert.equal(steve.ping, 120);
+  assert.equal(steve.gamemode, 'creative');
+  assert.equal(registry.observe('________', { bot: '10101000' }), null, 'team names are not players');
+  assert.equal(registry.observe('bad\nname', { bot: '10101000' }), null, 'control characters are refused');
+});
+
+test('follow moves toward a real player and stop clears the watch', async () => {
+  const { bot, controller } = fixture();
+  const started = bot.position;
+  const follow = controller.follow('Alex', { distance: 2 });
+  assert.equal(follow.ok, true);
+  assert.equal(follow.mode, 'FOLLOW');
+  assert.equal(controller.isActive(), true);
+  const tick = await controller.tick();
+  assert.equal(tick.active, true);
+  assert.equal(tick.visible, true);
+  assert.ok(Math.hypot(bot.position.x - 5, bot.position.z - 0) < Math.hypot(started.x - 5, started.z - 0), 'bot moved closer');
+  const stop = controller.stop();
+  assert.equal(stop.ok, true);
+  assert.equal(controller.isActive(), false);
+  const missing = controller.follow('Ghost');
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, 'PLAYER_NOT_SEEN');
+});
+
+test('guard attacks a hostile mob near the player and never the player', async () => {
+  const { world, bot, alex, controller } = fixture({ iron_sword: 1 }, { playerPosition: { x: 3, y: 65, z: 0 } });
+  const zombie = world.addMob('zombie', { x: 5, y: 65, z: 2 });
+  const guard = controller.guard('Alex', { radius: 8 });
+  assert.equal(guard.ok, true);
+  const tick = await controller.tick();
+  assert.equal(tick.active, true);
+  assert.ok(tick.defence, JSON.stringify(tick));
+  assert.ok(zombie.health < 20, 'the zombie took real damage');
+  assert.equal(alex.health, 20, 'the guarded player is untouched');
+  assert.equal(controller.stats.defences >= 1, true);
+});
+
+test('give verifies the inventory drop and refuses a missing item', async () => {
+  const { bot, controller } = fixture({ iron_sword: 1, oak_log: 20 });
+  const before = bot.countItem('oak_log');
+  const given = await controller.give('Alex', 'oak_log', 5);
+  assert.equal(given.ok, true, JSON.stringify(given));
+  assert.equal(given.count, 5);
+  assert.equal(bot.countItem('oak_log'), before - 5);
+  const missing = await controller.give('Alex', 'diamond', 1);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, 'NOT_HELD');
+  const unknown = await controller.give('Ghost', 'oak_log', 1);
+  assert.equal(unknown.ok, false);
+  assert.equal(unknown.code, 'PLAYER_NOT_SEEN');
+});
+
+test('loot drop keeps tools, totems, food and configured reserves', async () => {
+  const inventory = {
+    iron_sword: 1, totem_of_undying: 1, shield: 1,
+    oak_log: 200, iron_ingot: 40, coal: 10, bread: 200
+  };
+  const { bot, controller } = fixture(inventory);
+  const before = { ...bot.inventory };
+  const result = await controller.dropLoot('Alex', { item: 'loot' });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(bot.countItem('oak_log'), 128, 'log reserve preserved');
+  assert.equal(bot.countItem('iron_ingot'), 32, 'ingot reserve preserved');
+  assert.equal(bot.countItem('bread'), 128, 'food reserve preserved');
+  assert.equal(bot.countItem('coal'), 0, 'excess loot was dropped');
+  assert.equal(bot.countItem('iron_sword'), 1);
+  assert.equal(bot.countItem('totem_of_undying'), 1);
+  assert.equal(bot.countItem('shield'), 1);
+  assert.deepEqual(result.dropped.map((entry) => entry.item).sort(), ['bread', 'coal', 'iron_ingot', 'oak_log']);
+  assert.ok(result.total > 0);
+  assert.equal(before.iron_sword, 1);
+});
+
+test('message refuses chat-command injection and prefixes the player name', async () => {
+  const { bot, controller } = fixture();
+  const injected = await controller.message('Alex', '/op Alex');
+  assert.equal(injected.ok, false);
+  assert.equal(injected.code, 'INVALID_MESSAGE');
+  const sent = await controller.message('Alex', 'need wood?');
+  assert.equal(sent.ok, true);
+  assert.match(bot.lastChat, /^Alex: need wood\?$/);
+  const greet = await controller.greet('Alex');
+  assert.equal(greet.ok, true);
+  assert.match(bot.lastChat, /Hello Alex/);
+});
+
+test('players command drives the fleet and reports every bot', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    const leader = runtime.bots.get('________');
+    runtime.world.entities.push(player('Alex', { x: leader.position.x + 3, y: leader.position.y, z: leader.position.z }));
+    runtime.players.observeBots(runtime.bots.values());
+    const list = await runtime.commands.execute('players', { source: 'cli' });
+    assert.equal(list.ok, true);
+    assert.ok(list.result.players.some((row) => row.name === 'Alex'));
+    const follow = await runtime.commands.execute('players follow Alex all 2', { source: 'cli' });
+    assert.equal(follow.ok, true, JSON.stringify(follow.result));
+    assert.equal(follow.result.completed, runtime.bots.size);
+    assert.equal(follow.result.results.every((row) => row.ok && row.mode === 'FOLLOW'), true);
+    const bad = await runtime.commands.execute('players follow Alex all 999', { source: 'cli' });
+    assert.equal(bad.ok, true, 'distance is clamped by the controller');
+    const stop = await runtime.commands.execute('players stop all', { source: 'cli' });
+    assert.equal(stop.ok, true);
+    assert.equal(runtime.actions.list().every((actions) => actions.players.isActive() === false), true);
+    const unknown = await runtime.commands.execute('players follow Ghost', { source: 'cli' });
+    assert.equal(unknown.ok, false);
+    assert.equal(unknown.result.results[0].code, 'PLAYER_NOT_SEEN');
+  } finally {
+    await runtime.shutdown('test');
+  }
+});
+
+test('the dashboard exposes players and per-bot player watch', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    const { statusSnapshot } = require('../src/runtimeState');
+    const snapshot = statusSnapshot(runtime.services);
+    assert.equal(snapshot.players.count, 0);
+    assert.ok(Array.isArray(snapshot.players.rows));
+    assert.equal(snapshot.playerWatch.length, runtime.bots.size);
+    assert.equal(snapshot.playerWatch.every((row) => row.mode === null), true);
+  } finally {
+    await runtime.shutdown('test');
+  }
+});

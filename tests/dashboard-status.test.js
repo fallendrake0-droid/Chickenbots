@@ -9,7 +9,7 @@ const { statusSnapshot } = require('../src/runtimeState');
 const { connectionStatus } = require('../src/bot/status');
 const { createDashboard } = require('../src/dashboard/server');
 
-const NAMES = ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001'];
+const NAMES = ['________', '10101000', '01010100', '11001100', '00110000'];
 
 function request(port, path, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
@@ -74,7 +74,7 @@ test('the snapshot never reports a kicked or failed bot as online', async () => 
   const runtime = await createRuntime({ simulate: true, dashboard: false });
   try {
     let snapshot = statusSnapshot(runtime.services);
-    assert.equal(snapshot.overview.online, 10);
+    assert.equal(snapshot.overview.online, 5);
     assert.ok(snapshot.bots.every((bot) => bot.online === true && bot.status === 'online'));
 
     const kicked = runtime.bots.get('________');
@@ -82,7 +82,7 @@ test('the snapshot never reports a kicked or failed bot as online', async () => 
     kicked.spawned = false;
     kicked.authenticated = false;
     snapshot = statusSnapshot(runtime.services);
-    assert.equal(snapshot.overview.online, 9);
+    assert.equal(snapshot.overview.online, 4);
     const row = snapshot.bots.find((bot) => bot.name === '________');
     assert.equal(row.online, false);
     assert.equal(row.status, 'offline');
@@ -98,7 +98,7 @@ test('the snapshot never reports a kicked or failed bot as online', async () => 
     assert.equal(authRow.authPending, true);
     assert.equal(authRow.ready, false);
     assert.equal(authRow.status, 'auth_failed');
-    assert.equal(snapshot.overview.online, 9);
+    assert.equal(snapshot.overview.online, 4);
   } finally {
     await runtime.shutdown('test');
   }
@@ -123,7 +123,7 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
   try {
     const { port } = await dash.start();
     let state = await request(port, '/api/state');
-    assert.equal(state.body.state.overview.online, 10);
+    assert.equal(state.body.state.overview.online, 5);
     assert.deepEqual(state.body.state.bots.map((bot) => bot.name), NAMES);
     // The website must get the configured names from the live runtime, never
     // from a cached /api/settings or a client-side default roster.
@@ -137,7 +137,7 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
     const queue = await request(port, '/api/queue');
     assert.equal(queue.body.ok, true);
     assert.ok(Array.isArray(queue.body.joinQueue.waiting));
-    assert.equal(queue.body.bots.length, 10);
+    assert.equal(queue.body.bots.length, 5);
     const reset = await request(port, '/api/queue/reset-cooldown', 'POST', {});
     assert.equal(reset.body.ok, true);
     assert.equal(reset.body.joinQueue.cooldownUntil, null);
@@ -149,7 +149,7 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
 
     // The next state read must not reuse a pre-kick cached snapshot.
     state = await request(port, '/api/state');
-    assert.equal(state.body.state.overview.online, 9);
+    assert.equal(state.body.state.overview.online, 4);
     const row = state.body.state.bots.find((bot) => bot.name === '________');
     assert.equal(row.online, false);
     assert.equal(row.status, 'offline');

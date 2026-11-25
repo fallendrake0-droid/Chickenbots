@@ -166,7 +166,7 @@ test('the command surface drives fishing, home, sleep automation, formations and
     assert.deepEqual(home.result.home, runtime.home);
     const homeStatus = await runtime.executeCommand('home status', { source: 'dashboard' });
     assert.equal(homeStatus.result.ok, true);
-    assert.ok(homeStatus.result.actions.length === 10);
+    assert.equal(homeStatus.result.actions.length, runtime.actions.list().length);
 
     const autoOff = await runtime.executeCommand('sleep auto off', { source: 'dashboard' });
     assert.equal(autoOff.result.ok, true);
@@ -218,15 +218,15 @@ test('the command surface drives fishing, home, sleep automation, formations and
     assert.equal(teamOn.result.enabled, true);
 
     const botStatus = await runtime.executeCommand('bot all status', { source: 'dashboard' });
-    assert.equal(botStatus.result.bots.length, 10);
+    assert.equal(botStatus.result.bots.length, runtime.actions.list().length);
     const stopMining = await runtime.executeCommand('mine stop', { source: 'dashboard' });
     assert.equal(stopMining.result.ok, true);
     const stopExploring = await runtime.executeCommand('explore stop all', { source: 'dashboard' });
     assert.equal(stopExploring.result.ok, true);
-    assert.equal(stopExploring.result.stopped.length, 10);
+    assert.equal(stopExploring.result.stopped.length, runtime.actions.list().length);
     const stopDefend = await runtime.executeCommand('defend stop all', { source: 'dashboard' });
     assert.equal(stopDefend.result.ok, true);
-    assert.equal(stopDefend.result.stopped.length, 10);
+    assert.equal(stopDefend.result.stopped.length, runtime.actions.list().length);
     const find = await runtime.executeCommand('find forest', { source: 'dashboard' });
     assert.equal(find.result.ok, true);
   } finally {

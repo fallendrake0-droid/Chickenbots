@@ -10,7 +10,7 @@ const { statusSnapshot } = require('../src/runtimeState');
 const { createDashboard } = require('../src/dashboard/server');
 const { RealBot } = require('../src/bot/realBot');
 
-const TAB_KEYS = ['bots', 'overview', 'team', 'survival', 'combat', 'inventory', 'mining', 'excavation', 'woodcutting', 'farming', 'sleep', 'exploration', 'builder', 'schematics', 'homeBase', 'taskManager', 'diagnostics'];
+const TAB_KEYS = ['bots', 'overview', 'team', 'survival', 'combat', 'inventory', 'mining', 'excavation', 'woodcutting', 'farming', 'sleep', 'exploration', 'players', 'playerWatch', 'builder', 'schematics', 'homeBase', 'taskManager', 'diagnostics'];
 
 function httpGet(port, path, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
@@ -34,17 +34,17 @@ async function simulation(options = {}) {
 test('runtime snapshot exposes every dashboard section with live values', async () => {
   const runtime = await simulation();
   try {
-    assert.equal(runtime.bots.size, 10);
+    assert.equal(runtime.bots.size, 5);
     assert.equal(runtime.autonomyAllowed, true);
     const snapshot = statusSnapshot(runtime.services);
     for (const key of TAB_KEYS) assert.ok(key in snapshot, `missing dashboard section ${key}`);
-    assert.equal(snapshot.bots.length, 10);
-    assert.equal(snapshot.overview.online, 10);
-    assert.equal(snapshot.overview.total, 10);
+    assert.equal(snapshot.bots.length, 5);
+    assert.equal(snapshot.overview.online, 5);
+    assert.equal(snapshot.overview.total, 5);
     assert.ok(snapshot.schematics.stats.count >= 1100);
     assert.equal(snapshot.diagnostics.config.pvp, true);
     assert.equal(snapshot.diagnostics.config.pve, true);
-    assert.deepEqual(snapshot.diagnostics.config.roster, ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001']);
+    assert.deepEqual(snapshot.diagnostics.config.roster, ['________', '10101000', '01010100', '11001100', '00110000']);
   } finally {
     await runtime.shutdown('test');
   }
@@ -184,7 +184,11 @@ test('dashboard serves the operations console, state, commands and schematic dow
     assert.ok(index.body.includes('css/tokens.css'));
     const router = await httpGet(port, '/js/router.js');
     assert.equal(router.status, 200);
-    for (const label of ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Exploration', 'Sleep', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings']) {
+    assert.ok(router.body.includes("case 'players'"), 'players route is missing');
+    const playersPage = await httpGet(port, '/js/pages/players.js');
+    assert.equal(playersPage.status, 200);
+    assert.ok(playersPage.body.includes('players follow'), 'players page controls are missing');
+    for (const label of ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Players', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Exploration', 'Sleep', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings']) {
       assert.ok(router.body.includes(label), `missing page ${label}`);
     }
     const tokens = await httpGet(port, '/css/tokens.css');
@@ -195,7 +199,7 @@ test('dashboard serves the operations console, state, commands and schematic dow
     const exported = await httpGet(port, '/api/diagnostics/export');
     const bundle = JSON.parse(exported.body);
     assert.equal(Array.isArray(bundle.logs), true);
-    assert.equal(bundle.state.bots.length, 10);
+    assert.equal(bundle.state.bots.length, 5);
     assert.equal(/loginPassword|registerPassword|MC_LOGIN_PASSWORD/.test(exported.body), false, 'diagnostics export must not expose credentials');
     const settings = await httpGet(port, '/api/settings');
     assert.equal(JSON.parse(settings.body).ok, true);
