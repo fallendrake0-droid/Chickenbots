@@ -261,3 +261,17 @@ five-bot run on `863145b` or later must prove the startup summary, snapshot
 sections, task pre-emption, planner re-open and death-cause strings. EPIPE/
 reconnect, AuthMe/SimpleAuth against the real server, Geyser/ViaVersion/GrimAC,
 browser/canvas and `BUG-27-10`/`BUG-27-12` remain open.
+
+## Round 37 — first-class goto and a working 3D projection
+
+**Evidence:** 436/436 tests, lint 174 files, `commands:audit` 46/47
+(0 failures; `stop` skipped). No browser or live server was available.
+
+| ID | Priority | Area | Symptom | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-37-01 | P0 | `goto` | `goto 20 65 20` returns `UNKNOWN_COMMAND` | Only the `bot <name> goto` subcommand existed | Added a first-class `goto` command with leader default, explicit bot, bot-last and `all` forms; shares the exclusive movement path | `tests/goto-command.test.js` 5 cases; CLI and audit | FIXED (unit/simulation) |
+| BUG-37-02 | P0 | Live goto | A 30 s cap stopped long walks; a map block Y could be inside the ground | Fixed timeout and `GoalNear` on a non-standable Y | 0.9 s/block + 15 s bounded at 110 s; operator `adjustY` lifts up to six blocks to clear feet/head, leaves `unloaded` unchanged | `goto-command.test.js` standable-Y and movement tests | FIXED (unit); live UNVERIFIED |
+| BUG-37-03 | P0 | 3D world view | Canvas blank; HUD showed triangles and WebGL mode | Column-major matrices multiplied in transposed order, collapsing every vertex to clip-space `w≈0` | Correct `multiply` in `math3d.js`; viewer imports it | `tests/dashboard-math.test.js` camera-target/terrain projection; fake-WebGL draw test | FIXED (unit); browser pixel test still absent |
+
+**Still open:** a real browser screenshot of the Live World page and a live
+`goto` on the target server; all live criteria remain UNVERIFIED.

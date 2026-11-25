@@ -44,8 +44,10 @@ server brand, so their capability block is `null` rather than invented.
 
 - No browser-level test of buttons, modals, SSE reconnect or mobile layout in
   this pass.
-- The 3D canvas render is unverified; only `/api/world` payload generation was
-  exercised.
+- The 3D canvas still has no browser-level pixel test. Its projection math is
+  now covered by `tests/dashboard-math.test.js` (a transposed multiply used to
+  collapse every vertex to clip-space w=0); `/api/world` payload generation is
+  covered separately.
 - The dashboard remains loopback by default; the sandbox preview deliberately
   opted into `DASHBOARD_ALLOW_INSECURE=true`. No remote control claim is made.
 - A 367 KB `/api/state` and 840 KB diagnostics export are large; they are

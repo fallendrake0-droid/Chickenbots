@@ -2577,6 +2577,27 @@ class RealBot extends BotAdapter {
   }
 
   /**
+   * Find the first standable feet Y at (x,z), starting at the requested Y.
+   * `unloaded` is unknown terrain, not air: do not rewrite the operator's Y
+   * from a chunk that has not arrived yet.
+   */
+  _standableY(pos) {
+    const x = Math.floor(Number(pos.x));
+    const z = Math.floor(Number(pos.z));
+    let y = Math.floor(Number(pos.y));
+    if (!Number.isFinite(y)) return pos.y;
+    for (let step = 0; step <= 6; step++, y++) {
+      const feet = this.getBlock({ x, y, z });
+      const head = this.getBlock({ x, y: y + 1, z });
+      if (!feet || !head) return y;
+      if (feet.name === 'unloaded' || head.name === 'unloaded') return Math.floor(Number(pos.y));
+      const clear = (block) => block.name === 'air' || block.name === 'cave_air' || block.name === 'void_air' || block.name === 'water';
+      if (clear(feet) && clear(head)) return y;
+    }
+    return Math.floor(Number(pos.y));
+  }
+
+  /**
    * Move with a single authoritative owner. Every caller that cares about
    * survival passes `priority`; a lower-priority task path is rejected instead
    * of silently replacing a retreat, and a higher-priority path cancels the
@@ -2584,11 +2605,15 @@ class RealBot extends BotAdapter {
    * rejects with "Path was stopped before it could be completed", and an
    * uncaught rejection would reach the process unhandledRejection handler.
    */
-  async goTo(pos, { range = 1, timeoutMs = 20000, priority = 'task', owner = null } = {}) {
+  async goTo(pos, { range = 1, timeoutMs = 20000, priority = 'task', owner = null, adjustY = false } = {}) {
     const check = this._assertReady();
     if (check) return check;
     if (this.health <= 0) return { ok: false, error: 'bot is dead; movement refused' };
     if (!finitePosition(pos)) return { ok: false, error: `invalid movement destination ${JSON.stringify(pos)}`, code: 'INVALID_DESTINATION' };
+    // Operator coordinates are often copied from a map as the block Y, which
+    // is inside the ground. Ask for a standable feet position instead of
+    // handing pathfinder a goal it can never occupy.
+    if (adjustY) pos = { ...pos, y: this._standableY(pos) };
     // A move that starts while the tick loop is still catching up would emit
     // one huge correction. Give the loop a moment, then try again next tick.
     // Check before loading pathfinder so a resync does not build a plan at all.

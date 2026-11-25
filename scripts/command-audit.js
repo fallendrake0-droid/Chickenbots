@@ -24,6 +24,7 @@ const SAFE_INVOCATIONS = Object.freeze({
   resume: 'resume',
   stop: null,
   bot: 'bot all status',
+  goto: 'goto 0 65 0',
   team: 'team state',
   inventory: 'inventory all',
   survival: 'survival status',

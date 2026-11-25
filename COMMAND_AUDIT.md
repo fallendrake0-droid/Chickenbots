@@ -4,6 +4,14 @@ All commands were sent through the dashboard's real `POST /api/command`
 (`{"line":"..."}`) against a fresh deterministic simulation. The command registry
 is the same one used by the CLI and internal automation.
 
+## Round 37 re-audit (47 commands)
+
+`goto` is now a top-level command (`goto <x> <y> <z> [bot]`,
+`goto <bot|all> <x> <y> <z>`) in addition to `bot <name> goto`.
+`npm run commands:audit` covers **46/47** (`stop` is the deliberate skip) with
+**0 failures**. The safe probe is `goto 0 65 0`; bot-first, bot-last and `all`
+forms are covered by `tests/goto-command.test.js`.
+
 ## Round 33 re-audit (46 commands)
 
 The registry is unchanged at 46 commands. `mine` now accepts `stop`, ores and

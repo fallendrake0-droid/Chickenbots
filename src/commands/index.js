@@ -319,6 +319,19 @@ function fleetStatus(services) {
 
 const QUERY_ACTIONS = new Set(['status', 'where', 'combat', 'inventory', 'inv']);
 
+/**
+ * Operator goto is allowed to take as long as the walk needs, not 30 s. A
+ * conservative 0.9 s per horizontal block plus 15 s covers terrain, and the
+ * 110 s cap keeps the dashboard request inside its own 120 s timeout.
+ */
+function travelTimeoutMs(bot, pos) {
+  const from = bot && bot.position;
+  if (!from || !pos) return 30000;
+  const distance = Math.hypot(Number(pos.x) - Number(from.x), Number(pos.z) - Number(from.z));
+  if (!Number.isFinite(distance)) return 30000;
+  return Math.max(30000, Math.min(110000, Math.round(distance * 900) + 15000));
+}
+
 async function runBotAction(services, bot, args, context = {}) {
   const action = (args[1] || 'status').toLowerCase();
   // Read-only views must stay instant. Every gameplay action takes an
@@ -348,12 +361,20 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
   if (action === 'where') return { ok: true, bot: bot.name, position: { ...bot.position }, dimension: bot.dimension };
   if (action === 'goto') {
     const pos = parseOrigin(args, 2);
-    const result = await bot.goTo(pos, { range: 2, timeoutMs: 30000, priority: 'operator', owner: 'operator-goto' });
+    const result = await bot.goTo(pos, {
+      range: 2,
+      // A 100-block walk can legitimately take longer than the old 30 s cap.
+      // Keep the command bounded but let realistic operator distances finish.
+      timeoutMs: travelTimeoutMs(bot, pos),
+      priority: 'operator',
+      owner: 'operator-goto',
+      adjustY: true
+    });
     return { ok: result.ok !== false, ...result, position: { ...bot.position } };
   }
   if (action === 'come' || action === 'follow') {
     const destination = leader && leader !== bot ? leader.position : bot.position;
-    const result = await bot.goTo(destination, { range: 2, timeoutMs: 30000, priority: 'operator', owner: 'operator-come' });
+    const result = await bot.goTo(destination, { range: 2, timeoutMs: 30000, priority: 'operator', owner: 'operator-come', adjustY: true });
     return { ok: result.ok !== false, ...result, position: { ...bot.position }, followed: leader ? leader.name : null };
   }
   if (action === 'return') {
@@ -675,6 +696,35 @@ function registerAll(services, registry) {
         return { ok: true, released, note: 'idle bots will be reallocated on the next coordinator tick' };
       }
       return { ok: false, error: `unknown team subcommand '${sub}'` };
+    }
+  });
+
+  registry.register({
+    name: 'goto', category: 'exploration', summary: 'Move a bot (or the leader) to coordinates', usage: 'goto <x> <y> <z> [bot] | goto <bot|all> <x> <y> <z>', examples: ['goto 100 65 -40', 'goto 10101000 100 65 -40', 'goto all 0 65 0'],
+    execute: async (args, context = {}) => {
+      const raw = args.map((value) => String(value));
+      let target = null;
+      let coordinateArgs = raw;
+      if (raw.length === 4) {
+        if (raw[0].toLowerCase() === 'all' || services.bots.has(raw[0])) {
+          target = raw[0].toLowerCase() === 'all' ? 'all' : raw[0];
+          coordinateArgs = raw.slice(1);
+        } else if (services.bots.has(raw[3])) {
+          target = raw[3];
+          coordinateArgs = raw.slice(0, 3);
+        }
+      }
+      if (coordinateArgs.length !== 3) {
+        throw new CommandError('usage: goto <x> <y> <z> [bot] or goto <bot|all> <x> <y> <z>');
+      }
+      const pos = parseOrigin(coordinateArgs, 0);
+      if (target === 'all') {
+        return runFleetActions(services, 'all', (actions) => runBotAction(
+          services, actions.bot, [actions.bot.name, 'goto', String(pos.x), String(pos.y), String(pos.z)], context
+        ));
+      }
+      const bot = pickBot(services, target);
+      return runBotAction(services, bot, [bot.name, 'goto', String(pos.x), String(pos.y), String(pos.z)], context);
     }
   });
 

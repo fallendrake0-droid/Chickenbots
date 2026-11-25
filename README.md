@@ -416,6 +416,7 @@ requires an explicit `confirm` token or `confirmed:true`.
 ```
 help [command]                 status                         diagnostics
 ai [status|off]                team [state|on|off|memory|locks|tasks|roles|leader|formation|resources|objectives|follow|regroup|retreat|defend|reassign]
+goto <x> <y> <z> [bot]         goto <bot|all> <x> <y> <z>      # leader by default; block Y is lifted to a standable feet position
 bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore|block]|chop [type]|farm [plant [crop] [count]|maintain|status|crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
 inventory [bot]                eat [bot]                       sleep [bot|all|auto on|off]
 survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
