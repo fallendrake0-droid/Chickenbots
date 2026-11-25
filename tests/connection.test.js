@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isThrottleError, reconnectDelay, staggerDelay, sleep } = require('../src/bot/connection');
+const { isThrottleError, reconnectDelay, staggerDelay, sleep, movementRetryVerdict, MOVEMENT_KICK_PAUSE_THRESHOLD } = require('../src/bot/connection');
 const { RealBot } = require('../src/bot/realBot');
 
 test('join throttling is detected and retried behind a longer jittered backoff', () => {
@@ -41,8 +41,8 @@ test('kick reasons are flattened into readable chat text', () => {
   assert.equal(bot._formatKickReason(null), 'null');
 });
 
-function authHarness({ loginPassword = 'secret', registerPassword = null, registerOnFirstJoin = false, reply = null } = {}) {
-  const real = new RealBot({ name: '________', loginPassword, registerPassword, registerOnFirstJoin, authCommandsEnabled: true, authDelayMs: 0, authTimeoutMs: 500 });
+function authHarness({ loginPassword = 'secret', registerPassword = null, registerOnFirstJoin = false, authRegistrationEnabled = false, reply = null } = {}) {
+  const real = new RealBot({ name: '________', loginPassword, registerPassword, registerOnFirstJoin, authRegistrationEnabled, authCommandsEnabled: true, authDelayMs: 0, authTimeoutMs: 500 });
   const commands = [];
   const fake = {
     entity: {},
@@ -136,7 +136,7 @@ test('existing accounts send only /login and never /register by default', async 
 test('a login for an unregistered account automatically registers once then logs in', async () => {
   let loginAttempts = 0;
   const { real, commands } = authHarness({
-    registerPassword: 'secret', loginPassword: 'secret', registerOnFirstJoin: false,
+    registerPassword: 'secret', loginPassword: 'secret', registerOnFirstJoin: false, authRegistrationEnabled: true,
     reply: (line) => {
       if (line.startsWith('/register')) return 'Successfully registered!';
       loginAttempts++;
@@ -266,4 +266,13 @@ test('a post-login respawn does not wipe a confirmed password session', () => {
   fresh.authConfirmed = false;
   assert.equal(fresh._applySpawnAuth(), false);
   assert.equal(fresh.authenticated, false);
+});
+
+test('three consecutive movement rejections pause automatic retries', () => {
+  assert.equal(MOVEMENT_KICK_PAUSE_THRESHOLD, 3);
+  assert.deepEqual(movementRetryVerdict(1), { strikes: 1, pause: false, retry: true });
+  assert.deepEqual(movementRetryVerdict(2), { strikes: 2, pause: false, retry: true });
+  assert.deepEqual(movementRetryVerdict(3), { strikes: 3, pause: true, retry: false });
+  assert.equal(movementRetryVerdict(99).pause, true);
+  assert.equal(movementRetryVerdict(-4).strikes, 0);
 });

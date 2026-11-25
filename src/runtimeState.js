@@ -190,7 +190,11 @@ function statusSnapshot(services) {
           connectJitterMs: config.server.connectJitterMs,
           rejoinDelayMs: config.server.rejoinDelayMs,
           authMode: config.server.authMode,
-          authCommandsEnabled: config.server.authCommandsEnabled
+          authProfile: config.server.authProfile,
+          authCommandsEnabled: config.server.authCommandsEnabled,
+          authRegistrationEnabled: config.server.authRegistrationEnabled,
+          credentialCount: Object.keys(config.server.credentials || {}).length,
+          credentialsError: config.server.credentialsError || null
         },
         dashboard: { host: config.dashboard.host, port: config.dashboard.port, allowInsecure: config.dashboard.allowInsecure, tokenRequired: Boolean(config.dashboard.token) },
         pve: config.autonomy.pve,
@@ -221,12 +225,23 @@ function statusSnapshot(services) {
         stage: s.stage || null,
         connection: s.connection || null,
         stageTimings: s.stageTimings || null,
+        authProfile: s.authProfile || null,
+        connectionAuth: s.connectionAuth || null,
+        serverBrand: s.serverBrand || null,
+        capabilities: s.compatibilities || null,
         safety: safetyByName.get(s.name) || null,
         keepAlive: s.keepAlive || null,
         ticker: s.ticker || null,
         lastDisconnect: s.lastDisconnect || null
       })),
-      commands: services.commands ? services.commands.recent(20) : []
+      commands: services.commands ? services.commands.recent(20) : [],
+      plugins: summaries.map((s) => ({
+        name: s.name,
+        authProfile: s.authProfile || null,
+        connectionAuth: s.connectionAuth || null,
+        serverBrand: s.serverBrand || null,
+        capabilities: s.compatibilities || null
+      }))
     }
   };
 }

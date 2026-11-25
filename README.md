@@ -328,15 +328,18 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_VERSION_PROBE_TIMEOUT_MS` | `8000` | validated status-ping timeout before opening login sockets |
 | `MC_SERVER_START_DELAY_MS` | `30000` | wait between probes while Aternos reports offline/starting (`protocol -1`) |
 | `MC_VERSION_RETRY_MS` | `60000` | wait before retrying an unsupported or invalid explicit version |
-| `MC_AUTH` | `offline` | `offline` or `microsoft` |
+| `MC_AUTH` | `offline` | Mineflayer connection auth: `offline` or `microsoft`. This is not plugin authentication. |
 | `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `2000` / `750` | positive, jittered gap between login sockets. A ten-bot burst is not the default; a real server throttle still opens a bounded fleet-wide pause. |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `1500` / `750` | gap before queuing each bot's initial connection task |
 | `FLEET_CONCURRENCY` | `4` | maximum bots executing one fleet command at the same time; every bot still gets its own structured result |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | fleet-wide pause after a throttle or a socket that never reaches spawn. One outage episode records **one** strike no matter how many bots fail in it; a genuinely separate outage (after a bot became ready) escalates the bounded, jittered pause up to the maximum |
-| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | parsed for compatibility only. Automatic `/register` and `/login` are disabled by operator directive and no module sends them. No credential is built in and none is required. |
-| `MC_AUTH_ENABLED` | `false` | hard-disabled. No environment value can re-enable automatic auth; a stale `true` is ignored. |
-| `MC_AUTH_REGISTER_ON_FIRST_JOIN` | `false` | ignored while auth is disabled |
-| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | retained for the isolated auth parser tests only; no live connection enters this path |
+| `MC_AUTH_PROFILE` | `none` | `none`, `offline`, `microsoft`, `manual`, `authme`, `simpleauth` or `generic`. Plugin profiles are challenge-driven and never send a password without a server prompt. See `AUTHENTICATION_PROFILES.md`. |
+| `MC_AUTH_REGISTRATION_ENABLED` | `false` | registration is opt-in and requires a registration template |
+| `MC_AUTH_MAX_ATTEMPTS` | `2` | credential attempts per challenge, clamped to 1–5 to avoid lockout loops |
+| `MC_CREDENTIALS_FILE` | `.mc-auth.json` | ignored per-bot credential file; never committed and never echoed |
+| `MC_REGISTER_PASSWORD` / `MC_LOGIN_PASSWORD` | *(empty)* | legacy single-fleet credentials, used only when a plugin profile is explicitly selected |
+| `MC_AUTH_ENABLED` | `false` | optional explicit enable for legacy/profile paths; the default profile already decides |
+| `MC_AUTH_DELAY_MS` / `MC_AUTH_TIMEOUT_MS` | `300` / `12000` | delay before an auth attempt and the challenge/confirmation timeout |
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so ten bots do not retry together |
 | `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
@@ -629,14 +632,15 @@ commissioning.
   autonomy is paused. Connected bots send a real swing animation every 30s so a writable session is
   visible to idle plugins. Chickenbots does **not** fabricate movement or jump to defeat AFK checks; the
   real 20 tps client tick loop is the fix for a client that looks frozen.
-  Automatic `/login` and `/register` are **disabled**. The live 26.1 server answered `/login` with
-  `Unknown or incomplete command`, so the password exchange was not merely failing — the server had
-  no such command. No module sends either command during startup, spawn or reconnect, there are no
-  auth retries, and a spawned session is never torn down by an auth timeout. `MC_LOGIN_PASSWORD` is
-  not required. If the server itself prints a login/register demand, the session stays connected,
-  reports `AUTH_REQUIRED_MANUAL`, shows `Online — auth required`, and blocks gameplay until an
-  operator resolves it. Online presence and gameplay readiness are now separate fields everywhere
-  (CLI, dashboard, coordinator): a spawned bot is online even while starting, dead or auth-blocked.
+  The default `MC_AUTH_PROFILE=none` sends **no** `/login` or `/register`. The live 26.1 server
+  answered `/login` with `Unknown or incomplete command`, so the password exchange was not merely
+  failing — the server had no such command. Plugin authentication is now opt-in through an explicit
+  profile. `authme`/`simpleauth` wait for the server's own challenge; a missing challenge returns
+  `AUTH_PROMPT_TIMEOUT` and sends nothing. Attempts are bounded by `MC_AUTH_MAX_ATTEMPTS`. Per-bot
+  passwords live in an ignored `.mc-auth.json`, never in Git or chat. A `manual` profile keeps the
+  spawned session online, reports `AUTH_REQUIRED_MANUAL`, shows `Online — auth required`, and blocks
+  gameplay. Online presence and gameplay readiness are separate fields everywhere (CLI, dashboard,
+  coordinator): a spawned bot is online even while starting, dead or auth-blocked.
   An operator/staff kick or a ban pauses automatic retries for that bot;
   reconnect explicitly from the dashboard after reviewing the reason. Generic network/protocol kicks
   still use bounded, jittered backoff, and the runtime never deliberately spams reconnects. Bans and

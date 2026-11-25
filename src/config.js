@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { PROFILE_IDS, resolveAuthProfile, validateAuthProfile } = require('./bot/authProfiles');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -61,6 +62,40 @@ function envViewDistance(name, fallback) {
   const numeric = Number.parseInt(raw, 10);
   return Number.isFinite(numeric) ? numeric : raw.toLowerCase();
 }
+
+/**
+ * Per-bot plugin credentials. The file is intentionally outside Git
+ * (`.mc-auth.json` is ignored) and is read only when an auth profile is
+ * configured. A malformed file is reported without echoing its contents.
+ */
+function loadCredentialFile(file) {
+  const empty = { credentials: {}, error: null };
+  if (!file || !fs.existsSync(file)) return empty;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const source = parsed && parsed.bots && typeof parsed.bots === 'object' ? parsed.bots : parsed;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      return { credentials: {}, error: 'credential file must contain a bot -> credential object' };
+    }
+    const credentials = {};
+    for (const [name, value] of Object.entries(source)) {
+      if (typeof value === 'string') credentials[name] = { password: value };
+      else if (value && typeof value === 'object') {
+        const password = typeof value.password === 'string' ? value.password
+          : typeof value.login === 'string' ? value.login : '';
+        const register = typeof value.registerPassword === 'string' ? value.registerPassword : password;
+        if (password) credentials[name] = { password, registerPassword: register };
+      }
+    }
+    return { credentials, error: null };
+  } catch (err) {
+    return { credentials: {}, error: `credential file could not be parsed: ${err.message}` };
+  }
+}
+
+const AUTH_PROFILE = String(env('MC_AUTH_PROFILE', 'none')).toLowerCase();
+const CREDENTIAL_FILE = env('MC_CREDENTIALS_FILE', path.join(ROOT, '.mc-auth.json'));
+const CREDENTIALS = loadCredentialFile(CREDENTIAL_FILE);
 
 const VIEW_DISTANCE_PRESETS = Object.freeze({ tiny: 6, short: 8, normal: 10, far: 12 });
 function viewDistanceNumber(value) {
@@ -165,18 +200,23 @@ const config = {
     // behind a fully completed handshake.
     joinIntervalMs: envInt('MC_JOIN_INTERVAL_MS', 2000),
     joinJitterMs: envInt('MC_JOIN_JITTER_MS', 750),
-    // Automatic password auth is disabled until further notice. The live
-    // server has no /login command at all: sending one produced
-    // "Unknown or incomplete command" and every spawned bot was torn down by
-    // the auth timeout even though the server had already accepted it. The
-    // hard lock below is deliberately not environment-controlled, so a stale
-    // MC_AUTH_ENABLED=true in an old .env cannot quietly re-enable it.
-    authEnabled: false,
+    // Plugin authentication is opt-in. The default sends no /login or
+    // /register at all. `MC_AUTH_PROFILE` selects a challenge-driven profile
+    // (authme, simpleauth, generic, manual, offline, microsoft); the legacy
+    // boolean is retained only for isolated parser tests and is still rejected
+    // by config validation when true.
+    authEnabled: envBool('MC_AUTH_ENABLED', false),
     authCommandsEnabled: false,
-    authMode: 'disabled',
-    // Credentials are parsed only so a stale .env does not crash startup. No
-    // module may send these commands while authCommandsEnabled is false, and
-    // MC_LOGIN_PASSWORD is never required.
+    authProfile: AUTH_PROFILE,
+    authMode: AUTH_PROFILE === 'none' ? 'disabled' : AUTH_PROFILE,
+    authRegistrationEnabled: envBool('MC_AUTH_REGISTRATION_ENABLED', false),
+    authMaxAttempts: envInt('MC_AUTH_MAX_ATTEMPTS', 2),
+    authRetryDelayMs: envInt('MC_AUTH_RETRY_DELAY_MS', 1500),
+    credentialsFile: CREDENTIAL_FILE,
+    credentials: CREDENTIALS.credentials,
+    credentialsError: CREDENTIALS.error,
+    // Legacy single-fleet credentials remain supported for the old parser
+    // tests and for an operator who has not moved to the per-bot file yet.
     registerPassword: env('MC_REGISTER_PASSWORD', ''),
     loginPassword: env('MC_LOGIN_PASSWORD', ''),
     loginCommand: env('MC_LOGIN_COMMAND', '/login {password}'),
@@ -441,11 +481,45 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   boolean('server.registerOnFirstJoin', server.registerOnFirstJoin);
   integer('server.authDelayMs', server.authDelayMs, 0, 60000);
   integer('server.authTimeoutMs', server.authTimeoutMs, 1000, 300000);
+  integer('server.authMaxAttempts', server.authMaxAttempts, 1, 5);
+  integer('server.authRetryDelayMs', server.authRetryDelayMs, 250, 60000);
+  text('server.authProfile', server.authProfile, 32);
+  boolean('server.authRegistrationEnabled', server.authRegistrationEnabled);
+  if (!PROFILE_IDS.includes(String(server.authProfile || '').toLowerCase())) {
+    fail('server.authProfile', `must be one of ${PROFILE_IDS.join(', ')} (got ${server.authProfile})`);
+  }
+  if (server.authCommandsEnabled) {
+    fail('server.authCommandsEnabled', 'the legacy boolean is not a profile; set MC_AUTH_PROFILE explicitly and leave MC_AUTH_COMMANDS_ENABLED unset');
+  }
+  if (server.authProfile && server.authProfile !== 'none') {
+    try {
+      const profile = resolveAuthProfile(server.authProfile, {
+        loginTemplate: server.loginCommand,
+        registerTemplate: server.registerCommand,
+        registrationEnabled: server.authRegistrationEnabled === true,
+        maxAttempts: server.authMaxAttempts,
+        retryDelayMs: server.authRetryDelayMs
+      });
+      const checked = validateAuthProfile(profile);
+      for (const error of checked.errors) fail(`server.authProfile(${profile.id})`, error);
+      if (profile.registrationEnabled && !server.registerCommand) {
+        fail('server.authRegistrationEnabled', 'registration requires server.registerCommand');
+      }
+    } catch (err) {
+      fail('server.authProfile', err.message);
+    }
+    if (server.credentialsError) warn('server.credentialsFile', server.credentialsError);
+    const known = Object.keys(server.credentials || {});
+    if (!known.length && !server.loginPassword && !server.registerPassword) {
+      warn('server.credentialsFile', `profile ${server.authProfile} has no per-bot credentials; the session will wait for a challenge and then report missing credentials`);
+    }
+  } else {
+    if (server.authEnabled) warn('server.authEnabled', 'no auth profile is selected; no plugin command will be sent');
+    if (server.credentialsError) warn('server.credentialsFile', server.credentialsError);
+    if (Object.keys(server.credentials || {}).length) warn('server.credentialsFile', 'credentials are present but MC_AUTH_PROFILE=none; they will not be used');
+  }
   text('server.loginCommand', server.loginCommand, 255);
   text('server.registerCommand', server.registerCommand, 255);
-  if (server.authEnabled || server.authCommandsEnabled) {
-    fail('server.authCommandsEnabled', 'automatic /login and /register are disabled by operator directive; no configuration may enable them');
-  }
   integer('server.reconnect.maxAttempts', reconnect.maxAttempts, 0, 10000);
   integer('server.reconnect.baseDelayMs', reconnect.baseDelayMs, 0, 3600000);
   integer('server.reconnect.maxDelayMs', reconnect.maxDelayMs, 1, 3600000);
@@ -506,14 +580,13 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
     fail('logging.level', `must be debug, info, warn, error or silent (got ${candidate.logging.level})`);
   }
 
-  // Password auth is deliberately disabled: a server without AuthMe must not
-  // be blocked by a credential check, and a server with it must surface a
-  // manual-auth state rather than having a bot guess a command.
-  if (server.loginPassword || server.registerPassword) {
-    warn('server.loginPassword', 'credentials are present but automatic /login and /register are disabled; they will not be sent');
+  // Credentials alone never send a command. The profile is the authority; the
+  // default `none` keeps the live server's "no /login command" behaviour.
+  if ((server.loginPassword || server.registerPassword) && (!server.authProfile || server.authProfile === 'none')) {
+    warn('server.loginPassword', 'credentials are present but MC_AUTH_PROFILE=none; they will not be sent');
   }
   if (requireCredentials && simulate) {
-    warn('server.loginPassword', 'ignored: automatic password auth is disabled');
+    warn('server.loginPassword', 'ignored: plugin authentication is off in simulation');
   }
 
   return { ok: errors.length === 0, errors, warnings };

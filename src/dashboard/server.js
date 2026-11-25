@@ -234,8 +234,17 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       ok: true,
       settings: {
         server: { host: config.server.host, port: config.server.port, version: config.server.version, auth: config.server.auth, joinIntervalMs: config.server.joinIntervalMs, joinJitterMs: config.server.joinJitterMs, rejoinDelayMs: config.server.rejoinDelayMs },
+        authentication: {
+          profile: config.server.authProfile,
+          mode: config.server.authMode,
+          connectionAuth: config.server.auth,
+          registrationEnabled: config.server.authRegistrationEnabled === true,
+          maxAttempts: config.server.authMaxAttempts,
+          credentialsConfigured: Object.keys(config.server.credentials || {}).length,
+          credentialFileError: config.server.credentialsError || null
+        },
         dashboard: { host: config.dashboard.host, port: config.dashboard.port, allowInsecure: config.dashboard.allowInsecure === true },
-        security: { tokenRequired: Boolean(accessToken), passwordConfigured: Boolean(config.server.loginPassword || config.server.registerPassword), allowInsecure: config.dashboard.allowInsecure === true },
+        security: { tokenRequired: Boolean(accessToken), passwordConfigured: Boolean(config.server.loginPassword || config.server.registerPassword || Object.keys(config.server.credentials || {}).length), allowInsecure: config.dashboard.allowInsecure === true },
         roster: config.team.names,
         pve: config.autonomy.pve,
         pvp: config.autonomy.pvp,

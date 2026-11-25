@@ -37,6 +37,18 @@ node src/index.js --host 0.0.0.0 --port 3000 2>&1 | tee V6_LIVE_RUN.log
 - [ ] Record the first five minutes of `keepAlive.maxGapMs`; a gap of 10 s or
       more is a failure.
 
+## 2b. Authentication profile
+
+- [ ] `MC_AUTH_PROFILE=none` sends no `/login` or `/register` at any point.
+- [ ] A configured `authme`/`simpleauth` profile sends a command only after the
+      server prints a matching challenge.
+- [ ] A missing challenge produces `AUTH_PROMPT_TIMEOUT` and no password.
+- [ ] Credentials come from the ignored per-bot file, not Git or chat.
+- [ ] The server log, dashboard and diagnostics show no password.
+- [ ] The attempt count never exceeds `MC_AUTH_MAX_ATTEMPTS` (1–5).
+- [ ] A wrong password pauses retries instead of causing a lockout loop.
+- [ ] A `manual` profile stays online with gameplay gated.
+
 ## 3. Per-bot checks
 
 - [ ] `00110000`, `01010100`, `10101000`, `11001100`: no

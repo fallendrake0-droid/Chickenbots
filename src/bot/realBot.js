@@ -4,7 +4,9 @@ const dns = require('dns');
 const { BotAdapter } = require('./adapter');
 const { config, BOT_NAMES } = require('../config');
 const { redactString } = require('../util/redact');
-const { classifyKick, sleep } = require('./connection');
+const { classifyKick, sleep, movementRetryVerdict, MOVEMENT_KICK_PAUSE_THRESHOLD } = require('./connection');
+const { resolveAuthProfile, classifyAuthText, buildAuthCommand } = require('./authProfiles');
+const { detectCapabilities } = require('../plugins/capabilities');
 const { ConnectionStateMachine, STATES, TERMINAL } = require('./connectionState');
 const { ClientTickScheduler, MOVEMENT_PACKETS } = require('./clientTicker');
 const { installAsyncDecompression } = require('../protocol/asyncDecompress');
@@ -61,7 +63,12 @@ class RealBot extends BotAdapter {
     now = Date.now,
     authDelayMs = config.server.authDelayMs, authTimeoutMs = config.server.authTimeoutMs,
     authEnabled = undefined, registerOnFirstJoin = config.server.registerOnFirstJoin,
-    authCommandsEnabled = config.server.authCommandsEnabled
+    authCommandsEnabled = config.server.authCommandsEnabled,
+    authProfile = config.server.authProfile,
+    credentials = null,
+    authRegistrationEnabled = config.server.authRegistrationEnabled,
+    authMaxAttempts = config.server.authMaxAttempts,
+    authRetryDelayMs = config.server.authRetryDelayMs
   } = {}) {
     super({ name, logger: logger || new Logger({ level: config.logging.level }), speed: 1 });
     if (!BOT_NAMES.includes(name)) throw new Error(`refusing to create a bot outside the fixed team roster: ${name}`);
@@ -76,21 +83,51 @@ class RealBot extends BotAdapter {
     this.configurationTimeoutMs = configurationTimeoutMs;
     this.loginTimeoutMs = config.server.loginTimeoutMs;
     this.spawnTimeoutMs = config.server.spawnTimeoutMs;
-    // Automatic password auth is hard-disabled by operator directive. The
-    // explicit option exists so the historical auth unit tests can exercise
-    // the command parser in isolation; the runtime never passes it.
-    this.authCommandsEnabled = authCommandsEnabled === true;
-    // Historical auth-parser tests opt in explicitly. The runtime never sets
-    // authCommandsEnabled, so this cannot re-enable password auth from .env.
+    // A profile is the authority. `authCommandsEnabled:true` is retained for
+    // the historical parser tests and selects the generic profile; the runtime
+    // passes MC_AUTH_PROFILE instead. No profile and no legacy flag means the
+    // server's spawn is accepted without sending a single chat command.
+    const selectedProfile = authProfile && authProfile !== 'none'
+      ? authProfile
+      : authCommandsEnabled === true ? 'generic' : 'none';
+    const credentialSource = credentials && typeof credentials === 'object' ? credentials : {};
+    if (typeof credentialSource.password === 'string' && credentialSource.password) {
+      loginPassword = credentialSource.password;
+      registerPassword = credentialSource.registerPassword || credentialSource.password;
+    }
+    this.loginPassword = loginPassword;
+    this.registerPassword = registerPassword;
+    this.authProfile = resolveAuthProfile(selectedProfile, {
+      maxAttempts: selectedProfile === 'generic' && authCommandsEnabled === true ? 3 : authMaxAttempts,
+      retryDelayMs: authRetryDelayMs,
+      registrationEnabled: authRegistrationEnabled === true || registerOnFirstJoin === true,
+      loginTemplate: config.server.loginCommand,
+      registerTemplate: config.server.registerCommand
+    });
+    const profileWantsAuth = selectedProfile !== 'none' && this.authProfile.pluginAuth;
+    this.authCommandsEnabled = authEnabled === false ? false : (authCommandsEnabled === true || profileWantsAuth);
     this.authEnabled = this.authCommandsEnabled
-      && authEnabled !== false
-      && (authEnabled === true || Boolean(loginPassword || registerPassword));
-    this.authMode = this.authCommandsEnabled ? 'password' : 'disabled';
+      && (authEnabled === true || profileWantsAuth || Boolean(loginPassword || registerPassword));
+    this.authMode = this.authCommandsEnabled ? this.authProfile.id : 'disabled';
+    this.connectionAuth = this.authProfile.connectionAuth || auth;
+    // An explicit offline/microsoft profile is the connection authority; do not
+    // advertise a mode that the actual mineflayer socket is not using.
+    this.auth = this.connectionAuth;
     this.registerOnFirstJoin = this.authCommandsEnabled && registerOnFirstJoin === true;
+    // Registration is a separate, explicit opt-in. `registerOnFirstJoin` is the
+    // legacy pre-register switch; auto-create after a "not registered" reply is
+    // allowed only when the operator enabled registration.
+    this.authRegistrationEnabled = this.authProfile.registrationEnabled === true
+      || authRegistrationEnabled === true
+      || registerOnFirstJoin === true;
     this.hasRegistered = false;
-    this.authRequiredManual = false;
+    this.authRequiredManual = this.authProfile.id === 'manual';
     this.authPrompt = null;
     this.authPromptAt = 0;
+    this.authPromptSeen = false;
+    this.authPendingChallenge = false;
+    this.authAttempts = 0;
+    this.authChallengeWaiters = new Set();
     this.authDelayMs = authDelayMs;
     this.authTimeoutMs = authTimeoutMs;
     this._mineflayer = mineflayer;
@@ -99,7 +136,7 @@ class RealBot extends BotAdapter {
     this.connected = false;
     this.spawned = false;
     this.authenticated = false;
-    this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
+    this.passwordRequired = this.authEnabled && this.authProfile.pluginAuth === true;
     this.authConfirmed = false;
     this.lastError = null;
     // Updated by every inbound packet. The dashboard uses it to distinguish a
@@ -185,6 +222,7 @@ class RealBot extends BotAdapter {
     this._lastInvalidMovementWarnAt = 0;
     this.kickKind = null;
     this.retryPaused = false;
+    this.movementKickStrikes = 0;
     this._blockCache = new Map();
     this._inventoryDirty = false;
     this._lastHealth = undefined;
@@ -736,6 +774,8 @@ class RealBot extends BotAdapter {
     const failure = { ok: false, code: 'AUTH_ABORTED', error: error || 'connection lost during password authentication', kind: 'connection' };
     for (const finish of [...this._authWaiters]) finish(failure);
     this._authWaiters.clear();
+    for (const waiter of [...this.authChallengeWaiters]) waiter.abort(failure);
+    this.authChallengeWaiters.clear();
   }
 
   _failTcpWaiters(error, code = 'CONNECTION_CLOSED') {
@@ -811,11 +851,13 @@ class RealBot extends BotAdapter {
     this.authenticated = false;
     this.kickKind = null;
     this.retryPaused = false;
-    this.passwordRequired = this.authEnabled && Boolean(this.loginPassword || this.registerPassword);
+    this.passwordRequired = this.authEnabled && this.authProfile.pluginAuth === true;
     this.authConfirmed = false;
-    this.authRequiredManual = false;
+    this.authRequiredManual = this.authProfile.id === 'manual';
     this.authPrompt = null;
     this.authPromptAt = 0;
+    this.authPromptSeen = false;
+    this.authAttempts = 0;
     this.lastError = null;
     this.lastEventAt = 0;
     this._movementLock = false;
@@ -993,6 +1035,23 @@ class RealBot extends BotAdapter {
     if (auth.ok === false) {
       return this._failConnect(auth.code || 'AUTH_FAILED', auth.error, 'auth', { authFailed: true });
     }
+    if (auth.pending) {
+      // A manual profile keeps a healthy spawned socket open without claiming
+      // gameplay readiness. The caller must not turn this into a reconnect
+      // loop; status reports AUTH_REQUIRED_MANUAL until an operator acts.
+      this.authenticated = false;
+      this.authRequiredManual = true;
+      this.connection.setStage('auth', { detail: 'waiting for manual authentication' });
+      return {
+        ...result,
+        ok: true,
+        ready: false,
+        authenticated: false,
+        authPending: true,
+        manual: Boolean(auth.manual),
+        mode: this.authProfile.id
+      };
+    }
     // Authentication success is monotonic for this session. A respawn packet
     // that arrives later may not undo it.
     this._applySpawnAuth();
@@ -1000,6 +1059,7 @@ class RealBot extends BotAdapter {
       return this._failConnect('NOT_READY', this.lastError || 'connection closed before the bot became ready', this.connection.stage);
     }
     this._transition(STATES.READY, 'ready: socket, spawn and authentication verified', { stage: 'ready' });
+    this.movementKickStrikes = 0;
     result.authenticated = this.authenticated;
     this.lastSessionEndedAt = 0;
     this.stageTimings.totalMs = this.now() - this.connectStartedAt;
@@ -1296,8 +1356,20 @@ class RealBot extends BotAdapter {
       if (kick.pauseRetries) {
         this.logger.error(`[${this.name}] automatic retries paused after ${kick.kind} kick; an explicit dashboard reconnect is required`);
       }
-      if (/invalid move player packet|invalid_player_movement|moved wrongly/i.test(this.lastError)) {
-        this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
+      if (kick.kind === 'movement') {
+        // The server version is already validated before any login socket is
+        // opened. Repeating "set MC_VERSION" here sent operators down the wrong
+        // path; report the actual movement state instead.
+        const movement = movementRetryVerdict((this.movementKickStrikes || 0) + 1);
+        this.movementKickStrikes = movement.strikes;
+        this.logger.warn(`[${this.name}] movement rejected at generation ${this.connection.generation} `
+          + `(owner=${this._motion ? this._motion.owner : 'none'}, priority=${this._motion ? this._motion.priority : 'none'}, `
+          + `version=${this.version}, strike=${movement.strikes}/${MOVEMENT_KICK_PAUSE_THRESHOLD}); this is not treated as a version guess`);
+        if (movement.pause) {
+          this.retryPaused = true;
+          this.lastError = `movement rejected ${movement.strikes} consecutive times; automatic retries paused`;
+          this.logger.error(`[${this.name}] movement stayed invalid after ${movement.strikes} sessions; automatic retries paused until an explicit reconnect`);
+        }
       }
       // The lifecycle is already terminal and its end event is ignored by the
       // generation gate. Close the library client explicitly so a kicked bot
@@ -1535,18 +1607,30 @@ class RealBot extends BotAdapter {
     this._lastChatIngest = { text: plain, at };
     this._markEvent();
     const safe = this._redact(plain);
-    // The server may demand manual authentication. Record it as a visible
-    // state, keep the healthy socket open, and block gameplay. Never send a
-    // password command: that is exactly what produced the rejected /login
-    // storm on 26.1.
-    if (!this.authCommandsEnabled && config.server.authManualPromptRe && config.server.authManualPromptRe.test(plain)) {
-      const first = !this.authRequiredManual;
-      this.authRequiredManual = true;
+    // Every server authentication signal is classified once. A configured
+    // profile waits for a genuine prompt before it sends a credential. With no
+    // profile (the default) the prompt only raises a visible manual-auth state;
+    // no password command is ever sent.
+    const authText = classifyAuthText(plain, this.authProfile);
+    if (authText.prompt) {
+      const first = !this.authPromptSeen;
+      this.authPromptSeen = true;
       this.authPrompt = safe.slice(0, 240);
       this.authPromptAt = at;
-      this.authenticated = false;
-      this.lastError = `manual authentication required by the server: ${this.authPrompt}`;
-      if (first) this.logger.warn(`[${this.name}] AUTH_REQUIRED_MANUAL: ${this.authPrompt}; automatic commands are disabled and the session stays connected`);
+      for (const waiter of [...this.authChallengeWaiters]) waiter.onPrompt(authText);
+      this.authChallengeWaiters.clear();
+      if (!this.authCommandsEnabled) {
+        this.authRequiredManual = true;
+        this.authenticated = false;
+        this.lastError = `manual authentication required by the server: ${this.authPrompt}`;
+        if (first) this.logger.warn(`[${this.name}] AUTH_REQUIRED_MANUAL: ${this.authPrompt}; no auth profile is enabled and the session stays connected`);
+      } else if (first) {
+        this.logger.info(`[${this.name}] AUTH_CHALLENGE_DETECTED (${this.authProfile.id}): ${this.authPrompt}`);
+      }
+    } else if (authText.kind === 'failure' && !this.authCommandsEnabled) {
+      // A wrong-password line is diagnostic even when no profile is active.
+      // It never causes a reconnect loop.
+      this.lastError = `server reported an authentication problem: ${safe.slice(0, 240)}`;
     }
     if (this.name && plain.includes(this.name) && /(slain|killed|shot|blown up|burned|burn|drowned|fell|withered|starved|suffocat|died|death|magic|fireball|pummeled|impaled|stung|frozen)/i.test(plain)) {
       this.lastDeathMessage = plain.slice(0, 240);
@@ -1793,6 +1877,32 @@ class RealBot extends BotAdapter {
     });
   }
 
+  /** Wait for a real server auth prompt; never assume one exists. */
+  _waitForAuthChallenge(timeoutMs = this.authTimeoutMs) {
+    if (this.authPromptSeen) return Promise.resolve({ ok: true, seen: true });
+    if (!this.authCommandsEnabled) return Promise.resolve({ ok: false, seen: false, code: 'AUTH_DISABLED' });
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.authChallengeWaiters.delete(waiter);
+        resolve(value);
+      };
+      const onPrompt = () => finish({ ok: true, seen: true, prompt: this.authPrompt });
+      const onAbort = (failure) => finish({ ...failure, seen: false });
+      const waiter = { onPrompt, abort: onAbort };
+      this.authChallengeWaiters.add(waiter);
+      const timer = setTimeout(() => finish({
+        ok: false,
+        seen: false,
+        code: 'AUTH_PROMPT_TIMEOUT',
+        error: `no ${this.authProfile.label} authentication prompt was observed within ${timeoutMs}ms; no password was sent`
+      }), Math.max(250, timeoutMs));
+    });
+  }
+
   /**
    * Send an auth command and wait for the server's chat confirmation.
    *
@@ -1810,11 +1920,6 @@ class RealBot extends BotAdapter {
         error: 'automatic /login and /register are disabled; authentication must be performed manually'
       });
     }
-    const success = kind === 'register'
-      ? /successfully registered|registration (?:successful|complete)|you are now registered|already registered|now logged in|successfully logged in|already logged in|login successful|successfully authenticated|authentication successful|you (?:have been|are) (?:logged in|authenticated)/i
-      : /successfully logged in|you are now logged in|now logged in|already logged in|welcome back|logged in successfully|login successful|logged in\.?$|successfully authenticated|authentication successful|you (?:have been|are) (?:logged in|authenticated)/i;
-
-    const failure = /wrong password|incorrect password|invalid password|password (?:is )?(?:wrong|incorrect)|not registered|please register|register first|too many (?:attempts|tries)|kicked|unknown command|unknown or incomplete command|usage:\s*\/login|authentication failed|login failed/i;
     return new Promise((resolve) => {
       let settled = false;
       let timer;
@@ -1835,16 +1940,20 @@ class RealBot extends BotAdapter {
         if (!clean) return;
         // The server may echo the submitted command; never carry a raw
         // password into the timeout error or the disconnect snapshot.
-        lastChat = this._redact(clean).slice(0, 240);
-        if (success.test(clean)) finish({ ok: true, kind, message: clean, alreadyRegistered: /already registered/i.test(clean) });
-        else if (failure.test(clean)) finish({ ok: false, error: clean, kind });
+        const safe = this._redact(clean);
+        lastChat = safe.slice(0, 240);
+        const verdict = classifyAuthText(clean, this.authProfile);
+        if (verdict.success) finish({ ok: true, kind, message: safe, alreadyRegistered: verdict.alreadyRegistered });
+        else if (verdict.failure || verdict.notRegistered) finish({ ok: false, error: safe, kind, code: verdict.notRegistered ? 'AUTH_NOT_REGISTERED' : 'AUTH_REJECTED' });
       });
       this._authWaiters.add(finish);
       this._authChatSeen = 0;
+      this.authAttempts = 0;
       const send = () => {
         if (settled) return;
         attempts += 1;
-        this.logger.info(`[${this.name}] auth ${kind}: sending command (password hidden, attempt ${attempts}, timeout=${this.authTimeoutMs}ms)`);
+        this.authAttempts = attempts;
+        this.logger.info(`[${this.name}] auth ${kind}: sending command (password hidden, attempt ${attempts}/${Math.max(1, Number(this.authProfile.maxAttempts) || 1)}, timeout=${this.authTimeoutMs}ms)`);
         try {
           const client = this.bot && this.bot._client;
           let sent;
@@ -1876,17 +1985,34 @@ class RealBot extends BotAdapter {
         error: `timed out after ${this.authTimeoutMs}ms waiting for ${kind} confirmation from the server`
           + (lastChat ? ` (last server chat: ${lastChat})` : ' (no chat reply was received)')
       }), this.authTimeoutMs);
-      const retryEveryMs = Math.max(250, Math.min(4000, Math.floor(this.authTimeoutMs / 3)));
+      const maxAttempts = Math.max(1, Number(this.authProfile.maxAttempts) || 1);
+      const configuredRetry = Number(this.authProfile.retryDelayMs) || 4000;
+      const retryEveryMs = Math.max(250, Math.min(configuredRetry, Math.floor(this.authTimeoutMs / 3)));
       send();
-      // A synchronous confirmation or send failure settles before the retry
-      // interval is armed; never create a timer that finish() has already
-      // missed, or the process keeps an auth waiter alive forever.
-      if (!settled && retryEveryMs < this.authTimeoutMs) retryTimer = setInterval(send, retryEveryMs);
+      // Bounded retries only. A server lockout is worse than a failed login,
+      // so the password is never re-sent indefinitely inside one timeout.
+      if (!settled && maxAttempts > 1 && retryEveryMs < this.authTimeoutMs) {
+        retryTimer = setInterval(() => {
+          if (settled) return;
+          if (attempts >= maxAttempts) {
+            clearInterval(retryTimer);
+            retryTimer = null;
+            return;
+          }
+          send();
+        }, retryEveryMs);
+      }
     });
   }
 
   async _handleLoginCommands() {
     if (!this.authCommandsEnabled) {
+      if (this.authProfile.id === 'manual') {
+        this.authenticated = false;
+        this.authRequiredManual = true;
+        this.lastError = this.lastError || 'manual authentication required; no command will be sent';
+        return { ok: true, required: true, pending: true, manual: true, mode: this.authProfile.id };
+      }
       // No password exchange is attempted in either direction. A spawned
       // session is considered accepted by the server; if it later prints a
       // manual-auth prompt, _ingestChatText raises AUTH_REQUIRED_MANUAL.
@@ -1898,11 +2024,19 @@ class RealBot extends BotAdapter {
       return { ok: true, required: false };
     }
     if (!this.bot || !this.connected || !this.spawned) return { ok: false, code: 'AUTH_DISCONNECTED', error: 'cannot authenticate before spawn' };
-    if (this.loginPassword && !/\{password\}/.test(config.server.loginCommand)) {
-      return { ok: false, code: 'AUTH_CONFIG', error: 'MC_LOGIN_COMMAND must contain {password}', kind: 'login' };
+    if (this.authProfile.requireChallenge && !this.authPromptSeen) {
+      this.logger.info(`[${this.name}] auth ${this.authProfile.id}: waiting for the server challenge; no password sent yet`);
+      const challenge = await this._waitForAuthChallenge(this.authTimeoutMs);
+      if (!challenge.ok) return { ok: false, ...challenge };
     }
-    if (this.registerPassword && !/\{password\}/.test(config.server.registerCommand)) {
-      return { ok: false, code: 'AUTH_CONFIG', error: 'MC_REGISTER_COMMAND must contain {password}', kind: 'register' };
+    if (!this.loginPassword && !this.registerPassword) {
+      return { ok: false, code: 'AUTH_MISSING_CREDENTIAL', kind: 'login', error: `profile ${this.authProfile.id} requires a per-bot credential, but none is configured` };
+    }
+    if (this.loginPassword && !/\{password\}/.test(this.authProfile.loginTemplate)) {
+      return { ok: false, code: 'AUTH_CONFIG', error: 'login template must contain {password}', kind: 'login' };
+    }
+    if (this.registerPassword && !/\{password\}/.test(this.authProfile.registerTemplate)) {
+      return { ok: false, code: 'AUTH_CONFIG', error: 'register template must contain {password}', kind: 'register' };
     }
     this._authChatSeen = 0;
     // Freeze movement until the password is accepted. physicsEnabled alone is
@@ -1918,7 +2052,7 @@ class RealBot extends BotAdapter {
     // bot already has an account; /register only earns "already registered".
     if (this.registerPassword && this.registerOnFirstJoin && !this.hasRegistered) {
       this.logger.info(`[${this.name}] first join: sending /register (password hidden)`);
-      const command = config.server.registerCommand.replace(/\{password\}/g, this.registerPassword);
+      const command = buildAuthCommand(this.authProfile.registerTemplate, this.registerPassword);
       const result = await this._sendAuthCommand(command, 'register');
       if (!result.ok) return result;
       this.hasRegistered = true;
@@ -1934,14 +2068,14 @@ class RealBot extends BotAdapter {
       return { ok: false, error: 'no login password configured; set MC_LOGIN_PASSWORD', kind: 'login' };
     }
     if (this.loginPassword) {
-      const command = config.server.loginCommand.replace(/\{password\}/g, this.loginPassword);
+      const command = buildAuthCommand(this.authProfile.loginTemplate, this.loginPassword);
       let result = await this._sendAuthCommand(command, 'login');
       // Existing accounts are login-only. A brand-new account (or one that was
       // never created) answers "You are not registered."; create it once and
       // retry the login instead of retrying forever.
-      if (!result.ok && this.registerPassword && /not registered|please register|register first/i.test(result.error || '')) {
+      if (!result.ok && this.authRegistrationEnabled && this.registerPassword && /not registered|please register|register first/i.test(result.error || '')) {
         this.logger.info(`[${this.name}] login says not registered; sending /register once, then /login`);
-        const registerCommand = config.server.registerCommand.replace(/\{password\}/g, this.registerPassword);
+        const registerCommand = buildAuthCommand(this.authProfile.registerTemplate, this.registerPassword);
         const created = await this._sendAuthCommand(registerCommand, 'register');
         if (!created.ok) return created;
         this.hasRegistered = true;
@@ -2970,18 +3104,45 @@ class RealBot extends BotAdapter {
     return { ok: true, sessionId: snapshot.generation };
   }
 
+  /** Server brand exposed by the play protocol; null before login. */
+  get serverBrand() {
+    return this.bot && this.bot.game && typeof this.bot.game.serverBrand === 'string'
+      ? this.bot.game.serverBrand
+      : null;
+  }
+
+  /** Conservative plugin/protocol capabilities, never guessed from a name list. */
+  pluginCapabilities() {
+    return detectCapabilities({
+      brand: this.serverBrand,
+      protocol: this.bot && Number.isFinite(Number(this.bot.protocolVersion)) ? Number(this.bot.protocolVersion) : null,
+      version: this.version,
+      authProfile: this.authProfile,
+      authPromptSeen: this.authPromptSeen
+    });
+  }
+
   summary() {
     const base = super.summary();
     return {
       ...base,
       ready: this.ready,
       authMode: this.authMode,
+      authProfile: this.authProfile.id,
+      authProfileLabel: this.authProfile.label,
+      connectionAuth: this.connectionAuth,
       authCommandsEnabled: this.authCommandsEnabled,
+      authRegistrationEnabled: this.authProfile.registrationEnabled === true,
+      authMaxAttempts: this.authProfile.maxAttempts,
+      authAttempts: this.authAttempts,
+      authPromptSeen: this.authPromptSeen,
       passwordRequired: this.passwordRequired,
       authenticated: this.authenticated,
       authRequiredManual: this.authRequiredManual,
       authPrompt: this.authPrompt,
       authPromptAt: this.authPromptAt,
+      serverBrand: this.serverBrand,
+      compatibilities: this.pluginCapabilities(),
       host: this.host,
       port: this.port,
       version: this.version,

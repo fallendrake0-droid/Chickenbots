@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy to .mc-auth.json (ignored by Git). Replace every value. Never commit real credentials.",
+  "________": { "password": "replace-me" },
+  "10101000": { "password": "replace-me" },
+  "01010100": { "password": "replace-me" },
+  "11001100": { "password": "replace-me" },
+  "00110000": { "password": "replace-me" },
+  "11101000": { "password": "replace-me" },
+  "11101010": { "password": "replace-me" },
+  "10001000": { "password": "replace-me" },
+  "11001010": { "password": "replace-me" },
+  "11101001": { "password": "replace-me" }
+}

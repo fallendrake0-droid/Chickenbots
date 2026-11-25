@@ -36,6 +36,25 @@ const STARTER_KIT = {
  * action controllers, the command handler and the dashboard. Autonomy cannot
  * start until every configured bot has connected, authenticated and spawned.
  */
+const PERMANENT_AUTH_CODES = new Set([
+  'AUTH_REJECTED',
+  'AUTH_NOT_REGISTERED',
+  'AUTH_MISSING_CREDENTIAL',
+  'AUTH_PROMPT_TIMEOUT'
+]);
+
+/**
+ * A permanent authentication failure must not be retried by the supervisor.
+ * A bare AUTH_FAILED is only permanent when it names a credential/auth cause;
+ * transient confirmation timeouts keep their normal bounded retry.
+ */
+function shouldPauseAuthRetry(result) {
+  if (!result || result.ok) return false;
+  if (PERMANENT_AUTH_CODES.has(result.code)) return true;
+  if (result.code !== 'AUTH_FAILED') return false;
+  return /password|login|register|auth/i.test(String(result.error || ''));
+}
+
 class TeamRuntime {
   constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion, now = Date.now, random = Math.random } = {}) {
     this.simulate = Boolean(simulate);
@@ -180,7 +199,15 @@ class TeamRuntime {
       this.homeAnchored = true;
     } else {
       for (const name of BOT_NAMES) {
-        const bot = new RealBot({ name, logger: this.logger });
+        const bot = new RealBot({
+          name,
+          logger: this.logger,
+          authProfile: config.server.authProfile,
+          credentials: config.server.credentials ? config.server.credentials[name] : null,
+          authRegistrationEnabled: config.server.authRegistrationEnabled,
+          authMaxAttempts: config.server.authMaxAttempts,
+          authRetryDelayMs: config.server.authRetryDelayMs
+        });
         this.bots.set(name, bot);
       }
       this.home = { x: 0, y: 64, z: 0 };
@@ -506,7 +533,7 @@ class TeamRuntime {
       release();
       if (this.shutdownRequested) { return { ok: false, error: 'shutting down' }; }
       const startedAt = Date.now();
-      this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.passwordRequired ? 'password' : 'none'} budgets: dns=${config.server.dnsTimeoutMs}ms tcp=${config.server.connectTimeoutMs}ms login=${config.server.loginTimeoutMs}ms configuration=${config.server.configurationTimeoutMs}ms spawn=${config.server.spawnTimeoutMs}ms`);
+      this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.authProfile ? bot.authProfile.id : 'none'}${bot.passwordRequired ? ' (credential)' : ''} budgets: dns=${config.server.dnsTimeoutMs}ms tcp=${config.server.connectTimeoutMs}ms login=${config.server.loginTimeoutMs}ms configuration=${config.server.configurationTimeoutMs}ms spawn=${config.server.spawnTimeoutMs}ms`);
       let result;
       try {
         result = await bot.connect();
@@ -525,16 +552,23 @@ class TeamRuntime {
         this.logger.error(`[${bot.name}] retries paused (${bot.kickKind || 'moderation'}); explicit reconnect required`);
         return { ok: false, error: pauseReason, paused: true, kickKind: bot.kickKind };
       }
-      // A rejected password will stay rejected. Retrying it on a timer can
-      // trip AuthMe's lockout, so pause until an operator fixes the credential
-      // and explicitly reconnects. Transient auth timeouts recover on retry.
-      if (!result.ok && result.code === 'AUTH_FAILED' && /password|login|register|auth/i.test(String(result.error || ''))) {
+      // A rejected password, missing credential or profile/challenge mismatch
+      // will stay rejected. Retrying on a timer can trip AuthMe's lockout, so
+      // pause until an operator fixes it and explicitly reconnects. A transient
+      // confirmation timeout still recovers on retry.
+      if (!result.ok && shouldPauseAuthRetry(result)) {
         const pauseReason = result.error || 'password authentication failed';
         bot.retryPaused = true;
         this.retryPausedBots.set(bot.name, pauseReason);
         this.connectionErrors[bot.name] = pauseReason;
-        this.logger.error(`[${bot.name}] authentication failed; automatic retries paused: ${pauseReason}`);
-        return { ok: false, error: pauseReason, paused: true, code: 'AUTH_FAILED' };
+        this.logger.error(`[${bot.name}] authentication failed (${result.code || 'AUTH_FAILED'}); automatic retries paused: ${pauseReason}`);
+        return { ok: false, error: pauseReason, paused: true, code: result.code || 'AUTH_FAILED' };
+      }
+      if (result.ok && result.authPending) {
+        const reason = `${bot.authProfile && bot.authProfile.label ? bot.authProfile.label : 'manual'} authentication required; no password command was sent`;
+        this.connectionErrors[bot.name] = reason;
+        this.logger.warn(`[${bot.name}] authentication pending: ${reason}; the spawned session stays open and gameplay is gated`);
+        return result;
       }
       if (result.ok && bot.ready) {
         delete this.connectionErrors[bot.name];
@@ -1033,7 +1067,7 @@ class TeamRuntime {
     this.intentionalDisconnects.delete(name);
     this.retryPausedBots.delete(name);
     bot.shuttingDown = false;
-    if (bot.retryPaused) { bot.retryPaused = false; bot.kickKind = null; }
+    if (bot.retryPaused) { bot.retryPaused = false; bot.kickKind = null; bot.movementKickStrikes = 0; }
 
     // Simulated adapters have no socket. Flip their flags so the dashboard
     // control still works in the deterministic demo.
@@ -1253,4 +1287,4 @@ async function createRuntime(options = {}) {
   return runtime;
 }
 
-module.exports = { TeamRuntime, createRuntime, STARTER_KIT };
+module.exports = { TeamRuntime, createRuntime, STARTER_KIT, shouldPauseAuthRetry, PERMANENT_AUTH_CODES };

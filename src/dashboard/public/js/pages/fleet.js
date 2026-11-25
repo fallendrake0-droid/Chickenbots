@@ -723,6 +723,8 @@ export const connectionsPage = {
                 <div class="card-body card-body--tight">
                   ${kvRows([
                     ['Stage', esc(`${c.stageLabel || c.stage || '—'}${c.stageElapsedMs != null ? ` · ${(c.stageElapsedMs / 1000).toFixed(1)}s` : ''}`)],
+                    ['Auth / edition', `${esc(row.authProfile || 'none')} · ${esc(row.connectionAuth || 'unknown')}${row.capabilities && row.capabilities.software ? ` · ${esc(row.capabilities.software.label)} (${esc(row.capabilities.software.confidence)})` : ''}`],
+                    ['Capabilities', row.capabilities ? `protocol ${esc(row.capabilities.protocol.status)} · auth ${esc(row.capabilities.auth.confidence)} · anti-cheat ${esc(row.capabilities.antiCheat.confidence)}` : 'not reported'],
                     ['Stage budget', c.stageTimeoutMs ? `${(c.stageTimeoutMs / 1000).toFixed(0)}s` : '—'],
                     ['Session elapsed', c.elapsedMs != null ? duration(c.elapsedMs) : '—'],
                     ['Keep-alive', `${num(keep.received || 0)} received · ${num(keep.replies || 0)} replied · max gap ${keep.maxGapMs ? duration(keep.maxGapMs) : '—'}`],

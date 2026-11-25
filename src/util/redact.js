@@ -13,7 +13,14 @@
 const { config } = require('../config');
 
 function knownSecrets() {
-  return [config.server.loginPassword, config.server.registerPassword, config.dashboard.token]
+  const perBot = [];
+  for (const credential of Object.values(config.server.credentials || {})) {
+    if (typeof credential === 'string') perBot.push(credential);
+    else if (credential && typeof credential === 'object') {
+      perBot.push(credential.password, credential.registerPassword);
+    }
+  }
+  return [config.server.loginPassword, config.server.registerPassword, config.dashboard.token, ...perBot]
     .filter((value) => typeof value === 'string' && value.length >= 4);
 }
 
