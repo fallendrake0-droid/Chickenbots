@@ -3,7 +3,7 @@
 const { config } = require('../config');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { isTeammate, isHostile: legacyHostile, moveAway } = require('./common');
+const { isTeammate, isHostile: legacyHostile, moveAway, STATUS_SCAN_BUDGET_MS } = require('./common');
 const { COMBAT_STATES, ACTION_PRIORITY, COMBAT_MODES } = require('../combat/constants');
 const { isHostile, isNeutral, isPlayer, profileFor } = require('../combat/mobs');
 const { selectWeapon, optimizeArmor, gearStatus } = require('../combat/equipment');
@@ -140,8 +140,11 @@ class CombatController {
   unprotect(name) { return this.pvp.unprotect(name); }
 
   /** Hostile/authorised entities only. Teammates and neutrals are filtered out. */
-  assess(radius = 16, { commitFocus = true, record = true } = {}) {
+  assess(radius = 16, { commitFocus = true, record = true, budgetMs = 0 } = {}) {
     if (record) this.stats.threatAssessments++;
+    const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
+    let scanned = 0;
+    let budgetExceeded = false;
     const raw = typeof this.bot.entitiesNear === 'function'
       ? this.bot.entitiesNear(radius)
       : [];
@@ -151,6 +154,7 @@ class CombatController {
       return { threats: [], count: 0, nearest: null, focus: null, health: this.bot.health, food: this.bot.food, outmatched: false, totems: this.totems.count(), pvpEnabled: this.pvp.enabled, state: this.state, invalidPosition: true };
     }
     for (const entity of raw) {
+      if (deadline && (++scanned & 31) === 0 && Date.now() >= deadline) { budgetExceeded = true; break; }
       if (!entity || entity.alive === false || !entity.position) continue;
       if (![entity.position.x, entity.position.y, entity.position.z].every((value) => Number.isFinite(Number(value)))) {
         this.stats.invalidEntityPositions = (this.stats.invalidEntityPositions || 0) + 1;
@@ -192,14 +196,45 @@ class CombatController {
       outmatched: threats.length >= 3 || threats.some((threat) => threat.profile.boss || threat.profile.keepDistance),
       totems: this.totems.count(),
       pvpEnabled: this.pvp.enabled,
-      state: this.state
+      state: this.state,
+      budgetExceeded
+    };
+  }
+
+  /**
+   * Cheap decision summary for team scheduling. It deliberately does not run
+   * assess() or gearStatus(): CombatTeam.assignRoles() called the full status
+   * for every bot every five ticks and that synchronous pass was the 5.7s
+   * launch-actions block in the live log.
+   */
+  summary() {
+    const bot = this.bot;
+    const armorPoints = typeof bot.armorPoints === 'function'
+      ? Number(bot.armorPoints() || 0)
+      : Number((this.armorPoints || 0));
+    const count = (name) => (typeof bot.countItem === 'function' ? Number(bot.countItem(name) || 0) : 0);
+    const ranged = count('bow') > 0 || count('crossbow') > 0;
+    const melee = typeof bot.bestToolFor === 'function' ? bot.bestToolFor('sword') : null;
+    const weapon = melee ? { ...(typeof melee === 'string' ? { name: melee } : melee), ranged: false } : null;
+    return {
+      bot: bot.name,
+      health: bot.health,
+      food: bot.food,
+      state: this.state,
+      armed: this.armed,
+      armorPoints,
+      armor: { points: armorPoints },
+      weapon,
+      loadout: { ranged, gear: { weapons: ranged ? [{ name: 'bow', ranged: true, available: true }] : [] } },
+      totems: this.totems ? this.totems.count() : count('totem_of_undying'),
+      pvpEnabled: this.pvp ? this.pvp.enabled : false
     };
   }
 
   status() {
     // Status is polled by the dashboard every second. It must not commit a
     // focus target, reset the focus hysteresis or inflate threat statistics.
-    const assessment = this.assess(16, { commitFocus: false, record: false });
+    const assessment = this.assess(16, { commitFocus: false, record: false, budgetMs: STATUS_SCAN_BUDGET_MS });
     const gear = gearStatus({ inventory: this.bot.inventory, meta: this.meta, target: this.target });
     return {
       bot: this.bot.name,
@@ -508,6 +543,16 @@ class CombatController {
   async engage(options = {}) {
     const maxAttacks = options.maxAttacks || 10;
     const maxTicks = options.maxTicks || Math.max(20, maxAttacks * 4);
+    // A deadline is checked between every blocking phase. It is propagated to
+    // pathfinding so a single unreachable goal cannot hold a safety slot for
+    // the whole 20-second Mineflayer default.
+    const deadlineAt = Number(options.deadlineAt)
+      || (Number(options.timeBudgetMs) > 0 ? Date.now() + Number(options.timeBudgetMs) : 0);
+    const remainingMs = () => deadlineAt ? Math.max(0, deadlineAt - Date.now()) : null;
+    const moveTimeout = (fallback = 8000) => {
+      const left = remainingMs();
+      return left === null ? fallback : Math.max(250, Math.min(fallback, left));
+    };
     this.stopRequested = false;
     this._setState('SCANNING');
     let assessment = this.assess(options.radius || 20);
@@ -544,10 +589,15 @@ class CombatController {
     let confirmedKill = false;
     while (ticks < maxTicks && !this.stopRequested) {
       ticks++;
+      if (deadlineAt && Date.now() >= deadlineAt) {
+        results.push({ action: 'deadline', ok: false, reason: 'safety/action budget exhausted' });
+        this._setState('DISENGAGED', 'action budget exhausted');
+        break;
+      }
       if (!this.ready) { this._setState('IDLE', 'bot not ready'); break; }
       const survival = await this.survivalPass(target);
       if (survival && survival.action === 'retreat') {
-        const retreat = await this.retreat(target, { reason: survival.reason });
+        const retreat = await this.retreat(target, { reason: survival.reason, deadlineAt });
         results.push({ action: 'retreat', ...retreat });
         break;
       }
@@ -593,10 +643,10 @@ class CombatController {
           ? Math.max(4, Math.min(8, target.profile.preferredRange || 6))
           : Math.min(3, target.profile?.preferredRange || 3);
         const move = planned && typeof this.bot.goTo === 'function'
-          ? await this.bot.goTo(destination, { range: wantsDistance ? desiredRange : 1.5 })
+          ? await this.bot.goTo(destination, { range: wantsDistance ? desiredRange : 1.5, timeoutMs: moveTimeout() })
           : typeof this.bot.goNear === 'function'
-            ? await this.bot.goNear(target, desiredRange)
-            : await this.bot.goTo(destination, { range: 2 });
+            ? await this.bot.goNear(target, desiredRange, { timeoutMs: moveTimeout() })
+            : await this.bot.goTo(destination, { range: 2, timeoutMs: moveTimeout() });
         if (move && move.ok === false) {
           results.push({ action: 'move', ok: false, error: move.error });
           this._setState('DISENGAGED', 'cannot reach target');
@@ -612,7 +662,7 @@ class CombatController {
       }
       const explosiveClose = Boolean(target.profile && target.profile.explosive && target.distance <= (target.profile.retreatBefore || 4));
       if (explosiveClose && this.bot.health <= 10) {
-        await this.retreat(target, { reason: 'explosive proximity and low health' });
+        await this.retreat(target, { reason: 'explosive proximity and low health', deadlineAt });
         results.push({ action: 'retreat', reason: 'explosive proximity and low health' });
         break;
       }
@@ -664,7 +714,12 @@ class CombatController {
         results.push({ action: 'killed', target: target.name || target.type, verified: true });
         break;
       }
-      await sleep(this.bot.speed ? Math.max(50, Math.round(1000 / (weapon.weapon.attackSpeed || 1))) : 0);
+      const attackDelay = this.bot.speed ? Math.max(50, Math.round(1000 / (weapon.weapon.attackSpeed || 1))) : 0;
+      if (attackDelay > 0 && remainingMs() !== null && remainingMs() < attackDelay) {
+        results.push({ action: 'deadline', ok: false, reason: 'safety/action budget exhausted before next attack' });
+        break;
+      }
+      await sleep(attackDelay);
     }
     this._setState('VERIFYING');
     const finalTarget = this.target;
@@ -706,7 +761,7 @@ class CombatController {
     return this.engage(options);
   }
 
-  async retreat(threat = null, { reason = null, team = false } = {}) {
+  async retreat(threat = null, { reason = null, team = false, deadlineAt = 0 } = {}) {
     this.stats.retreats++;
     this._setState('RETREATING', reason || 'low health');
     await this.totems.equip({ force: false }).catch(() => null);
@@ -716,7 +771,8 @@ class CombatController {
       : this.target && this.target.position
         ? this.target.position
         : { x: this.bot.position.x - 1, y: this.bot.position.y, z: this.bot.position.z - 1 };
-    const result = await moveAway(this.bot, origin, team ? 14 : 10, { priority: 'emergency', owner: 'combat-retreat', timeoutMs: 8000 });
+    const left = Number(deadlineAt) ? Math.max(1000, Math.min(8000, Number(deadlineAt) - Date.now())) : 8000;
+    const result = await moveAway(this.bot, origin, team ? 14 : 10, { priority: 'emergency', owner: 'combat-retreat', timeoutMs: left });
     if (this.policy.autoShield && this.bot.useShield && this.totems.offhand() !== 'totem_of_undying') await this.bot.useShield(true);
     const away = threat && threat.position ? distance(this.bot.position, threat.position) : null;
     this.lastAction = 'retreated';
@@ -746,14 +802,15 @@ class CombatController {
     return { ok: result.ok !== false, reason: 'no home set' };
   }
 
-  async protectTeammate(victim) {
+  async protectTeammate(victim, { deadlineAt = 0 } = {}) {
     if (!victim) return { ok: false, error: 'no teammate' };
     this.stats.rescues++;
     this._setState('APPROACHING', `protecting ${victim.bot.name}`);
-    await this.bot.goNear(victim.bot, 3);
+    const moveTimeout = Number(deadlineAt) ? Math.max(1000, Math.min(5000, Number(deadlineAt) - Date.now())) : 5000;
+    await this.bot.goNear(victim.bot, 3, { timeoutMs: moveTimeout, priority: 'recovery', owner: `team-rescue:${victim.bot.name}` });
     const threats = this.assess(12).threats.filter((threat) => distance(threat.position, victim.bot.position) <= 10);
     if (!threats.length) return { ok: true, protected: victim.bot.name, threats: 0 };
-    const result = await this.engage({ target: threats[0], maxAttacks: 6 });
+    const result = await this.engage({ target: threats[0], maxAttacks: 6, deadlineAt });
     return { ok: result.ok !== false, protected: victim.bot.name, threats: threats.length, engagement: result };
   }
 

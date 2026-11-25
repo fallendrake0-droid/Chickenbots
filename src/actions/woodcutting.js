@@ -2,7 +2,7 @@
 
 const { Logger } = require('../logger');
 const { config, BOT_NAMES } = require('../config');
-const { findBlocks } = require('./common');
+const { findBlocks, ACTION_SCAN_BUDGET_MS } = require('./common');
 const { inWorkZone, clampToWorkZone, outsideWorkZone, workZone } = require('../world/workZone');
 const { treeKey } = require('./reservations');
 
@@ -122,7 +122,9 @@ class WoodcuttingController {
   }
 
   findTrees({ radius = 24, limit = 10, types = null } = {}) {
-    const logs = findBlocks(this.bot, normalizeLogTypes(types), { radius, limit: 200 });
+    const logs = findBlocks(this.bot, normalizeLogTypes(types), {
+      radius, limit: 200, budgetMs: ACTION_SCAN_BUDGET_MS
+    });
     const groups = [];
     for (const log of logs) {
       let group = groups.find((g) => Math.abs(g.base.x - log.x) <= 1 && Math.abs(g.base.z - log.z) <= 1 && Math.abs(g.base.y - log.y) <= 24);
@@ -202,8 +204,17 @@ class WoodcuttingController {
     // and the only way a live dig uses the intended speed.
     if (typeof this.bot.equipBestTool === 'function') await this.bot.equipBestTool('axe').catch(() => null);
     const logs = [];
-    let y = base.y;
-    while (y < base.y + maxHeight) {
+    // The caller's base can be a log in the middle of a trunk: a budgeted
+    // discovery scan may have stopped before it reached the lowest log. Walk
+    // down first so a truncated scan never turns into a half-chopped tree.
+    let startY = base.y;
+    for (let step = 0; step < 32; step++) {
+      const below = this.bot.getBlock({ x: base.x, y: startY - 1, z: base.z });
+      if (!below || !LOG_PATTERN.test(below.name)) break;
+      startY--;
+    }
+    let y = startY;
+    while (y < startY + maxHeight) {
       const block = this.bot.getBlock({ x: base.x, y, z: base.z });
       if (!block || !LOG_PATTERN.test(block.name)) break;
       logs.push({ x: base.x, y, z: base.z, name: block.name });
@@ -350,6 +361,7 @@ class WoodcuttingController {
     let reserved = reservedAtScan;
     let lastError = null;
     for (let index = 0; index < maxTrees && !this.stopRequested; index++) {
+      await new Promise((resolve) => setImmediate(resolve));
       let selected = null;
       let lease = null;
       // Claims are atomic and synchronous: if two bots scanned the same trunk,

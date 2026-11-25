@@ -1,0 +1,201 @@
+{
+  "version": 1,
+  "source": "manifest.json",
+  "loaded": true,
+  "count": 10000,
+  "minimumRequired": 10000,
+  "meetsMinimum": true,
+  "uniqueGeometry": 10000,
+  "tiers": [
+    {
+      "tier": "Beginner",
+      "count": 939
+    },
+    {
+      "tier": "Novice",
+      "count": 2601
+    },
+    {
+      "tier": "Apprentice",
+      "count": 3384
+    },
+    {
+      "tier": "Intermediate",
+      "count": 1304
+    },
+    {
+      "tier": "Advanced",
+      "count": 682
+    },
+    {
+      "tier": "Expert",
+      "count": 505
+    },
+    {
+      "tier": "Master",
+      "count": 327
+    },
+    {
+      "tier": "Grandmaster",
+      "count": 258
+    }
+  ],
+  "categories": [
+    "academy",
+    "aqueduct",
+    "arcane_academy",
+    "barn",
+    "bridge",
+    "cabin",
+    "castle",
+    "cathedral_complex",
+    "chapel",
+    "citadel",
+    "city_block",
+    "colossal_castle",
+    "cottage",
+    "courtyard",
+    "dock",
+    "dojo",
+    "eternal_library",
+    "farm_shed",
+    "floating_citadel",
+    "floating_island",
+    "forge",
+    "fortress",
+    "fortress_city",
+    "fountain",
+    "garden",
+    "gatehouse",
+    "grand_station",
+    "grand_temple",
+    "greenhouse",
+    "guildhall",
+    "harbor",
+    "house",
+    "imperial_palace",
+    "inn",
+    "keep",
+    "kingdom",
+    "library",
+    "mansion",
+    "maze",
+    "mega_base",
+    "mega_castle",
+    "metropolis",
+    "mill",
+    "mine_entrance",
+    "mountain_keep",
+    "observatory",
+    "pagoda",
+    "palace",
+    "park",
+    "pier",
+    "plaza",
+    "pyramid",
+    "railway",
+    "road",
+    "royal_gardens",
+    "shelter",
+    "shrine",
+    "sky_city",
+    "sky_fortress",
+    "skyscraper",
+    "stable",
+    "station",
+    "subterranean_city",
+    "sunken_city",
+    "temple",
+    "titan_forge",
+    "treehouse",
+    "tunnel",
+    "underground_base",
+    "underground_kingdom",
+    "underground_metropolis",
+    "underground_room",
+    "villa",
+    "warehouse",
+    "watchtower",
+    "well",
+    "workshop",
+    "world_tree_palace"
+  ],
+  "blocks": {
+    "total": 27821660,
+    "min": 172,
+    "max": 79436,
+    "average": 2782
+  },
+  "topMaterials": [
+    {
+      "name": "stone",
+      "count": 4307396
+    },
+    {
+      "name": "smooth_stone",
+      "count": 2098916
+    },
+    {
+      "name": "stone_bricks",
+      "count": 2011680
+    },
+    {
+      "name": "cherry_planks",
+      "count": 1835316
+    },
+    {
+      "name": "oak_leaves",
+      "count": 1512069
+    },
+    {
+      "name": "quartz_block",
+      "count": 1507858
+    },
+    {
+      "name": "smooth_quartz",
+      "count": 1307627
+    },
+    {
+      "name": "spruce_planks",
+      "count": 1279290
+    },
+    {
+      "name": "deepslate_bricks",
+      "count": 901914
+    },
+    {
+      "name": "cobblestone",
+      "count": 752964
+    },
+    {
+      "name": "oak_planks",
+      "count": 692065
+    },
+    {
+      "name": "mossy_stone_bricks",
+      "count": 647122
+    },
+    {
+      "name": "deepslate_tiles",
+      "count": 604784
+    },
+    {
+      "name": "glass_pane",
+      "count": 500258
+    },
+    {
+      "name": "grass_block",
+      "count": 437490
+    }
+  ],
+  "dimensions": {
+    "maxWidth": 124,
+    "maxHeight": 92,
+    "maxLength": 94
+  },
+  "manifestGeneratedAt": "2026-11-24T21:19:53.813Z",
+  "generationMs": 402528,
+  "rejected": 269,
+  "summarizedAt": "2026-11-25T19:55:20.866Z",
+  "summaryMs": 299
+}

@@ -191,3 +191,52 @@ deploy checks. No live server was reached.
 The supplied live log shows no disconnect/kick, and this sandbox still cannot
 reach the server. The new tests prove teamwork and boundaries in simulation,
 not live Mineflayer behaviour.
+
+## Round 34 — startup blocking, safety budgets and planner loops
+
+**Evidence:** 414/414 tests, lint 169 files, `commands:audit` 45/46
+(0 failures), `validate` 10/10, `deploy:check` 13/13, `check:secrets` 210
+files, and `npm run perf:status` in simulation. **No live result.**
+
+| ID | Priority | Area | Symptom | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-34-01 | P0 | Death attribution | A `chicken (5.8m)` was blamed for a death; a nearby zombie was treated as proof | `_recordDeath` inferred the killer from the nearest hostile when no damage evidence existed | Only `lastDeath.attacker`/death-message evidence may name a killer; otherwise `cause: UNKNOWN_CAUSE`, `confidence: unknown`. Threat context is retained but not promoted to a cause | `tests/recovery.test.js` nearest-entity and explicit-skeleton tests | FIXED (unit) |
+| BUG-34-02 | P0 | Dashboard cold start | First snapshot 622 ms; actions 580 ms | First `homeBase.status()` parsed the 20 MB manifest; `library.count` constructed/scanned `CustomSchematicStore`; builder status could run its first analysis | `loadedInMemory`/`knownCount`; status never lazily loads; `_warmStatusCaches()` parses manifest/custom store, every controller status and builder status before `dashboard.start()`, yielding every four calls | `dashboard-status.test.js`, `dashboard-performance.test.js`, `perf:status` p95 5 ms warm | FIXED (simulation) |
+| BUG-34-03 | P0 | `launch-actions` block | Supplied live log showed 9–18 s blocks labelled `launch-actions` | Controller synchronous prefixes ran inside `_launchBotWork`; team rescue/healing were awaited by `_tick` for up to 20 s | Start per-bot work on the next event-loop turn; dispatch team rescue/healing as tracked background work with 8 s/5 s budgets; include dispatches in drain/shutdown | `runtime-safety.test.js` | FIXED (unit); live timing UNVERIFIED |
+| BUG-34-04 | P0 | Safety duration | Safety stages 23.8–61.1 s; `action cancelled: exceeded 60000ms` | No safety deadline; combat engagement looped without a time bound; path calls could use 20 s defaults | `EMERGENCY_BUDGET_MS` (6000) becomes an absolute deadline through safety, retreat, recovery and combat; moves capped by remaining budget; watchdog cancels at budget+750 ms | `combat.test.js`, `recovery.test.js` | FIXED (unit) |
+| BUG-34-05 | P0 | Cancellation | A command could still wait behind combat or a player watch | `cancelCurrent()` stopped only mining/woodcutting/farming/players; `runExclusive` cancelled motion but not controller stop flags | `cancelCurrent()` stops combat too; `runExclusive` calls `_cancelBotWork` (controller stop + motion cancel) before the bounded drain | `recovery.test.js`, `runtime-safety.test.js` | FIXED (unit) |
+| BUG-34-06 | P0 | Zombie deaths at 0.8 m | Failed close-range escape started a 1.2 s cooldown and tried 9–13 m paths while already in melee | Rate limit applied to failures; first escape target too far to path under attack | Short first hops (4/7/10 m, 900/1400/1800 ms) and retry on the next 750 ms safety pass when the previous response failed | `recovery.test.js` failed-escape retry test | FIXED (unit); live timing UNVERIFIED |
+| BUG-34-07 | P1 | Auto-planner | Planner recreated the same doomed objective on a 60 s loop; planning state always said `stopped:false` | Failure evidence was not retained; no terminal stop condition | Objective stores `blockedReason`/`failure`; three consecutive failures enter a 30-minute paused state with the exact reason, exposed as `team.planning.{stopped,blockedUntil,blockedReason,lastFailure}` | `audit-regressions.test.js` three-failure test | FIXED (unit) |
+| BUG-34-08 | P0 | Process resilience | A missed rejection killed the process and all five sessions | `unhandledRejection` was wired to the fatal shutdown path | Rejections are logged with stack and the runtime continues; uncaught synchronous exceptions remain fatal | `src/index.js` | FIXED (code) |
+| BUG-34-09 | P1 | Team rescue | Rescue/healing held the autonomy tick | Awaited by `_tick`; goNear used defaults | Independent dispatch with one-per-kind guard and 8 s/5 s deadlines; bounded move in `protectTeammate`/`assistHealing` | `runtime-safety.test.js` | FIXED (unit) |
+| BUG-34-10 | P1 | Reports | Required performance/plugin/auth reports were absent | No artifact | Added `PERFORMANCE_REPORT.md`, `PLUGIN_COMPATIBILITY.md`, `AUTHENTICATION_REPORT.md`; updated live acceptance counts and conditions | files in repo | DONE |
+| BUG-34-11 | P0 | Event-loop p99 | Simulation p99 367–446 ms (max 648 ms); phase reported `launch-actions` | Mine/chop action scans were unbudgeted, checked the deadline only every 32 lookups, scanned bottom-up, and fast adapters ran whole quotas as microtasks | `ACTION_SCAN_BUDGET_MS=6`, `STATUS_SCAN_BUDGET_MS=2`, near-first axis scan, deadline before every lookup, `setImmediate` yield per target; routine event-loop counters reset after startup with `startupEventLoop` retained | `dashboard-performance.test.js`; 8 s simulation window p99 41.5 ms, max 52.6 ms | FIXED (simulation) |
+
+**Still open:** live event-loop p99, live `launch-actions` timing, live zombie
+death loop, real AuthMe/SimpleAuth challenge, Geyser/ViaVersion/GrimAC, and all
+browser criteria. `BUG-27-10` remains OPEN for live evidence;
+`BUG-27-12` remains UNVERIFIED LIVE. The simulation numbers above are not a
+substitute for the supplied live log.
+
+## Round 35 — live snapshot cache, safety ceiling and in-place planner retry
+
+**Evidence:** 420/420 tests, lint 171 files, `commands:audit` 45/46
+(0 failures), `validate` 10/10, `deploy:check` 13/13, `check:secrets` 213
+files, `perf:status` and a local dashboard run. **No live result.**
+
+| ID | Priority | Area | Symptom (live log) | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-35-01 | P0 | Dashboard `actions` | Snapshot 5208 ms with `actions=4237`; two more >1 s | Every snapshot called all twelve `controller.status()` methods for five bots, including live scans | `BotActions` cache; runtime refreshes one controller per bot per tick on `setImmediate`; snapshot is cache-only and exposes `freshness` | `/api/state` `sections.actions` 0–1 ms; cache test forbids controller calls | FIXED (simulation) |
+| BUG-35-02 | P0 | `launch-actions` 5691.7 ms | Role assignment/construction prefixes attributed to the action launch phase | `assignRoles()` called full combat status for every bot synchronously; helpers ran as microtasks/inline | Lightweight `CombatController.summary()`; role assignment, team work and construction auto-advance start on `setImmediate` with overlap guards | `combat.test.js`, `runtime-safety.test.js` | FIXED (unit); live timing UNVERIFIED |
+| BUG-35-03 | P0 | Safety 60.3 s | `threat` 18.1 s and 60.3 s, `action cancelled: exceeded 60000ms` | A single adapter await could ignore controller deadlines and keep the slot | `safetyTick()` races the pass at `EMERGENCY_BUDGET_MS + 250` and cancels controller/motion; slot is released | hanging-safety regression test; 1 s budget test | FIXED (unit) |
+| BUG-35-04 | P0 | Planner duplication | Same `BUILD A PERMANENT SURVIVAL BASE` recreated at 19:26, 19:35, 19:39 | Failed objective was forgotten and `createSurvivalBasePlan()` minted a new id | `planReopen` state plus `TaskBoard.reopenObjective()`; retries and the 30-minute backoff reuse the same objective id | `audit-regressions.test.js` repeated-failure and in-place retry tests | FIXED (unit) |
+| BUG-35-05 | P0 | Death attribution | `cause: item (1.3m)` | Health-drop handler named any nearest entity; object causes were accepted | Only player/hostile within 4.5 m, `proximity` evidence, `likely`; message wins; `item`/`object` → `UNKNOWN_CAUSE` | `recovery.test.js` item and nearest-entity cases | FIXED (unit) |
+| BUG-35-06 | P1 | `FARM_CROP` 11–26 s | 4441.8 ms event-loop block during FARM_CROP | 49×49×17 soil scans and unbounded harvest scans inside one action | Harvest uses `ACTION_SCAN_BUDGET_MS`; farm scans 25 ms, near-first, yield and stop per cell | `farming.test.js`; no multi-second scan remains | FIXED (simulation); live timing UNVERIFIED |
+| BUG-35-07 | P0 | Startup 7236 ms | Schematic library ready in 7236 ms | 20 MB manifest `JSON.parse` before the dashboard binds | Generated 3.3 KB `summary.json`; startup/status/diagnostics/counts use it; manifest stays lazy | startup log 38 ms; `dashboard-status.test.js` asserts no manifest load | FIXED (simulation) |
+| BUG-35-08 | P1 | `state-sync` 1041.8 ms | One state-sync block per second under load | `summary()` rescanned all entities for threat count every tick | Safety pass records its assessment; adapter reuses it for 5 s | `controllers.test.js` no-rescan test | FIXED (unit) |
+| BUG-35-10 | P1 | Woodcutting | A budgeted tree scan stopped mid-trunk; `tick` cut 3 of 4 logs in a cold run | `findTrees()` uses the 6 ms scan budget, so `base.y` could be an upper log; `chopTree()` only scanned upward from the reported base | `chopTree()` now walks down up to 32 blocks to the true stump before cutting; regression test chops from a middle log | `woodcutting-safety.test.js` (7/7, 20 consecutive cold runs) | FIXED (unit) |
+| BUG-35-09 | P1 | Startup warm-up | Warm-up paid a 370 ms manifest parse on every start | Eager cache warm-up walked every controller | Warm-up now fills controller caches only (5 ms) because summary supplies library facts | `perf:status` warm-up 5 ms | FIXED (simulation) |
+
+**Still open:** every live criterion in `LIVE_ACCEPTANCE_REPORT.md`; live
+`launch-actions`/`FARM_CROP`/safety timing, EPIPE/reconnect, AuthMe/SimpleAuth,
+Geyser/ViaVersion/GrimAC, browser/canvas, and `BUG-27-10`/`BUG-27-12`.

@@ -132,7 +132,15 @@ async function main() {
   };
   process.on('SIGINT', () => shutdown('Received SIGINT'));
   process.on('SIGTERM', () => shutdown('Received SIGTERM'));
-  process.on('unhandledRejection', (reason) => fatal('unhandled rejection', reason));
+  // A missed rejection (mineflayer-pathfinder stopping a superseded goal is
+  // the common one) must not take five healthy sessions down. Log it with the
+  // stack for a real fix; the per-action watchdog still bounds the task and
+  // connection supervision keeps running. Uncaught synchronous exceptions stay
+  // fatal because process state may be half-applied.
+  process.on('unhandledRejection', (reason) => {
+    const detail = reason && reason.stack ? reason.stack : (reason && reason.message ? reason.message : String(reason));
+    logger.error(`unhandled rejection (runtime continues): ${detail}`);
+  });
   process.on('uncaughtException', (err) => fatal('uncaught exception', err));
   return 0;
 }

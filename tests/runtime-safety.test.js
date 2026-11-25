@@ -23,6 +23,7 @@ test('ready bots run safety ticks while the team is still joining', async () => 
   runtime.ticking = false;
   runtime.running = true;
   await runtime._tick();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls, ['ready']);
   // The team view must not keep four disconnected bots green while the gate is
   // closed; coordinator state is synchronised before the autonomy check.
@@ -326,7 +327,8 @@ test('pre-join safety is scheduled per bot and never blocks the runtime tick', a
   await runtime._tick();
   const elapsed = Date.now() - began;
   assert.ok(elapsed < 150, `_tick returned in ${elapsed}ms instead of waiting for the safety action`);
-  assert.equal(started, 1, 'the safety action really started');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started, 1, 'the safety action really started on the next turn');
   assert.equal(runtime.botSafety.has(bot.name), true, 'the per-bot map prevents a second overlapping pass');
   await Promise.allSettled([...runtime.botSafety.values()]);
   assert.equal(runtime.botSafety.has(bot.name), false, 'the slot is released when the action settles');
@@ -339,4 +341,19 @@ test('per-stage safety timings survive for the dashboard diagnostics', () => {
   assert.equal(stored.totalMs, 12);
   assert.deepEqual(stored.stages, { assess: 1, survival: 8, defend: 3 });
   assert.ok(stored.at > 0);
+});
+
+test('team rescue and healing are dispatched, never awaited by the tick', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const started = Date.now();
+  const task = runtime._dispatchTeamWork('rescue', () => gate);
+  assert.ok(task, 'the work is dispatched');
+  assert.ok(Date.now() - started < 100, 'dispatch returns immediately');
+  assert.equal(runtime._dispatchTeamWork('rescue', () => gate), null, 'one rescue at a time');
+  assert.equal(runtime.teamDispatches.size, 1);
+  release({ ok: true });
+  await task;
+  assert.equal(runtime.teamDispatches.size, 0);
 });

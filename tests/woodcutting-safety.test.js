@@ -79,6 +79,20 @@ test('chopping starts at the base, so a tall trunk yields reachable logs instead
   assert.equal(bot.getBlock({ x: 0, y: 70, z: 0 }).name, 'oak_log');
 });
 
+test('a truncated scan still chops the whole trunk from a middle log', async () => {
+  const { MockWorld } = require('../src/bot/mockWorld');
+  const { MockBot } = require('../src/bot/mockBot');
+  const world = new MockWorld({ flat: true, seed: 904 });
+  for (let y = 64; y <= 67; y++) world.setBlock({ x: 4, y, z: 0 }, 'oak_log');
+  const bot = new MockBot({ name: '10101000', world, inventory: { iron_axe: 1 }, position: { x: 0, y: 65, z: 0 } });
+  const controller = new WoodcuttingController({ bot });
+  // y=66 is what a scan that ran out of budget might have found first.
+  const result = await controller.chopTree({ x: 4, y: 66, z: 0 });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.chopped, 4, JSON.stringify(result));
+  for (let y = 64; y <= 67; y++) assert.notEqual(world.getBlock({ x: 4, y, z: 0 }).name, 'oak_log');
+});
+
 test('tick widens the search to 48 blocks before reporting no trees', async () => {
   const { MockWorld } = require('../src/bot/mockWorld');
   const { MockBot } = require('../src/bot/mockBot');

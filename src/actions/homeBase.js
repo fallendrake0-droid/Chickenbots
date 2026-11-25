@@ -78,7 +78,10 @@ class HomeBaseManager {
       home: this.home && this.home.position ? this.home.position : this.home,
       design: this.builder ? { id: this.builder.schematic.id, name: this.builder.schematic.name } : null,
       build: this.builder ? this.builder.status() : null,
-      availableDesigns: this.library.loaded ? this.library.count : 0,
+      // Never let a status poll parse the manifest or construct + scan the
+      // custom store. Runtime.start() warms the library once; before that the
+      // dashboard reports 0 designs rather than blocking the event loop.
+      availableDesigns: this.library && (this.library.summaryLoaded || this.library.loadedInMemory) ? this.library.knownCount : 0,
       stats: { ...this.stats }
     };
   }

@@ -353,6 +353,8 @@ class TaskBoard {
       const obj = this.objectives.get(task.objectiveId);
       if (obj) {
         obj.status = OBJECTIVE_STATUS.FAILED;
+        obj.blockedReason = task.lastError;
+        obj.failure = { taskId: task.id, type: task.type, label: task.label, reason: task.lastError, at: this.now() };
         obj.completedAt = this.now();
         // A failed objective must not keep spending the team's time. Cancel
         // the sibling work it can no longer complete, so no ACTIVE rows are
@@ -365,6 +367,42 @@ class TaskBoard {
       }
     }
     return { ok: true, retry: false, task };
+  }
+
+  /**
+   * Re-open a failed objective without creating a duplicate. This is the
+   * planner's retry primitive: the same objective id, the same task rows and
+   * the same history are reused, so repeated failures can never accumulate a
+   * row of near-identical objectives on the dashboard.
+   */
+  reopenObjective(objectiveId, { reason = 'retry' } = {}) {
+    const obj = this.objectives.get(objectiveId);
+    if (!obj) return { ok: false, error: 'unknown objective' };
+    if (obj.status === OBJECTIVE_STATUS.COMPLETED) return { ok: false, error: 'objective already completed' };
+    obj.status = OBJECTIVE_STATUS.ACTIVE;
+    obj.reopenCount = (obj.reopenCount || 0) + 1;
+    obj.reopenedAt = this.now();
+    obj.blockedReason = null;
+    obj.failure = null;
+    obj.completedAt = null;
+    let reopened = 0;
+    for (const taskId of obj.tasks || []) {
+      const task = this.tasks.get(taskId);
+      if (!task || task.status === TASK_STATUS.COMPLETED) continue;
+      task.status = TASK_STATUS.PENDING;
+      task.claimedBy = null;
+      task.claimedAt = null;
+      task.claimExpiresAt = null;
+      task.attempts = 0;
+      task.lastError = null;
+      task.completedAt = null;
+      task.stallCycles = 0;
+      task.noProgressSince = null;
+      task.lastProgressValue = task.units ? task.units.current : 0;
+      reopened++;
+    }
+    this._event('objective.reopened', { objectiveId, reason, tasks: reopened });
+    return { ok: true, objective: obj, reopened, reason };
   }
 
   release(taskId, botId = null, reason = 'released') {

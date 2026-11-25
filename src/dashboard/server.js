@@ -396,7 +396,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       });
     }
     const designs = filtered.slice(start, start + size);
-    res.json({ ok: true, count: services.library.count, total: filtered.length, offset: start, limit: size, designs });
+    res.json({ ok: true, count: services.library.knownCount, total: filtered.length, offset: start, limit: size, designs });
   });
 
   app.get('/api/schematics/:id', (req, res) => {

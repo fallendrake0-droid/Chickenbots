@@ -581,3 +581,27 @@ test('dashboard status does not commit team focus or inflate threat statistics',
   assert.equal(controller.stats.threatAssessments, 1);
   assert.notEqual(coordinator.focus, null);
 });
+
+test('combat engagement honours an explicit deadline and a bounded move timeout', async () => {
+  const { bot, world } = flatBot(NAMES[0], { diamond_sword: 1 });
+  world.addMob('zombie', { x: 10, y: 64, z: 0 });
+  const controller = new CombatController({ bot });
+  const started = Date.now();
+  const expired = await controller.engage({ maxAttacks: 6, deadlineAt: Date.now() - 1 });
+  assert.ok(Date.now() - started < 120, 'an exhausted budget must not start another movement phase');
+  assert.ok(expired.results.some((entry) => entry.action === 'deadline'), JSON.stringify(expired.results));
+
+  const { bot: secondBot, world: secondWorld } = flatBot(NAMES[1], { diamond_sword: 1 });
+  secondWorld.addMob('zombie', { x: 10, y: 64, z: 0 });
+  const second = new CombatController({ bot: secondBot });
+  let seen = null;
+  secondBot.goNear = async (_target, _range, options) => {
+    seen = options;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return { ok: false, error: 'path blocked' };
+  };
+  const moveStarted = Date.now();
+  await second.engage({ maxAttacks: 6, timeBudgetMs: 900 });
+  assert.ok(Date.now() - moveStarted < 1500);
+  assert.ok(seen && seen.timeoutMs > 0 && seen.timeoutMs <= 900, `move timeout must be bounded by the budget: ${JSON.stringify(seen)}`);
+});

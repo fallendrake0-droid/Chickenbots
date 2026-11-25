@@ -3,10 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { findBlocks, statusJitter, STATUS_SCAN_BUDGET_MS } = require('../src/actions/common');
+const { findBlocks, statusJitter, STATUS_SCAN_BUDGET_MS, ACTION_SCAN_BUDGET_MS } = require('../src/actions/common');
 const { MiningController } = require('../src/actions/mining');
 const { TeamCombatCoordinator } = require('../src/combat/team');
 const { statusSnapshot } = require('../src/runtimeState');
+const { createRuntime } = require('../src/runtime');
+const { config } = require('../src/config');
 
 function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -63,14 +65,14 @@ test('findBlocks prefers the indexed world search and filters the y window', () 
   assert.deepEqual(found, [{ x: 1, y: 64, z: 0, name: 'red_bed' }]);
 });
 
-test('status cache jitter is spread across the real binary roster', () => {
-  const roster = ['________', '10101000', '01010100', '11001100', '00110000', '11101000', '11101010', '10001000', '11001010', '11101001'];
-  // The old first-character jitter produced only two buckets because every
-  // name starts with 0 or 1; ten caches then expired in the same snapshot.
+test('status cache jitter is spread across the configured roster', () => {
+  const roster = [...config.team.names];
+  // The old first-character jitter produced only two buckets because all names
+  // start with 0 or 1; every cache then expired in the same snapshot.
   const buckets = new Set(roster.map((name) => statusJitter(name)));
-  assert.ok(buckets.size >= 8, `expected the roster to use at least eight TTL buckets, got ${buckets.size}`);
-  assert.equal(statusJitter('10101000'), statusJitter('10101000'));
-  assert.notEqual(statusJitter('10101000', 1), statusJitter('10101000'));
+  assert.ok(buckets.size >= Math.min(5, roster.length), `expected the roster to use at least five TTL buckets, got ${buckets.size}`);
+  assert.equal(statusJitter(roster[0]), statusJitter(roster[0]));
+  assert.notEqual(statusJitter(roster[0], 1), statusJitter(roster[0]));
 });
 
 test('the mining status panel passes its hard budget to the ore scan', () => {
@@ -154,4 +156,64 @@ test('one snapshot computes excavation status once and reuses combat status', ()
   assert.ok(Number.isFinite(snapshot.performance.snapshotMs));
   assert.ok(snapshot.performance.sections.actions >= 0);
   assert.equal(snapshot.overview.alerts.some((alert) => /incomplete excavation/.test(alert.message)), true);
+});
+
+
+test('startup warm-up makes the very first dashboard snapshot routine (<50ms)', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  await runtime._warmStatusCaches();
+  let snapshot;
+  for (let i = 0; i < 3; i++) {
+    snapshot = statusSnapshot(runtime.services);
+    assert.ok(snapshot.performance.sections.actions < 50, `actions section ${snapshot.performance.sections.actions}ms`);
+    assert.ok(snapshot.performance.sections.builds < 50, `builds/library section ${snapshot.performance.sections.builds}ms`);
+  }
+  assert.ok(snapshot.performance.snapshotMs < 100, `warm snapshot took ${snapshot.performance.snapshotMs}ms`);
+});
+
+
+test('a dashboard snapshot reads the warmed status cache and never calls a live controller', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  await runtime._warmStatusCaches();
+  const actions = runtime.actions.list();
+  let forbidden = 0;
+  for (const entry of actions) {
+    for (const name of entry.statusNames()) {
+      const controller = entry[name];
+      if (controller && typeof controller.status === 'function') {
+        controller.status = () => { forbidden++; throw new Error('live controller scan on the snapshot path'); };
+      }
+    }
+  }
+  const snapshot = statusSnapshot(runtime.services);
+  assert.equal(forbidden, 0, 'the snapshot must use the cache, not controller.status()');
+  assert.equal(snapshot.freshness.actionStatusFresh, true);
+  assert.ok(snapshot.freshness.maxActionStatusAgeMs >= 0);
+  assert.equal(snapshot.freshness.actionStatus.length, actions.length);
+  assert.ok(snapshot.performance.sections.actions < 50, `actions section ${snapshot.performance.sections.actions}ms`);
+  for (const section of ['survival', 'combat', 'mining', 'farming', 'recovery']) {
+    assert.ok(snapshot[section] && snapshot[section].length === actions.length, `${section} is served from cache`);
+  }
+  assert.equal(snapshot.inventory.bots.length, actions.length, 'inventory is served from the cache');
+});
+
+test('action scans are near-first and hard-bounded on a slow world', () => {
+  let lookups = 0;
+  const bot = {
+    ready: true,
+    position: { x: 0, y: 64, z: 0 },
+    world: {
+      blockNameAt(x, y, z) {
+        lookups += 1;
+        sleepMs(1);
+        return x === 1 && y === 64 && z === 0 ? 'oak_log' : 'air';
+      }
+    }
+  };
+  const started = Date.now();
+  const found = findBlocks(bot, ['oak_log'], { radius: 64, limit: 5, budgetMs: ACTION_SCAN_BUDGET_MS });
+  const elapsed = Date.now() - started;
+  assert.deepEqual(found, [{ x: 1, y: 64, z: 0, name: 'oak_log' }], 'the nearest block must be visited before the budget expires');
+  assert.ok(elapsed < ACTION_SCAN_BUDGET_MS + 150, `action scan took ${elapsed}ms`);
+  assert.ok(lookups < 2000, `bounded scan visited ${lookups} positions`);
 });

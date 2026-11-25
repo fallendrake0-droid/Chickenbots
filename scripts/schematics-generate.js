@@ -3,6 +3,7 @@
 
 const { generateLibrary, saveManifest, MANIFEST_PATH, SchematicLibrary } = require('../src/schematics/library');
 const { config } = require('../src/config');
+const { writeSummary } = require('./summarize-schematics');
 
 function main() {
   process.stdout.write(`Generating ${config.schematics.targetCount}+ schematics...\n`);
@@ -13,6 +14,8 @@ function main() {
     }
   });
   const file = saveManifest(manifest);
+  // Keep the tiny startup aggregate in lockstep with the generated manifest.
+  const summary = writeSummary(manifest);
   const library = new SchematicLibrary({ manifest });
   const stats = library.stats();
   process.stdout.write(`\nSaved manifest: ${file}\n`);
@@ -20,6 +23,7 @@ function main() {
   process.stdout.write(`Unique geometry hashes: ${stats.uniqueGeometry}\n`);
   process.stdout.write(`Block totals: ${stats.blocks.total.toLocaleString()} (avg ${stats.blocks.average}, max ${stats.blocks.max})\n`);
   process.stdout.write(`Rejected after retries: ${manifest.rejected.length}\n`);
+  process.stdout.write(`Summary: ${summary.count} designs, ${summary.uniqueGeometry} unique -> data/schematics/summary.json\n`);
   process.stdout.write(`Elapsed: ${((Date.now() - started) / 1000).toFixed(1)}s\n`);
   if (stats.count < stats.minimumRequired) {
     process.stderr.write(`FAIL: generated only ${stats.count} designs, minimum is ${stats.minimumRequired}\n`);

@@ -61,6 +61,9 @@ class TeamCombatCoordinator {
 
   _statusOf(controller) {
     try {
+      // Scheduling needs health/armour/totem/weapon facts, not a full threat
+      // assessment. summary() is O(inventory) and never scans entities.
+      if (typeof controller.summary === 'function') return controller.summary();
       return controller.status();
     } catch (_) {
       return { bot: controller.bot ? controller.bot.name : 'unknown', health: 20, armor: null, weapon: null, totems: 0, state: 'IDLE' };
@@ -187,7 +190,7 @@ class TeamCombatCoordinator {
   }
 
   /** Automatic rescue pass, rate-limited so one victim is not swarmed twice. */
-  async autoRescue({ cooldownMs = 8000, minRescuerHealth = 10 } = {}) {
+  async autoRescue({ cooldownMs = 8000, minRescuerHealth = 10, timeBudgetMs = 8000 } = {}) {
     if (!this.enabled) return { ok: false, idle: true, reason: 'team combat is disabled' };
     const danger = this.teammateInDanger();
     if (!danger) return { ok: true, idle: true, reason: 'no teammate in danger' };
@@ -203,11 +206,11 @@ class TeamCombatCoordinator {
       return av - bv;
     });
     this.lastRescueAt = this.now();
-    return this.rescue(victim);
+    return this.rescue(victim, { deadlineAt: this.now() + Math.max(1000, Number(timeBudgetMs) || 8000) });
   }
 
   /** Physically hand a spare golden apple to an injured teammate. */
-  async assistHealing({ cooldownMs = 12000, maxHealth = 14 } = {}) {
+  async assistHealing({ cooldownMs = 12000, maxHealth = 14, timeBudgetMs = 5000 } = {}) {
     if (!this.enabled) return { ok: false, idle: true, reason: 'team combat is disabled' };
     if (this.lastHealAt && this.now() - this.lastHealAt < cooldownMs) return { ok: true, idle: true, reason: 'healing cooldown' };
     const candidates = this.list()
@@ -228,7 +231,10 @@ class TeamCombatCoordinator {
     const donor = donors[0];
     if (!donor) return { ok: false, idle: true, reason: 'no donor with a spare golden apple', victim: victim.bot.name };
     this.lastHealAt = this.now();
-    await donor.bot.goNear?.(victim.bot, 2);
+    await donor.bot.goNear?.(victim.bot, 2, {
+      timeoutMs: Math.max(1000, Number(timeBudgetMs) || 5000),
+      priority: 'recovery', owner: `team-healing:${victim.bot.name}`
+    });
     const before = Number(victim.bot.countItem('golden_apple') || 0);
     const toss = await donor.bot.tossItem('golden_apple', 1);
     if (!toss || toss.ok === false) return { ok: false, error: (toss && toss.error) || 'toss failed', victim: victim.bot.name, donor: donor.bot.name };
@@ -249,7 +255,7 @@ class TeamCombatCoordinator {
     return { ok: true, donor: donor.bot.name, victim: victim.bot.name, item: 'golden_apple', goldenApples: Number(victim.bot.countItem('golden_apple') || 0) };
   }
 
-  async rescue(controller = null) {
+  async rescue(controller = null, { deadlineAt = 0 } = {}) {
     if (!this.enabled) return { ok: false, error: 'team combat is disabled' };
     const victim = controller || (this.teammateInDanger() && this.teammateInDanger().controller);
     if (!victim) return { ok: true, idle: true, reason: 'no teammate in danger' };
@@ -263,7 +269,7 @@ class TeamCombatCoordinator {
     const rescuer = candidates[0];
     this.stats.rescues++;
     const result = await (typeof rescuer.protectTeammate === 'function'
-      ? rescuer.protectTeammate(victim)
+      ? rescuer.protectTeammate(victim, { deadlineAt })
       : { ok: false, error: 'rescuer has no team protection routine' });
     if (this.comms && typeof this.comms.send === 'function') {
       try { this.comms.send('ASSISTANCE_DISPATCHED', rescuer.bot.name, { victim: victim.bot.name, bot: rescuer.bot.name }); } catch (_) { /* ignore */ }

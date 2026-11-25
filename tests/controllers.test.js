@@ -9,6 +9,7 @@ const { createRuntime } = require('../src/runtime');
 const { statusSnapshot } = require('../src/runtimeState');
 const { createDashboard } = require('../src/dashboard/server');
 const { RealBot } = require('../src/bot/realBot');
+const { config } = require('../src/config');
 
 const TAB_KEYS = ['bots', 'overview', 'team', 'survival', 'combat', 'inventory', 'mining', 'excavation', 'woodcutting', 'farming', 'sleep', 'exploration', 'players', 'playerWatch', 'builder', 'schematics', 'homeBase', 'taskManager', 'diagnostics'];
 
@@ -36,6 +37,7 @@ test('runtime snapshot exposes every dashboard section with live values', async 
   try {
     assert.equal(runtime.bots.size, 5);
     assert.equal(runtime.autonomyAllowed, true);
+    await runtime._warmStatusCaches();
     const snapshot = statusSnapshot(runtime.services);
     for (const key of TAB_KEYS) assert.ok(key in snapshot, `missing dashboard section ${key}`);
     assert.equal(snapshot.bots.length, 5);
@@ -44,7 +46,7 @@ test('runtime snapshot exposes every dashboard section with live values', async 
     assert.ok(snapshot.schematics.stats.count >= 1100);
     assert.equal(snapshot.diagnostics.config.pvp, true);
     assert.equal(snapshot.diagnostics.config.pve, true);
-    assert.deepEqual(snapshot.diagnostics.config.roster, ['________', '10101000', '01010100', '11001100', '00110000']);
+    assert.deepEqual(snapshot.diagnostics.config.roster, [...config.team.names]);
   } finally {
     await runtime.shutdown('test');
   }
@@ -283,4 +285,23 @@ test('RealBot refuses autonomy until login and spawn are both verified', async (
   assert.throws(() => new RealBot({ name: 'extraBot', createBot: () => fake }), /fixed team roster/);
   await second.disconnect('test');
   assert.equal(second.ready, false);
+});
+
+test('state-sync summaries reuse the safety threat evidence instead of rescanning entities', () => {
+  const { BotAdapter } = require('../src/bot/adapter');
+  const bot = new BotAdapter({
+    name: '________',
+    world: { entities: [{ id: 1, type: 'zombie', name: 'zombie', hostile: true, position: { x: 2, y: 64, z: 0 } }] }
+  });
+  const original = bot.entitiesNear.bind(bot);
+  let scans = 0;
+  bot.entitiesNear = (...args) => { scans++; return original(...args); };
+  const first = bot.summary();
+  assert.equal(first.threats, 1);
+  assert.equal(scans, 1);
+  bot.recordThreatSummary({ threats: 0, nearest: null });
+  const second = bot.summary();
+  assert.equal(second.threats, 0);
+  assert.equal(scans, 1, 'a fresh safety assessment must be reused');
+  assert.ok(second.threatEvidenceAt > 0);
 });

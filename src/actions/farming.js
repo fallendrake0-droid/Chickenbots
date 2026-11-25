@@ -2,7 +2,7 @@
 
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { findBlocks, statusTtl, STATUS_SCAN_BUDGET_MS } = require('./common');
+const { findBlocks, statusTtl, STATUS_SCAN_BUDGET_MS, ACTION_SCAN_BUDGET_MS } = require('./common');
 const {
   CROPS, CROP_ALIASES, TILLABLE, SOIL, REPLACEABLE,
   cropDefinition, normalizeCrop, cropAge, isMatureCrop
@@ -13,6 +13,10 @@ const ANIMALS = {
 };
 const WATER = new Set(['water', 'flowing_water']);
 const ANIMAL_FEED_COOLDOWN_MS = 300000;
+// A farm-establishment scan is a deliberate action, not a dashboard poll, so it
+// may spend a little longer than ACTION_SCAN_BUDGET_MS while still guaranteeing
+// that one scan cannot occupy the event loop for seconds.
+const FARM_SCAN_BUDGET_MS = 25;
 
 function keyOf(pos) { return `${pos.x},${pos.y},${pos.z}`; }
 
@@ -291,13 +295,18 @@ class FarmingController {
       return { ok: false, harvested: 0, produced: 0, results: [], error: `unknown crop ${requested}` };
     }
     const wanted = explicitAll ? null : normalizeCrop(requested);
-    const crops = this.scanCrops({ radius, crop: wanted }).slice(0, limit);
+    // Bound the scan: a live 49x49x25 cube through the generic fallback was
+    // capable of blocking the event loop for seconds and made cancellation
+    // wait for the whole scan. Near-first ordering keeps the useful crops.
+    const crops = this.scanCrops({ radius, crop: wanted, budgetMs: ACTION_SCAN_BUDGET_MS }).slice(0, limit);
     if (!crops.length) return { ok: true, idle: true, harvested: 0, produced: 0, standing: 0, results: [], crop: wanted, reason: wanted ? `no ${wanted} crops nearby` : 'no crops nearby' };
     const results = [];
     const immature = [];
     let produced = 0;
     let harvested = 0;
     for (const target of crops) {
+      // Yield between crops so a cancellation/watchdog and client ticks run.
+      await new Promise((resolve) => setImmediate(resolve));
       if (this.stopRequested) break;
       const block = this._block(target);
       if (!block || !cropDefinition(block.name)) continue;
@@ -396,15 +405,27 @@ class FarmingController {
 
   _hydrated(pos) { return Boolean(this._waterNear(pos)); }
 
-  _localSoil(origin, radius, limit = 400) {
+  _localSoil(origin, radius, limit = 400, { budgetMs = 0 } = {}) {
     const found = [];
     const r = Math.max(1, Math.min(radius, 24));
     const cx = Math.floor(origin.x);
     const cy = Math.floor(origin.y);
     const cz = Math.floor(origin.z);
-    for (let dy = -8; dy <= 8; dy++) {
-      for (let dz = -r; dz <= r; dz++) {
-        for (let dx = -r; dx <= r; dx++) {
+    // Visit the bot's own level first and expand outward. The old loop started
+    // at y-8 and scanned the full 49x49x17 cube before reaching the surface:
+    // on the live server that is hundreds of thousands of block reads inside a
+    // FARM_CROP action (11-26s) that cancellation could not interrupt.
+    const offsets = [0];
+    for (let d = 1; d <= r; d++) offsets.push(d, -d);
+    const yOffsets = [0];
+    for (let d = 1; d <= 8; d++) yOffsets.push(d, -d);
+    const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
+    let checked = 0;
+    outer:
+    for (const dy of yOffsets) {
+      for (const dz of offsets) {
+        for (const dx of offsets) {
+          if (deadline && (++checked & 63) === 0 && Date.now() >= deadline) break outer;
           const pos = { x: cx + dx, y: cy + dy, z: cz + dz };
           const block = this._block(pos);
           if (!block || !(TILLABLE.has(block.name) || block.name === 'farmland')) continue;
@@ -413,22 +434,20 @@ class FarmingController {
           const above2 = this._block({ x: pos.x, y: pos.y + 2, z: pos.z });
           if (!above2 || !this._isReplaceable(above2)) continue;
           found.push({ ...pos, soil: block.name, distance: distance(origin, { x: pos.x, y: pos.y + 1, z: pos.z }) });
-          if (found.length >= limit) break;
+          if (found.length >= limit) break outer;
         }
-        if (found.length >= limit) break;
       }
-      if (found.length >= limit) break;
     }
     return found.sort((a, b) => a.distance - b.distance);
   }
 
-  _readyFarmland(origin, radius, limit = 128) {
-    return this._localSoil(origin, radius, limit * 4)
+  _readyFarmland(origin, radius, limit = 128, { budgetMs = 0 } = {}) {
+    return this._localSoil(origin, radius, limit * 4, { budgetMs })
       .filter((cell) => cell.soil === 'farmland')
       .slice(0, limit);
   }
 
-  _flatPlot(origin, side, radius, def) {
+  _flatPlot(origin, side, radius, def, { budgetMs = 0 } = {}) {
     const baseY = Math.floor(origin.y) - 1;
     const half = Math.floor(side / 2);
     const anchors = [];
@@ -442,7 +461,9 @@ class FarmingController {
       }
     }
     const base = this.memory && typeof this.memory.getFact === 'function' ? this.memory.getFact('base_anchor') : null;
+    const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
     for (const anchor of anchors) {
+      if (deadline && Date.now() >= deadline) return null;
       if (base && Math.hypot(anchor.x - base.x, anchor.z - base.z) < half + 4) continue;
       if (Math.hypot(anchor.x - centre.x, anchor.z - centre.z) < Math.max(2, half)) continue;
       const minX = anchor.x - half;
@@ -450,6 +471,7 @@ class FarmingController {
       const cells = [];
       let valid = true;
       for (let z = minZ; z < minZ + side && valid; z++) {
+        if (deadline && Date.now() >= deadline) return null;
         for (let x = minX; x < minX + side; x++) {
           const ground = this._block({ x, y: baseY, z });
           if (!ground || !(TILLABLE.has(ground.name) || ground.name === 'farmland')) { valid = false; break; }
@@ -507,13 +529,15 @@ class FarmingController {
     let side = Math.max(3, Math.ceil(Math.sqrt(Math.max(1, count) * multiplier)));
     if (def.stem) side += 1;
     side = Math.min(side, 15);
-    let site = this._flatPlot(origin, side, radius, def);
-    if (!site) site = this._flatPlot(origin, Math.max(3, side - 2), radius, def);
+    let site = this._flatPlot(origin, side, radius, def, { budgetMs: FARM_SCAN_BUDGET_MS });
+    if (!site) site = this._flatPlot(origin, Math.max(3, side - 2), radius, def, { budgetMs: FARM_SCAN_BUDGET_MS });
     if (!site) return { ok: false, error: 'no flat clear ground near home for a farm plot' };
 
     // Clear vegetation above every cell. Crops/blocks are never overwritten:
     // the site scan already rejected occupied cells.
     for (const cell of site.cells) {
+      if (this.stopRequested) return { ok: false, error: 'farm preparation cancelled' };
+      await new Promise((resolve) => setImmediate(resolve));
       const above = this._block({ x: cell.x, y: cell.y + 1, z: cell.z });
       if (above && !['air', 'cave_air'].includes(above.name) && this._isReplaceable(above)) {
         await this.bot.goTo({ x: cell.x, y: cell.y + 1, z: cell.z }, { range: 4 });
@@ -528,6 +552,8 @@ class FarmingController {
     const tilled = [];
     let firstTillError = null;
     for (const cell of farmCells) {
+      if (this.stopRequested) return { ok: false, error: 'farm preparation cancelled' };
+      await new Promise((resolve) => setImmediate(resolve));
       const before = this._name(cell);
       if (before === 'farmland') { tilled.push(cell); continue; }
       const result = await this.till(cell);
@@ -544,6 +570,7 @@ class FarmingController {
     let bucket = this.bot.countItem('water_bucket');
     for (const water of waterPositions) {
       if (bucket < 1) break;
+      if (this.stopRequested) return { ok: false, error: 'farm preparation cancelled' };
       const existing = this._name(water);
       if (existing && WATER.has(existing)) { waterPlaced++; waterCells.push({ ...water }); continue; }
       if (distance(this.bot.position, water) > 4) {
@@ -608,7 +635,7 @@ class FarmingController {
     }
 
     // First use real, already-tilled farmland instead of building a new plot.
-    const ready = this._readyFarmland(origin, radius, Math.max(target * 2, 32));
+    const ready = this._readyFarmland(origin, radius, Math.max(target * 2, 32), { budgetMs: FARM_SCAN_BUDGET_MS });
     for (const cell of ready) {
       if (planted >= target || this.stopRequested) break;
       if (this.bot.countItem(def.seed) < 1) break;
@@ -637,7 +664,7 @@ class FarmingController {
         }
         // Uneven ground: fall back to individual tillable cells rather than
         // claiming a farm that does not exist.
-        const scattered = this._localSoil(origin, radius, Math.max(target * 4, 64));
+        const scattered = this._localSoil(origin, radius, Math.max(target * 4, 64), { budgetMs: FARM_SCAN_BUDGET_MS });
         for (const cell of scattered) {
           if (planted >= target || this.stopRequested || this.bot.countItem(def.seed) < 1) break;
           if (cell.soil !== 'farmland') {
@@ -676,7 +703,7 @@ class FarmingController {
       .filter((entry) => entry.count > 0)
       .sort((a, b) => b.count - a.count);
     if (seedCrops.length) {
-      const empty = this._readyFarmland(this.home || this.bot.position, radius, Math.max(1, maxPlant));
+      const empty = this._readyFarmland(this.home || this.bot.position, radius, Math.max(1, maxPlant), { budgetMs: FARM_SCAN_BUDGET_MS });
       // No farmland at all is the establishment case: build a plot instead of
       // calling maintenance a success because a seed exists in the inventory.
       if (empty.length || harvest.standing === 0) {

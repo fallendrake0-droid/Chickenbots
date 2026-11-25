@@ -330,6 +330,10 @@ const config = {
     // zombie pack. During this window any hostile within 16m triggers an
     // escape rather than a task.
     spawnGuardMs: envInt('SPAWN_GUARD_MS', 8000),
+    // A safety pass may move/fight, but it must return control to the scheduler
+    // quickly. This is a hard target propagated into combat/path calls, not a
+    // report-only timeout.
+    emergencyBudgetMs: envInt('EMERGENCY_BUDGET_MS', 6000),
     sleepStart: 12541,
     sleepEnd: 23459,
     bedSearchRadius: 32,
@@ -564,6 +568,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('team.maxObservations', team.maxObservations, 1, 100000);
   integer('team.taskStallMs', team.taskStallMs, 1000, 3600000);
   integer('team.taskStallCycles', team.taskStallCycles, 1, 100);
+  integer('survival.emergencyBudgetMs', survival.emergencyBudgetMs, 1000, 30000);
   boolean('workZone.enabled', workZone.enabled);
   integer('workZone.size', workZone.size, 16, 1000);
   integer('workZone.margin', workZone.margin, 0, 16);

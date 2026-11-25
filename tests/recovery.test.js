@@ -6,6 +6,7 @@ const { RecoveryManager, RECOVERY_STATES } = require('../src/actions/recovery');
 const { BotActions } = require('../src/actions');
 const { MockWorld } = require('../src/bot/mockWorld');
 const { MockBot } = require('../src/bot/mockBot');
+const { config } = require('../src/config');
 
 function clock(start = 1000000) {
   let t = start;
@@ -154,6 +155,7 @@ test('RealBot records a real death with attacker evidence and clears it on spawn
 
 test('MockBot exposes the same death and respawn evidence shape', () => {
   const { MockBot } = require('../src/bot/mockBot');
+const { config } = require('../src/config');
   const bot = new MockBot({ name: '10101000' });
   const result = bot.damage(40, 'zombie', { attacker: { name: 'zombie', type: 'zombie', distance: 2 } });
   assert.equal(result.dead, true);
@@ -235,11 +237,12 @@ test('the action watchdog can stop long controller loops', () => {
   const actions = new BotActions({ bot, world });
   const result = actions.cancelCurrent('test budget');
   assert.equal(result.ok, true);
-  assert.deepEqual(result.stopped.sort(), ['farming', 'mining', 'players', 'woodcutting']);
+  assert.deepEqual(result.stopped.sort(), ['combat', 'farming', 'mining', 'players', 'woodcutting']);
   assert.equal(actions.players.isActive(), false, 'a watchdog also clears a player watch');
   assert.equal(actions.woodcutting.stopRequested, true);
   assert.equal(actions.mining.stopRequested, true);
   assert.equal(actions.farming.stopRequested, true);
+  assert.equal(actions.combat.stopRequested, true, 'combat loops must observe the same watchdog');
 });
 
 test('an unsafe spawn that turns out safe does not pin the bot in recovery for 90s', () => {
@@ -287,4 +290,102 @@ test('safety reports each stage and re-scans equipment after a respawn', async (
   assert.equal(actions.combat.lastWeapon, null);
   assert.ok(result.equipmentRescan, 'the respawn pass records the real inventory/equipment');
   assert.equal(result.equipmentRescan.food, bot.food);
+});
+
+test('death attribution does not blame the nearest entity without damage evidence', () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '________', world, position: { x: 0, y: 64, z: 0 }, inventory: {} });
+  const actions = new BotActions({ bot });
+  bot.entitiesNear = () => [
+    { name: 'chicken', type: 'animal', hostile: false, distance: 5.8, position: { x: 1, y: 64, z: 0 } },
+    { name: 'zombie', type: 'zombie', hostile: true, distance: 2.0, position: { x: 0, y: 64, z: 2 } }
+  ];
+  bot.lastDeath = { at: Date.now(), position: { x: 0, y: 64, z: 0 }, confidence: 'unknown' };
+  actions._recordDeath();
+  const entry = actions.recovery.lastDeath;
+  assert.equal(entry.cause, 'UNKNOWN_CAUSE', 'a nearby zombie is not proof it dealt the killing blow');
+  assert.equal(entry.confidence, 'unknown');
+  assert.ok(entry.threats.length >= 1, 'threat context is still retained');
+
+  // The live log's `item (1.3m)` attribution is not a death cause.
+  const itemBot = new MockBot({ name: '01010100', world, position: { x: 0, y: 64, z: 0 }, inventory: {} });
+  const itemActions = new BotActions({ bot: itemBot });
+  itemBot.entitiesNear = () => [{ name: 'item', type: 'object', distance: 1.3, position: { x: 0, y: 64, z: 1 } }];
+  itemBot.lastDeath = {
+    at: Date.now(), position: { x: 0, y: 64, z: 0 }, cause: 'item (1.3m)',
+    attacker: { name: 'item', type: 'object', distance: 1.3 }, confidence: 'unknown'
+  };
+  itemActions._recordDeath();
+  assert.equal(itemActions.recovery.lastDeath.cause, 'UNKNOWN_CAUSE');
+  assert.equal(itemActions.recovery.lastDeath.confidence, 'unknown');
+
+  // When the adapter records an actual attacker/damage source, use it.
+  const real = new MockBot({ name: '10101000', world, position: { x: 0, y: 64, z: 0 }, inventory: {} });
+  const realActions = new BotActions({ bot: real });
+  real.entitiesNear = () => [{ name: 'chicken', type: 'animal', hostile: false, distance: 0.8, position: { x: 0, y: 64, z: 1 } }];
+  real.lastDeath = { at: Date.now(), position: { x: 0, y: 64, z: 0 }, cause: 'skeleton', confidence: 'likely' };
+  realActions._recordDeath();
+  const attributed = realActions.recovery.lastDeath;
+  assert.equal(attributed.cause, 'skeleton');
+  assert.equal(attributed.confidence, 'likely');
+});
+
+test('safetyTick turns the configured budget into a hard deadline for retreat', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '01010100', world });
+  world.addMob('zombie', { x: 2, y: 64, z: 0 });
+  const actions = new BotActions({ bot, world });
+  const previous = config.survival.emergencyBudgetMs;
+  config.survival.emergencyBudgetMs = 1234;
+  let seen = null;
+  actions._emergencyRetreat = async (_threat, options) => {
+    seen = options;
+    return { ok: true, action: 'escape' };
+  };
+  try {
+    const started = Date.now();
+    await actions.safetyTick();
+    assert.ok(seen && seen.deadlineAt >= started + 1000 && seen.deadlineAt <= Date.now() + 1234,
+      `retreat must receive the configured deadline: ${JSON.stringify(seen)}`);
+  } finally {
+    config.survival.emergencyBudgetMs = previous;
+  }
+});
+
+test('a failed close-range escape is retried on the next safety pass, not rate-limited', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '11001100', world });
+  world.addMob('zombie', { x: 0.8, y: 64, z: 0 });
+  const actions = new BotActions({ bot, world });
+  const assessment = actions.combat.assess(16);
+  let calls = 0;
+  actions._emergencyRetreat = async () => {
+    calls++;
+    return { action: 'recovery-retreat', ok: false, verified: false, reason: 'blocked' };
+  };
+  const first = await actions._threatResponse(assessment);
+  const second = await actions._threatResponse(assessment);
+  assert.equal(first.ok, false);
+  assert.equal(second.ok, false);
+  assert.equal(calls, 2, 'a failed retreat must not start a 1.2s cooldown while a zombie is in melee range');
+});
+
+test('a safety pass that hangs is released at the configured budget', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '00110000', world, position: { x: 0, y: 64, z: 0 }, inventory: {} });
+  const actions = new BotActions({ bot });
+  const previous = config.survival.emergencyBudgetMs;
+  config.survival.emergencyBudgetMs = 1000;
+  actions._safetyTickBody = () => new Promise(() => {});
+  try {
+    const started = Date.now();
+    const result = await actions.safetyTick();
+    const elapsed = Date.now() - started;
+    assert.equal(result.timedOut, true);
+    assert.equal(result.ok, false);
+    assert.ok(elapsed >= 1000 && elapsed < 2500, `released after ${elapsed}ms`);
+    assert.equal(actions.combat.stopRequested, true, 'the hung controller was told to stop');
+  } finally {
+    config.survival.emergencyBudgetMs = previous;
+  }
 });

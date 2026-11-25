@@ -59,6 +59,8 @@ Useful scripts:
 | `npm run schematics:generate` | regenerates `data/schematics/manifest.json` from the seeded generator |
 | `npm run schematics:validate` | regenerates every design, verifies hashes, materials, phases, support |
 | `npm run schematics:stats` | prints tier/category/material statistics |
+| `npm run schematics:summary` | regenerates the 3.3 KB startup/status summary without touching the 20 MB manifest |
+| `npm run perf:status` | measures the cold/warm dashboard snapshot in the deterministic simulator |
 
 ---
 
@@ -359,9 +361,10 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
 | `MC_VIEW_DISTANCE` | `2` | requested chunk radius: an integer 2–32, or `tiny` (6), `short` (8), `normal` (10), `far` (12). Ten bots at 6 kept 1,690 chunk columns in one process and froze the event loop for 26s, so an old env value is logged and capped by `MC_VIEW_DISTANCE_MAX` |
 | `MC_VIEW_DISTANCE_MAX` | `2` | hard cap for the effective radius. Raise it only after the Connections page shows the host can absorb the chunk burst; a five-bot process is the constraint, not one bot |
-| `AUTONOMY_WARMUP_MS` | `20000` | live delay after the tenth bot is ready before any pathfinder starts, so the spawn chunk burst finishes first. Simulation and unit tests skip it |
+| `AUTONOMY_WARMUP_MS` | `20000` | live delay after every configured bot (`config.team.names`) is ready before any pathfinder starts, so the spawn chunk burst finishes first. Simulation and unit tests skip it |
 | `AUTONOMY_CONCURRENCY` | `4` | maximum bots inside a long controller action at once. Others run safety work and rotate into the next free slot |
 | `ACTION_TIMEOUT_MS` | `60000` | hard budget for one autonomous controller step. A hung path or dig is cancelled, movement is stopped and the concurrency slot is released. Operator commands run in their own exclusive slot and cancel the autonomous step instead of racing it |
+| `EMERGENCY_BUDGET_MS` | `6000` | hard budget for one safety pass (eat, flee, defend). It is propagated to combat and pathfinding as a deadline, and a watchdog cancels movement at `budget + 750ms`; routine task work keeps the longer `ACTION_TIMEOUT_MS` |
 | `PATHFINDER_THINK_TIMEOUT_MS` / `PATHFINDER_TICK_TIMEOUT_MS` / `PATHFINDER_SEARCH_RADIUS` | `2500` / `10` / `64` | cooperative A* budget: total decision time, slice per event-loop turn, and maximum search radius |
 | `CLIENT_STALL_GUARD_MS` / `CLIENT_STALL_RESUME_MS` | `2500` / `1500` | if the 20 tps client tick loop arrives this late, stop the stale path, re-anchor to the last server position and hold movement for the resume window. A 5s+ freeze also probes the socket with a real swing so a dead session reconnects instead of showing as online |
 | `MC_RECONNECT_*` | see below | reconnect backoff. Supervision now runs on its own 1.5s timer, independent of long mining or movement actions |

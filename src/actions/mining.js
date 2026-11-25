@@ -3,7 +3,7 @@
 const { config } = require('../config');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { statusTtl, STATUS_SCAN_BUDGET_MS } = require('./common');
+const { statusTtl, STATUS_SCAN_BUDGET_MS, ACTION_SCAN_BUDGET_MS } = require('./common');
 
 const {
   ORE_TIERS, ORE_DROPS, ORE_NAMES, requiredPickaxeTier, oreVariants, isOreName
@@ -31,7 +31,7 @@ const NEIGHBOUR_OFFSETS = [
  * limit fills with one buried layer. Mining needs reachable faces, so scan the
  * local cube and test air neighbours as we go.
  */
-function findExposed(bot, names, { radius = 16, minY = -59, limit = 8, budgetMs = 0, inside = null } = {}) {
+function findExposed(bot, names, { radius = 16, minY = -59, limit = 8, budgetMs = ACTION_SCAN_BUDGET_MS, inside = null } = {}) {
   const wanted = new Set(Array.isArray(names) ? names : [names]);
   const world = bot.world;
   const origin = bot.position;
@@ -46,13 +46,21 @@ function findExposed(bot, names, { radius = 16, minY = -59, limit = 8, budgetMs 
       return block ? block.name : null;
     };
   const found = [];
-  let visited = 0;
-  for (let dy = -r; dy <= r; dy++) {
+  const axis = [];
+  for (let d = 0; d <= r; d++) {
+    axis.push(d);
+    if (d > 0) axis.push(-d);
+  }
+  // Near-first: a time-bounded scan must reach the closest exposed block before
+  // the budget expires, not the bottom of the cube 20 blocks below the bot.
+  for (const dy of axis) {
     const y = Math.floor(origin.y) + dy;
     if (y < minY) continue;
-    for (let dz = -r; dz <= r; dz++) {
-      for (let dx = -r; dx <= r; dx++) {
-        if (budgetMs > 0 && (++visited & 31) === 0 && expired()) {
+    for (const dz of axis) {
+      for (const dx of axis) {
+        // Check before every lookup: one cold column generation can cost tens
+        // of milliseconds, so a batch of 8/32 positions cannot be bounded.
+        if (budgetMs > 0 && expired()) {
           found.sort((a, b) => a.distance - b.distance);
           return found.slice(0, limit);
         }
@@ -512,7 +520,7 @@ class MiningController {
     }
     const names = [blockName, blockName === 'stone' ? 'deepslate' : null].filter(Boolean);
     const targets = findExposed(this.bot, names, {
-      radius: 16, minY, limit,
+      radius: 16, minY, limit, budgetMs: ACTION_SCAN_BUDGET_MS,
       inside: this.home ? (pos) => this._inZone(pos) : null
     })
       // Only exposed blocks are mineable without a tunnel: aiming at buried
@@ -522,6 +530,9 @@ class MiningController {
       .sort((a, b) => a.distance - b.distance);
     const results = [];
     for (const target of targets) {
+      // Mock and very fast live adapters resolve their awaits as microtasks;
+      // without a macrotask yield a whole quota runs in one event-loop turn.
+      await new Promise((resolve) => setImmediate(resolve));
       if (this.stopRequested) break;
       const block = this.bot.getBlock(target);
       if (!block || block.name === 'air') continue;
@@ -639,7 +650,7 @@ class MiningController {
         tool: toolCheck, error: toolCheck.error, elapsedMs: Date.now() - startedAt
       };
     }
-    let found = this.findOres({ radius, limit: Math.max(limit * 3, limit), only });
+    let found = this.findOres({ radius, limit: Math.max(limit * 3, limit), only, budgetMs: ACTION_SCAN_BUDGET_MS });
     if (!only && found.length) {
       // `mine` with no target still honours the pickaxe requirement of the
       // hardest ore it can see, instead of touching each ore only to fail.
@@ -651,7 +662,7 @@ class MiningController {
           tool: toolCheck, error: toolCheck.error, elapsedMs: Date.now() - startedAt
         };
       }
-      found = this.findOres({ radius, limit: Math.max(limit * 3, limit), only });
+      found = this.findOres({ radius, limit: Math.max(limit * 3, limit), only, budgetMs: ACTION_SCAN_BUDGET_MS });
     }
     // A target another bot already owns is not a target for this bot. This is
     // the fleet rule that stops four bots from mining one vein.
@@ -663,6 +674,7 @@ class MiningController {
     const reserved = found.length - ores.length;
     const results = [];
     for (const ore of ores) {
+      await new Promise((resolve) => setImmediate(resolve));
       if (this.stopRequested) break;
       const result = await this.mineOre({ x: ore.x, y: ore.y, z: ore.z }, { collect: false });
       results.push(result);

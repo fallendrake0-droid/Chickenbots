@@ -1276,11 +1276,25 @@ class RealBot extends BotAdapter {
       if (Number.isFinite(this._lastHealth) && bot.health < this._lastHealth) {
         this.lastDamageAt = Date.now();
         this.lastDamageAmount = Number((this._lastHealth - bot.health).toFixed(2));
+        // A health drop proves damage happened, not who dealt it. Never name an
+        // arbitrary nearby object (the live log blamed `item (1.3m)`). Only a
+        // player or a hostile mob within melee reach is plausible evidence, and
+        // it is recorded as `likely`, never confirmed.
         const near = Object.values(bot.entities || {})
-          .filter((entity) => entity && entity !== bot.entity && entity.position && entity.position.distanceTo
-            && bot.entity?.position && entity.position.distanceTo(bot.entity.position) <= 12)
+          .filter((entity) => {
+            if (!entity || entity === bot.entity || !entity.position || !entity.position.distanceTo || !bot.entity?.position) return false;
+            const name = String(entity.name || '').toLowerCase();
+            const player = Boolean(entity.username || entity.type === 'player');
+            if (!player && !HOSTILE.has(name)) return false;
+            return entity.position.distanceTo(bot.entity.position) <= 4.5;
+          })
           .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0] || null;
-        this.lastAttacker = near ? { name: near.name || near.username || near.type || 'unknown', type: near.type || null, distance: Number(near.position.distanceTo(bot.entity.position).toFixed(1)) } : null;
+        this.lastAttacker = near ? {
+          name: near.username || near.name || near.type || 'unknown',
+          type: near.type || null,
+          distance: Number(near.position.distanceTo(bot.entity.position).toFixed(1)),
+          evidence: 'proximity'
+        } : null;
       }
       this._lastHealth = bot.health;
       this._lastTotemCount = count;
@@ -1297,10 +1311,12 @@ class RealBot extends BotAdapter {
       this.deaths = this._deathCount;
       const at = Date.now();
       const environment = this._captureEnvironment();
-      const confidence = this.lastDeathMessage ? 'confirmed' : this.lastAttacker ? 'likely' : 'unknown';
-      const cause = this.lastAttacker
-        ? `${this.lastAttacker.name}${this.lastAttacker.distance !== undefined ? ` (${this.lastAttacker.distance}m)` : ''}`
-        : this.lastDeathMessage || 'unknown damage source';
+      // The server death message is real evidence and always wins. A nearby
+      // hostile is only a likely cause; without either the cause is unknown.
+      const message = this.lastDeathMessage || null;
+      const confidence = message ? 'confirmed' : this.lastAttacker ? 'likely' : 'unknown';
+      const cause = message
+        || (this.lastAttacker ? `${this.lastAttacker.name} (${this.lastAttacker.distance}m, proximity)` : 'UNKNOWN_CAUSE');
       this.lastDeath = {
         at,
         position: { ...this.position },

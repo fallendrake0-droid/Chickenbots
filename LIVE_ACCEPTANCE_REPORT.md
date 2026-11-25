@@ -2,17 +2,25 @@
 
 **Status: NOT RUN. No live result is claimed.**
 
+_Round 35 update: the second supplied live log (18:27–19:39 UTC) is addressed in
+`V6_ROUND_35_REPORT.md`; simulation-only performance numbers are in
+`PERFORMANCE_REPORT.md`; plugin/auth evidence is in `PLUGIN_COMPATIBILITY.md`
+and `AUTHENTICATION_REPORT.md`. None of that substitutes for a live run._
+
 The Arena sandbox has outbound access only to package registries and GitHub. It
 cannot reach `EmpiSMP.aternos.me:32990`. All live criteria below remain open.
 
 ## What *was* run
 
-- 327 unit/regression tests.
-- Lint over 151 files.
+- 420 unit/regression tests (round 35).
+- Lint over 171 files.
 - `npm run validate`, `deploy:check`, `check:secrets`.
-- A fresh 10-bot deterministic simulation with real command dispatch.
-- HTTP exercise of the dashboard, state/settings/logs/world/diagnostics endpoints.
+- A fresh five-bot deterministic simulation with real command dispatch.
+- HTTP exercise of the dashboard (`/api/state` ten times plus `status` and
+  `chop all` commands); state/settings/logs/world/diagnostics endpoints.
 - CLI one-shot simulation status.
+- `perf:status`: cold 96 ms, warm-up 5 ms, warm p50/p95/max 2/7/7 ms.
+- A status-cache freshness check (`maxActionStatusAgeMs` 8.7 s, fresh true).
 
 ## What was **not** run
 
@@ -32,8 +40,8 @@ node src/index.js --host 0.0.0.0 --port 3000 2>&1 | tee V6_LIVE_RUN.log
 
 Then follow `V6_LIVE_ACCEPTANCE.md` (the detailed checklist) and record:
 
-1. Ten staggered joins, no duplicate sessions.
-2. `bot all status` → ten ready, with auth state truthful.
+1. Five staggered joins, no duplicate sessions.
+2. `bot all status` → five ready, with auth state truthful.
 3. Authentication profile: `none` or an explicitly configured challenge-driven
    profile. Confirm no `/login`/`/register` is sent without a prompt.
 4. 30-minute idle/ordinary-movement soak.

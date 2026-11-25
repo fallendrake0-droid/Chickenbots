@@ -495,7 +495,7 @@ function registerAll(services, registry) {
         ledger: services.ledger ? services.ledger.summary() : null,
         excavations: services.excavation ? services.excavation.status() : null,
         builds: [...(services.builders ? services.builders.values() : [])].map((b) => b.status()),
-        library: library ? { count: library.count, unique: library.uniqueGeometry, minimum: library.minimumRequired } : null,
+        library: library ? { count: library.count, unique: library.uniqueGeometry, minimum: library.minimumRequired, fromSummary: Boolean(library.fromSummary) } : null,
         autonomy: services.runtime ? services.runtime.state() : null,
         ai: { enabled: false, mode: 'deterministic' }
       };
@@ -513,18 +513,19 @@ function registerAll(services, registry) {
       checks.push({ name: 'ai-disabled', ok: config.autonomy.ai.enabled === false, detail: 'deterministic local intelligence' });
       checks.push({ name: 'dashboard-safe-bind', ok: ['127.0.0.1', '::1', 'localhost'].includes(String(config.dashboard.host).toLowerCase()) || Boolean(config.dashboard.token) || config.dashboard.allowInsecure === true, detail: `${config.dashboard.host}:${config.dashboard.port}${config.dashboard.token ? ' (token)' : config.dashboard.allowInsecure ? ' (explicit insecure opt-in)' : ''}` });
       const library = services.library;
-      checks.push({ name: 'schematic-library', ok: Boolean(library && library.loaded && library.count >= config.schematics.minimumCount), detail: library && library.loaded ? `${library.count} designs` : 'not generated' });
-      if (library && library.loaded) {
+      const libraryStats = library && library.loaded ? library.stats() : null;
+      checks.push({ name: 'schematic-library', ok: Boolean(libraryStats && libraryStats.count >= config.schematics.minimumCount), detail: libraryStats ? `${libraryStats.count} designs${libraryStats.fromSummary ? ' (summary)' : ''}` : 'not generated' });
+      if (libraryStats) {
         // The manifest and the custom store are separate catalogues. Comparing
         // manifest hashes with the combined count made a valid 10,000-design
-        // manifest fail as soon as one custom design existed.
-        const base = library.manifest.designs;
-        const hashes = new Set(base.map((d) => d.geometryHash));
+        // manifest fail as soon as one custom design existed. The aggregate
+        // summary already carries the unique geometry count, so diagnostics
+        // does not have to parse the 20 MB manifest.
         const custom = library.customStore ? library.customStore.count : 0;
         checks.push({
           name: 'schematic-uniqueness',
-          ok: hashes.size === base.length,
-          detail: `${hashes.size}/${base.length} unique manifest hashes${custom ? ` + ${custom} custom design(s)` : ''}`
+          ok: libraryStats.uniqueGeometry === libraryStats.count,
+          detail: `${libraryStats.uniqueGeometry}/${libraryStats.count} unique manifest geometries${custom ? ` + ${custom} custom design(s)` : ''}`
         });
       }
       checks.push({ name: 'bots-configured', ok: services.bots.size === BOT_NAMES.length, detail: `${services.bots.size} bots loaded` });

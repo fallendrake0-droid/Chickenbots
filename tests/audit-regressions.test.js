@@ -234,8 +234,10 @@ test('automatic planning backs off instead of recreating a failed objective ever
   assert.equal(coordinator.ensureObjectives(), null);
   now += coordinator.planRetryMs + 1;
   const second = coordinator.ensureObjectives();
-  assert.equal(second.created, true);
-  assert.notEqual(second.objective.id, first.objective.id);
+  assert.equal(second.ok, true);
+  assert.equal(second.reopened > 0, true);
+  assert.equal(second.created, undefined, 'a retry must never mint a duplicate objective');
+  assert.equal(second.objective.id, first.objective.id);
 });
 
 test('storage installation crafts, places and reports a verified quantity', async () => {
@@ -383,4 +385,44 @@ test('per-packet traces are opt-in and cannot flood stdout by default', () => {
     if (previous === undefined) delete process.env.MC_TRACE_PACKETS;
     else process.env.MC_TRACE_PACKETS = previous;
   }
+});
+
+test('repeated plan failures re-open the same objective and stop after three', () => {
+  const { TeamCoordinator } = require('../src/team/teamCoordinator');
+  let now = 1000;
+  const coordinator = new TeamCoordinator({ now: () => now, autoPlan: true });
+  const first = coordinator.ensureObjectives();
+  assert.ok(first && first.created);
+  const objectiveId = first.objective.id;
+  const objectivesBefore = coordinator.board.listObjectives().length;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const task = coordinator.board.listTasks({ objectiveId })[0];
+    coordinator.board.fail(task.id, `precondition missing ${attempt}`, { by: null, retry: false });
+    assert.equal(coordinator.ensureObjectives(), null, 'a failure must schedule a retry, not create another plan');
+    assert.equal(coordinator.board.listObjectives().length, objectivesBefore, 'no duplicate objective may be created');
+    assert.equal(coordinator.planReopen.objectiveId, objectiveId, 'the retry targets the same objective');
+    if (attempt < 3) {
+      now = coordinator.planRetryAt + 1;
+      const reopened = coordinator.ensureObjectives();
+      assert.ok(reopened && reopened.ok && !reopened.created, 'the same objective is re-opened in place');
+      assert.equal(reopened.objective.id, objectiveId);
+      assert.equal(coordinator.board.listObjectives().length, objectivesBefore);
+    }
+  }
+
+  assert.equal(coordinator.planFailures, 3);
+  assert.ok(coordinator.planBlockedUntil > now, 'planning must enter the long backoff');
+  assert.match(coordinator.planBlockedReason, /precondition missing 3/);
+  assert.equal(coordinator.planReopen.objectiveId, objectiveId, 'even the long-backoff retry targets the same objective');
+  const state = coordinator.getState();
+  assert.equal(state.team.planning.stopped, true);
+  assert.equal(state.team.planning.blockedReason.includes('precondition missing 3'), true);
+  now += 5 * 60 * 1000;
+  assert.equal(coordinator.ensureObjectives(), null, 'the long backoff must survive the old five-minute retry point');
+  assert.equal(coordinator.board.listObjectives().length, objectivesBefore);
+  now = coordinator.planReopen.at + 1;
+  const afterBackoff = coordinator.ensureObjectives();
+  assert.equal(afterBackoff && afterBackoff.reopened !== undefined, true);
+  assert.equal(afterBackoff.objective.id, objectiveId, 'the long backoff also re-opens, never re-creates');
 });

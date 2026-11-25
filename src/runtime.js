@@ -109,6 +109,8 @@ class TeamRuntime {
     // mineflayer pathfinders from starving tick_end and keep-alive.
     this.botSteps = new Map();
     this.botSafety = new Map();
+    // Team rescue/healing are dispatched, never awaited by the runtime tick.
+    this.teamDispatches = new Set();
     this.safetyStages = new Map();
     this.commandLocks = new Set();
     // Commands for the same bot must queue, not race. The lock alone only
@@ -306,6 +308,72 @@ class TeamRuntime {
     return Boolean(result.ok);
   }
 
+  _dispatchTeamWork(label, fn) {
+    if (this.teamDispatches.size >= 4) return null;
+    if ([...this.teamDispatches].some((entry) => entry.label === label)) return null;
+    const entry = { label, startedAt: Date.now() };
+    // setImmediate, not a microtask: Promise.resolve().then(fn) still runs the
+    // function's synchronous prefix in this event-loop turn and is attributed
+    // to launch-actions / the tick that dispatched it.
+    const task = new Promise((resolve) => setImmediate(resolve))
+      .then(fn)
+      .catch((err) => this.logger.warn(`team ${label}: ${err.message}`))
+      .finally(() => {
+        const elapsed = Date.now() - entry.startedAt;
+        if (elapsed >= 5000) this.logger.warn(`team ${label} took ${(elapsed / 1000).toFixed(1)}s`);
+        this.teamDispatches.delete(entry);
+      });
+    entry.task = task;
+    this.teamDispatches.add(entry);
+    return task;
+  }
+
+  /**
+   * Pay lazy one-shot status work (manifest/custom-store, controller caches,
+   * builder analysis) before the dashboard accepts requests. The alternative
+   * was a first `/api/state` or SSE frame blocking the event loop for seconds
+   * while five logins were still in flight.
+   */
+  async _warmStatusCaches() {
+    if (!this.actions || typeof this.actions.list !== 'function') return 0;
+    const started = Date.now();
+    let calls = 0;
+    const yieldLoop = async () => {
+      calls++;
+      if (calls % 4 === 0) await new Promise((resolve) => setImmediate(resolve));
+    };
+    try { this.library?.stats?.(); } catch (_) { /* library status is advisory */ }
+    await yieldLoop();
+    for (const actions of this.actions.list()) {
+      // Fill the per-controller status cache through the same path the runtime
+      // tick uses, so the dashboard never has to call a live scan itself.
+      if (typeof actions.refreshStatus === 'function' && typeof actions.statusNames === 'function') {
+        for (const name of actions.statusNames()) {
+          try { actions.refreshStatus({ name }); } catch (_) { /* status is advisory */ }
+          await yieldLoop();
+        }
+      } else {
+        for (const controller of [
+          actions.survival, actions.combat, actions.mining, actions.woodcutting,
+          actions.farming, actions.sleep, actions.fishing, actions.exploration,
+          actions.inventory, actions.players, actions.homeBase, actions.recovery
+        ]) {
+          try { controller?.status?.(); } catch (_) { /* status is advisory */ }
+          await yieldLoop();
+        }
+      }
+    }
+    // SchematicBuilder.status() lazily runs the first world analysis (hundreds
+    // of milliseconds for a large build). Do it here, not in the first frame.
+    for (const builder of this.builders ? this.builders.values() : []) {
+      try { builder?.status?.(); } catch (_) { /* status is advisory */ }
+      await yieldLoop();
+    }
+    const elapsed = Date.now() - started;
+    if (elapsed >= 100 && this.logger) this.logger.info(`controller status caches warmed in ${elapsed}ms (yielded every four calls)`);
+    return elapsed;
+  }
+
   async start() {
     if (this.running) return { ok: true, already: true };
     this.running = true;
@@ -316,13 +384,19 @@ class TeamRuntime {
       // bot socket. Parsing the 20 MB manifest inside a live status snapshot
       // blocked the event loop for >1 s while logins were in flight.
       const started = Date.now();
-      this.library.stats();
-      this.logger.info(`schematic library ready: ${this.library.count} designs in ${Date.now() - started}ms`);
+      const libraryStats = this.library.stats();
+      this.logger.info(`schematic library ready: ${libraryStats.count} designs in ${Date.now() - started}ms${libraryStats.fromSummary ? ' (aggregate summary; manifest stays lazy)' : ''}`);
+      await this._warmStatusCaches();
     }
     if (this.dashboard) {
       dashboardInfo = await this.dashboard.start();
       this.logger.info(`dashboard listening on http://${dashboardInfo.host}:${dashboardInfo.port}`);
     }
+    // Keep the one-shot startup cost (manifest/custom store/status warm-up)
+    // visible without letting its few samples decide the routine p99 for the
+    // lifetime of the process. Runtime counters start here.
+    this.startupEventLoop = this.eventLoopStats();
+    try { this.eventLoopDelay.reset(); } catch (_) { /* optional */ }
     if (!this.simulate && this.shouldConnect) {
       const requested = config.server.requestedViewDistance;
       const effective = config.server.viewDistance;
@@ -707,6 +781,31 @@ class TeamRuntime {
     this.lastSyncMs = Date.now() - snapshotStarted;
   }
 
+  _scheduleStatusRefreshes() {
+    if (this._statusRefreshBusy) return;
+    if (!this.actions || typeof this.actions.list !== 'function') return;
+    const list = this.actions.list().filter((actions) => actions.bot && actions.bot.connected && actions.bot.spawned);
+    if (!list.length) return;
+    this._statusRefreshBusy = true;
+    setImmediate(() => {
+      const started = Date.now();
+      try {
+        for (const actions of list) {
+          if (typeof actions.refreshStatus !== 'function') continue;
+          const one = Date.now();
+          try { actions.refreshStatus({ limit: 1 }); }
+          catch (err) { this.logger.warn(`[${actions.bot.name}] status cache refresh failed: ${err.message}`); }
+          const ms = Date.now() - one;
+          if (ms >= 250) this.logger.warn(`[${actions.bot.name}] cached status refresh took ${ms}ms for one controller`);
+        }
+      } finally {
+        const total = Date.now() - started;
+        if (total >= 500) this.logger.warn(`fleet status cache refresh took ${total}ms (off the state-sync path)`);
+        this._statusRefreshBusy = false;
+      }
+    });
+  }
+
   async _tick() {
     if (!this.running || this.ticking) return;
     const tickStarted = Date.now();
@@ -737,6 +836,9 @@ class TeamRuntime {
       this._lastPhase = 'state-sync';
       const syncMs = Date.now() - syncStarted;
       if (syncMs >= 1000) this.logger.warn(`state sync took ${syncMs}ms; the event loop was blocked inside _syncBots`);
+      // Status-cache refresh is deliberately outside _syncBots and outside the
+      // dashboard request: one controller per bot per tick, on a setImmediate.
+      this._scheduleStatusRefreshes();
       // Connection supervision must run while paused and while the autonomy
       // gate is closed. Pausing work must never leave a disconnected bot out of
       // the server until an operator notices.
@@ -777,25 +879,47 @@ class TeamRuntime {
       this._phase = 'launch-actions';
       this._launchBotWork();
       this._lastPhase = 'launch-actions';
-      try {
-        if (this.ticks % 5 === 0) this.combatTeam.assignRoles();
-      } catch (err) {
-        this.logger.warn(`combat role assignment failed: ${err.message}`);
+      if (this.ticks % 5 === 0 && !this._assignRolesBusy) {
+        // Role assignment calls every combat controller's status. On the live
+        // box that can take a second per bot, which is exactly the 5.7s
+        // launch-actions block in the operator log. Resolve and score off the
+        // tick itself, and never overlap two passes.
+        this._assignRolesBusy = true;
+        setImmediate(() => {
+          const startedRole = Date.now();
+          try { this.combatTeam.assignRoles(); }
+          catch (err) { this.logger.warn(`combat role assignment failed: ${err.message}`); }
+          finally {
+            const ms = Date.now() - startedRole;
+            if (ms >= 500) this.logger.warn(`combat role assignment took ${ms}ms; it no longer blocks the autonomy tick`);
+            this._assignRolesBusy = false;
+          }
+        });
       }
+      // Dispatch, do not await. A rescue path used to keep the whole autonomy
+      // tick (and its phase label, launch-actions) busy for up to 20 seconds.
       if (this.combatTeam && this.ticks % 8 === 0) {
-        await this.combatTeam.autoRescue().catch((err) => this.logger.warn(`team rescue: ${err.message}`));
+        this._dispatchTeamWork('rescue', () => this.combatTeam.autoRescue({ timeBudgetMs: 8000 }));
       }
       if (this.combatTeam && this.ticks % 16 === 0) {
-        await this.combatTeam.assistHealing().catch((err) => this.logger.warn(`team healing: ${err.message}`));
+        this._dispatchTeamWork('healing', () => this.combatTeam.assistHealing({ timeBudgetMs: 5000 }));
       }
       const home = this.memory.getHome();
       if (home && home.position) this.home = home.position;
       if (this.combatTeam) this.combatTeam.home = this.home;
       if (this.construction && config.construction.autoAdvance && !this.constructionBusy && this.ticks % Math.max(2, config.construction.tickEvery) === 0) {
         this.constructionBusy = true;
-        this.construction.autoAdvance()
+        const startedBuild = Date.now();
+        // The synchronous prefix of advance() (phase bookkeeping, project
+        // serialisation) used to be charged to launch-actions.
+        new Promise((resolve) => setImmediate(resolve))
+          .then(() => this.construction.autoAdvance())
           .catch((err) => this.logger.warn(`construction auto-advance: ${err.message}`))
-          .finally(() => { this.constructionBusy = false; });
+          .finally(() => {
+            const ms = Date.now() - startedBuild;
+            if (ms >= 1000) this.logger.warn(`construction auto-advance took ${ms}ms (off the tick)`);
+            this.constructionBusy = false;
+          });
       }
     } finally {
       this.lastTickMs = Date.now() - tickStarted;
@@ -881,10 +1005,33 @@ class TeamRuntime {
     return { launched, safety };
   }
 
+  _cancelBotWork(name, reason) {
+    const bot = this.bots ? this.bots.get(name) : null;
+    const actions = this.actions && typeof this.actions.get === 'function' ? this.actions.get(name) : null;
+    try { bot?.cancelAction?.(reason); } catch (_) { /* optional */ }
+    if (actions?.bot && actions.bot !== bot) {
+      try { actions.bot.cancelAction?.(reason); } catch (_) { /* optional */ }
+    }
+    try { actions?.cancelCurrent?.(reason); } catch (_) { /* optional */ }
+  }
+
   _startBotSafety(actions) {
     const name = actions.bot.name;
     const started = Date.now();
+    const budget = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
+    // Belt-and-braces: the controllers receive the same deadline and return at
+    // it. If a third-party await still fails to settle, cancel its movement so
+    // the safety task can finish and release the per-bot slot.
+    const watchdog = setTimeout(() => {
+      this._cancelBotWork(name, `safety exceeded ${budget}ms`);
+      if (this.logger) this.logger.warn(`[${name}] safety exceeded ${budget}ms; movement cancelled`);
+    }, budget + 750);
+    if (typeof watchdog.unref === 'function') watchdog.unref();
     const task = (async () => {
+      // Let _launchBotWork/_tick return before the controller's synchronous
+      // prefix runs. Previously that prefix was attributed to launch-actions
+      // and blocked the timer for seconds while five bots started at once.
+      await new Promise((resolve) => setImmediate(resolve));
       try {
         const safetyStarted = Date.now();
         const result = await actions.safetyTick();
@@ -893,8 +1040,9 @@ class TeamRuntime {
         this.logger.warn(`[${name}] safety tick failed: ${err.message}`);
       }
     })().finally(() => {
+      clearTimeout(watchdog);
       const elapsed = Date.now() - started;
-      if (elapsed >= 5000) this.logger.warn(`[${name}] safety task took ${(elapsed / 1000).toFixed(1)}s (movement is bounded, but this bot was slow)`);
+      if (elapsed >= budget + 1000) this.logger.warn(`[${name}] safety task took ${(elapsed / 1000).toFixed(1)}s (budget ${budget}ms)`);
       if (this.botSafety.get(name) === task) this.botSafety.delete(name);
     });
     this.botSafety.set(name, task);
@@ -928,12 +1076,20 @@ class TeamRuntime {
       try { actions.cancelCurrent?.(reason); } catch (_) { /* optional */ }
     }, Math.max(5000, config.autonomy.actionTimeoutMs));
     if (typeof watchdog.unref === 'function') watchdog.unref();
+    const safetyBudget = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
+    const safetyWatchdog = setTimeout(() => {
+      this._cancelBotWork(name, `safety exceeded ${safetyBudget}ms`);
+    }, safetyBudget + 750);
+    if (typeof safetyWatchdog.unref === 'function') safetyWatchdog.unref();
     const task = (async () => {
+      // Yield before the synchronous controller prefix; see _startBotSafety.
+      await new Promise((resolve) => setImmediate(resolve));
       try {
         // Safety and death bookkeeping must run for a dead bot too; the
         // controller returns early without moving it.
         const safetyStarted = Date.now();
         const safetyResult = await actions.safetyTick();
+        clearTimeout(safetyWatchdog);
         this._recordSafetyStages(name, safetyResult, safetyStarted);
         if (bot.health <= 0) return;
         const assignment = this.coordinator.getAssignment(name);
@@ -949,6 +1105,7 @@ class TeamRuntime {
         this.logger.warn(`[${name}] action tick failed: ${err.message}`);
       } finally {
         clearTimeout(watchdog);
+        clearTimeout(safetyWatchdog);
         const elapsed = Date.now() - started;
         if (elapsed >= 10000) {
           const assignment = this.coordinator.getAssignment(name);
@@ -968,7 +1125,6 @@ class TeamRuntime {
    */
   async runExclusive(name, fn) {
     if (typeof fn !== 'function') throw new TypeError('runExclusive needs a command function');
-    const bot = this.bots.get(name);
     // Queue behind an earlier operator command for this bot. Resolving one
     // waiter on release preserves FIFO order without an unbounded array scan.
     while (this.commandLocks.has(name)) {
@@ -986,7 +1142,7 @@ class TeamRuntime {
       // so the operator saw a slow command and two movement owners.
       const safety = this.botSafety.get(name);
       if (prior || safety) {
-        try { bot?.cancelAction?.('operator command'); } catch (_) { /* optional */ }
+        this._cancelBotWork(name, 'operator command');
         const grace = new Promise((resolve) => {
           const timer = setTimeout(resolve, 3000);
           if (timer.unref) timer.unref();
@@ -1010,7 +1166,10 @@ class TeamRuntime {
 
   /** Wait for in-flight controller work (tests, shutdown, diagnostics). */
   async drainBotWork(timeoutMs = 30000) {
-    const pending = [...this.botSteps.values(), ...this.botSafety.values()];
+    const pending = [
+      ...this.botSteps.values(), ...this.botSafety.values(),
+      ...[...this.teamDispatches].map((entry) => entry.task).filter(Boolean)
+    ];
     if (!pending.length) return { drained: 0, timedOut: false };
     const all = Promise.allSettled(pending);
     if (!timeoutMs) { await all; return { drained: pending.length, timedOut: false }; }
@@ -1275,6 +1434,7 @@ class TeamRuntime {
       }),
       connectionErrors: { ...this.connectionErrors },
       eventLoop: this.eventLoopStats(),
+      startupEventLoop: this.startupEventLoop || null,
       joinQueue: {
         nextJoinAt: this.nextJoinAt || null,
         cooldownUntil: this.joinCooldownUntil || null,
@@ -1319,9 +1479,12 @@ class TeamRuntime {
     this.timer = null;
     if (this.supervisorTimer) clearInterval(this.supervisorTimer);
     this.supervisorTimer = null;
-    if (this.botSteps.size || this.botSafety.size) {
+    if (this.botSteps.size || this.botSafety.size || this.teamDispatches.size) {
       await Promise.race([
-        Promise.allSettled([...this.botSteps.values(), ...this.botSafety.values()]),
+        Promise.allSettled([
+          ...this.botSteps.values(), ...this.botSafety.values(),
+          ...[...this.teamDispatches].map((entry) => entry.task).filter(Boolean)
+        ]),
         sleep(2000)
       ]).catch(() => {});
     }

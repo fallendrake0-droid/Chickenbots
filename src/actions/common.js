@@ -25,7 +25,11 @@ const SURFACE_BLOCKS = /(_log|_leaves|_sapling|_propagule|wheat|carrots|potatoes
  * Status scans now share one small time budget per controller, so a broken or
  * enormous world can only delay a tick by a few milliseconds.
  */
-const STATUS_SCAN_BUDGET_MS = 8;
+const STATUS_SCAN_BUDGET_MS = 2;
+// A task scan may look at a larger volume than a status scan, but it still must
+// yield the event loop. Near-first ordering plus this budget keeps a mine/chop
+// tick from blocking keep-alive while preserving the nearest useful targets.
+const ACTION_SCAN_BUDGET_MS = 6;
 const STATUS_TTL_BASE_MS = 15000;
 const STATUS_TTL_STEP_MS = 1100;
 const STATUS_TTL_SLOTS = 11;
@@ -102,13 +106,21 @@ function findBlocks(bot, names, { near = null, radius = 24, limit = 50, yFrom = 
     if (yStart - d >= minY) ys.push(yStart - d);
     if (d > 0 && yStart + d <= maxY) ys.push(yStart + d);
   }
-  let visited = 0;
+  const axis = [];
+  for (let d = 0; d <= radius; d++) {
+    axis.push(d);
+    if (d > 0) axis.push(-d);
+  }
   for (const y of ys) {
-    for (let z = Math.floor(near.z) - radius; z <= Math.floor(near.z) + radius; z++) {
-      for (let x = Math.floor(near.x) - radius; x <= Math.floor(near.x) + radius; x++) {
-        // Check the deadline in batches. Date.now() is not free and the inner
-        // body is only a map lookup on a live adapter.
-        if (budgetMs > 0 && (++visited & 31) === 0 && expired()) return out;
+    for (const dz of axis) {
+      const z = Math.floor(near.z) + dz;
+      for (const dx of axis) {
+        const x = Math.floor(near.x) + dx;
+        // Check before every position. A single world lookup can be expensive
+        // on a lazy/cold world (the simulator generates a column on first
+        // touch), so batching 8/32 lookups between checks overshot the budget
+        // by hundreds of milliseconds.
+        if (budgetMs > 0 && expired()) return out;
         const name = nameAt ? nameAt(x, y, z) : null;
         if (name !== null) {
           if (name && wanted.has(name)) {
@@ -198,5 +210,5 @@ function isBed(name) { return BED_NAMES.has(name); }
 module.exports = {
   NIGHT_START, NIGHT_END, isNight, timeOfDay, findBlocks, nearestBlock,
   foodItems, needsFood, hasFood, teamNames, isTeammate, isHostile, describeFood,
-  moveAway, isBed, statusJitter, statusTtl, STATUS_SCAN_BUDGET_MS
+  moveAway, isBed, statusJitter, statusTtl, STATUS_SCAN_BUDGET_MS, ACTION_SCAN_BUDGET_MS
 };

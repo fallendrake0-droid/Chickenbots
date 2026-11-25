@@ -53,6 +53,7 @@ const TIER_PLAN = buildTierPlan();
 const MANIFEST_VERSION = 2;
 const DEFAULT_SEED = 'chickenbots-v4-architecture';
 const MANIFEST_PATH = path.join(config.paths.schematicData, 'manifest.json');
+const SUMMARY_PATH = path.join(config.paths.schematicData, 'summary.json');
 
 function designId(number, tierName, category) {
   return `${String(number).padStart(4, '0')}_${tierName}_${category}`;
@@ -238,11 +239,14 @@ class SchematicLibrary {
     // memory and is never re-read.
     this._manifest = manifest;
     this._manifestLoaded = Boolean(manifest);
+    this._explicitManifest = Boolean(manifest);
     this.minCount = minCount;
     this.cache = new Map();
     this.byId = new Map();
     this._statsCache = null;
     this._categoryCache = null;
+    this._summary = null;
+    this._summaryLoaded = false;
     if (this._manifest && Array.isArray(this._manifest.designs)) {
       for (const design of this._manifest.designs) this.byId.set(design.id, design);
     }
@@ -266,6 +270,8 @@ class SchematicLibrary {
     this._manifestLoaded = true;
     this._statsCache = null;
     this._categoryCache = null;
+    this._summary = null;
+    this._summaryLoaded = false;
     this.byId.clear();
     if (value && Array.isArray(value.designs)) for (const design of value.designs) this.byId.set(design.id, design);
   }
@@ -284,7 +290,36 @@ class SchematicLibrary {
     return this.custom || null;
   }
 
-  get loaded() { return Boolean(this.manifest); }
+  /**
+   * Small generated aggregate of the catalogue. Never parses the 20 MB
+   * manifest; a missing/corrupt file simply falls back to the full load.
+   */
+  get summaryStats() {
+    if (!this._summaryLoaded) {
+      this._summaryLoaded = true;
+      try {
+        // A committed summary for a deleted manifest would otherwise report a
+        // library that cannot serve a design. Existence is cheap; no parse.
+        if (fs.existsSync(MANIFEST_PATH) && fs.existsSync(SUMMARY_PATH)) {
+          this._summary = JSON.parse(fs.readFileSync(SUMMARY_PATH, 'utf8'));
+        }
+      } catch (_) { this._summary = null; }
+    }
+    return this._summary;
+  }
+
+  get summaryLoaded() { return Boolean(this.summaryStats); }
+  // A summary is enough for status/health; reading individual designs still
+  // requires the full manifest and remains lazy.
+  get loaded() { return Boolean(this._manifest) || this.summaryLoaded; }
+  /** Non-loading probe: true only if the manifest is already in memory. */
+  get loadedInMemory() { return Boolean(this._manifest); }
+  /** Count known without constructing/scanning the custom store. */
+  get knownCount() {
+    const base = this._manifest ? this._manifest.designs.length : (this.summaryLoaded ? this.summaryStats.count : 0);
+    const store = this._customEnabled ? this.custom : null;
+    return base + (store ? store.count : 0);
+  }
   get count() {
     const base = this.manifest ? this.manifest.designs.length : 0;
     const store = this.customStore;
@@ -386,6 +421,26 @@ class SchematicLibrary {
   }
 
   stats() {
+    // Startup/dashboard path: use the generated summary when the full manifest
+    // has not been needed yet. A 3.3 KB read replaces the ~20 MB JSON.parse
+    // that took 7.2 s on the live box.
+    const summary = this.summaryStats;
+    const summaryMatchesManifest = summary && !this._explicitManifest && (!this._manifestLoaded
+      || !this._manifest.generatedAt
+      || this._manifest.generatedAt === summary.manifestGeneratedAt);
+    if (summaryMatchesManifest) {
+      const store = this.customStore;
+      const customStats = store ? store.statsSummary() : null;
+      return {
+        ...summary,
+        minimumRequired: this.minCount,
+        meetsMinimum: summary.count >= this.minCount,
+        generatedAt: summary.manifestGeneratedAt || null,
+        custom: customStats,
+        totalIncludingCustom: summary.count + (customStats ? customStats.count : 0),
+        fromSummary: true
+      };
+    }
     if (!this.manifest) return { loaded: false, count: 0 };
     const store = this.customStore;
     const customStats = store ? store.statsSummary() : null;

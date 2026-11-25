@@ -76,7 +76,14 @@ class TeamCoordinator {
     this.planRetryAt = 0;
     this.planRetryMs = 60000;
     this.maxAutoPlanBackoffMs = 5 * 60 * 1000;
+    this.maxConsecutivePlanFailures = 3;
+    this.planBlockedUntil = 0;
+    this.planBlockedReason = null;
+    this.lastPlanFailure = null;
     this.lastPlanObjectiveId = null;
+    // A failed objective is retried by re-opening the same id, never by
+    // minting another near-identical objective.
+    this.planReopen = null;
     this.enabled = false;
     this.ticks = 0;
     this.startedAt = now();
@@ -256,6 +263,28 @@ class TeamCoordinator {
     if (!this.autoPlan) return null;
     if (this.board.listObjectives('ACTIVE').length > 0) return null;
     const now = this.now();
+    // Retry in place. Older builds deleted the failed objective reference and
+    // called createSurvivalBasePlan() again, so the live dashboard showed the
+    // same objective recreated every few minutes with a new id.
+    if (this.planReopen) {
+      if (now < this.planReopen.at) return null;
+      const pending = this.planReopen;
+      this.planReopen = null;
+      const reopened = this.board.reopenObjective(pending.objectiveId, { reason: pending.reason });
+      if (!reopened.ok) {
+        if (this.logger) this.logger.warn(`could not re-open objective ${pending.objectiveId}: ${reopened.error}`);
+        return null;
+      }
+      this.lastPlanObjectiveId = reopened.objective.id;
+      this.planRetryAt = now + this.planRetryMs;
+      this.comms.send('OBJECTIVE_REOPENED', 'system', {
+        objectiveId: reopened.objective.id, title: reopened.objective.title, reason: pending.reason
+      });
+      if (this.logger) {
+        this.logger.warn(`re-opened the same objective ${reopened.objective.id} (attempt ${this.planFailures + 1}/${this.maxConsecutivePlanFailures}) after: ${pending.reason}`);
+      }
+      return reopened;
+    }
     // Resolve the previous plan before deciding whether to make a new one.
     // Failed plans back off exponentially, but planning is never disabled
     // permanently: a later success resets the backoff.
@@ -264,9 +293,31 @@ class TeamCoordinator {
       this.lastPlanObjectiveId = null;
       if (previous && previous.status === 'FAILED') {
         this.planFailures++;
+        const failedTask = this.board.listTasks({ objectiveId: previous.id })
+          .find((task) => task.status === 'FAILED') || null;
+        const reason = previous.blockedReason || (failedTask && failedTask.lastError) || 'objective failed without a recorded cause';
+        this.lastPlanFailure = {
+          at: now, objectiveId: previous.id, title: previous.title, reason,
+          failedTask: failedTask ? { id: failedTask.id, type: failedTask.type, label: failedTask.label } : null
+        };
         const delay = Math.min(this.maxAutoPlanBackoffMs, this.planRetryMs * (2 ** Math.min(4, this.planFailures - 1)));
-        this.planRetryAt = now + delay;
-        if (this.logger) this.logger.warn(`automatic plan failed (${this.planFailures} consecutive); re-planning in ${Math.round(delay / 1000)}s`);
+        const at = this.planFailures >= this.maxConsecutivePlanFailures
+          // Three identical failures mean the preconditions are not merely
+          // transient. Wait the long backoff before re-opening the same
+          // objective; nothing new is created in the meantime.
+          ? now + Math.max(this.maxAutoPlanBackoffMs, 30 * 60 * 1000)
+          : now + delay;
+        this.planReopen = { objectiveId: previous.id, at, reason };
+        this.planRetryAt = at;
+        if (this.planFailures >= this.maxConsecutivePlanFailures) {
+          this.planBlockedUntil = at;
+          this.planBlockedReason = reason;
+          if (this.logger) this.logger.error(`automatic planning paused after ${this.planFailures} consecutive failures: ${reason}; next attempt in ${Math.round((at - now) / 1000)}s`);
+        } else {
+          this.planBlockedUntil = 0;
+          this.planBlockedReason = null;
+          if (this.logger) this.logger.warn(`automatic plan failed (${this.planFailures} consecutive): ${reason}; re-opening the same objective in ${Math.round(delay / 1000)}s`);
+        }
         return null;
       }
       if (previous && previous.status === 'COMPLETED') {
@@ -281,6 +332,7 @@ class TeamCoordinator {
       return null;
     }
     if (now < this.planRetryAt) return null;
+    if (this.planBlockedUntil && now < this.planBlockedUntil) return null;
     // One task is claimed by one bot, so the quota is the largest single-bot
     // stock, not the fleet total. Summing five bots' five beds would create a
     // ten-bed task no individual bot could ever finish.
@@ -289,6 +341,8 @@ class TeamCoordinator {
     const plan = createSurvivalBasePlan(this.board, { botNames: this.botNames, bedStock });
     if (plan.created) {
       this.planAttempts++;
+      this.planBlockedUntil = 0;
+      this.planBlockedReason = null;
       this.lastPlanObjectiveId = plan.objective.id;
       this.planRetryAt = now + this.planRetryMs;
       this.comms.send('OBJECTIVE_CREATED', 'system', { objectiveId: plan.objective.id, title: plan.objective.title });
@@ -528,8 +582,12 @@ class TeamCoordinator {
           failures: this.planFailures,
           attempts: this.planAttempts,
           nextRetryAt: this.planRetryAt || null,
+          blockedUntil: this.planBlockedUntil || null,
+          reopenPending: this.planReopen ? { objectiveId: this.planReopen.objectiveId, at: this.planReopen.at } : null,
+          blockedReason: this.planBlockedReason || null,
+          lastFailure: this.lastPlanFailure,
           lastObjectiveId: this.lastPlanObjectiveId,
-          stopped: false
+          stopped: Boolean(this.planBlockedUntil && this.now() < this.planBlockedUntil)
         }
       },
       bots,

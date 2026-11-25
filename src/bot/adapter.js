@@ -51,6 +51,11 @@ class BotAdapter {
     this.isSleeping = false;
     this.effects = {};
     this.capabilities = ['mine', 'chop', 'farm', 'build', 'excavate', 'explore', 'combat', 'fish'];
+    // SafetyTick records its real assessment here. summary() used to rescan
+    // every entity inside _syncBots, which cost ~1s per state sync on the live
+    // server. The cache is short-lived and falls back to a scan only when no
+    // safety pass has run recently.
+    this._threatSummary = null;
     this.deaths = 0;
     this.currentTaskId = null;
     this.activity = 'idle';
@@ -163,17 +168,42 @@ class BotAdapter {
     return Object.keys(this.inventory).find((n) => BED_NAMES.has(n) && this.inventory[n] > 0) || null;
   }
 
+  /** Called by the safety pass with the assessment it just computed. */
+  recordThreatSummary({ threats = 0, nearest = null, at = Date.now() } = {}) {
+    this._threatSummary = {
+      at,
+      count: Math.max(0, Number(threats) || 0),
+      nearestDistance: nearest === null || nearest === undefined || !Number.isFinite(Number(nearest))
+        ? null
+        : Number(Number(nearest).toFixed(1))
+    };
+    return this._threatSummary;
+  }
+
   summary() {
     // One entity scan for both the threat count and the nearest distance.
     // Calling threatsNear() and then nearestThreat() twice repeated the same
     // O(entities) work on every state-sync tick and could print NaN when an
     // entity had a malformed position.
-    const nearbyHostiles = this.entitiesNear(12).filter((entity) => entity.hostile);
-    const nearest = nearbyHostiles
-      .filter((entity) => entity.position && Number.isFinite(Number(entity.position.x)) && Number.isFinite(Number(entity.position.y)) && Number.isFinite(Number(entity.position.z)))
-      .map((entity) => ({ entity, distance: distance(entity.position, this.position) }))
-      .filter((entry) => Number.isFinite(entry.distance))
-      .sort((a, b) => a.distance - b.distance)[0] || null;
+    const now = Date.now();
+    const cached = this._threatSummary;
+    let threats;
+    let nearestThreatDistance;
+    let evidenceAt = cached ? cached.at : null;
+    if (cached && now - cached.at <= 5000) {
+      threats = cached.count;
+      nearestThreatDistance = cached.nearestDistance;
+    } else {
+      const nearbyHostiles = this.entitiesNear(12).filter((entity) => entity.hostile);
+      const nearest = nearbyHostiles
+        .filter((entity) => entity.position && Number.isFinite(Number(entity.position.x)) && Number.isFinite(Number(entity.position.y)) && Number.isFinite(Number(entity.position.z)))
+        .map((entity) => ({ entity, distance: distance(entity.position, this.position) }))
+        .filter((entry) => Number.isFinite(entry.distance))
+        .sort((a, b) => a.distance - b.distance)[0] || null;
+      threats = nearbyHostiles.length;
+      nearestThreatDistance = nearest ? Number(nearest.distance.toFixed(1)) : undefined;
+      evidenceAt = now;
+    }
     return {
       name: this.name,
       connected: this.connected,
@@ -198,8 +228,9 @@ class BotAdapter {
       isSleeping: this.isSleeping,
       effects: { ...this.effects },
       capabilities: this.capabilities.slice(),
-      threats: nearbyHostiles.length,
-      nearestThreatDistance: nearest ? Number(nearest.distance.toFixed(1)) : undefined,
+      threats,
+      nearestThreatDistance,
+      threatEvidenceAt: evidenceAt,
       deaths: this.deaths,
       currentTaskId: this.currentTaskId,
       activity: this.activity,

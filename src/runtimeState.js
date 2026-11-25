@@ -71,7 +71,10 @@ function statusSnapshot(services) {
   lap('actions');
   const leader = services.coordinator ? services.coordinator.leader : null;
   let library = null;
-  try { library = services.library && services.library.loaded ? services.library.stats() : null; }
+  // A snapshot never parses the 20 MB manifest. The generated aggregate
+  // summary is enough for counts, categories and timestamps; individual
+  // designs stay lazy until a schematics command/page asks for them.
+  try { library = services.library && (services.library.summaryLoaded || services.library.loadedInMemory) ? services.library.stats() : null; }
   catch (err) { library = { error: `library stats failed: ${err.message}` }; }
   const buildValues = [...(services.builders ? services.builders.values() : [])];
   const builds = buildValues.map((b) => {
@@ -192,9 +195,9 @@ function statusSnapshot(services) {
     },
     schematics: {
       stats: library,
-      categories: services.library && services.library.loaded ? services.library.categories().slice(0, 30) : [],
-      recent: services.library && services.library.loaded ? services.library.manifest.generatedAt : null,
-      custom: services.library && services.library.customStore ? services.library.customStore.statsSummary() : null
+      categories: library && Array.isArray(library.categories) ? library.categories.slice(0, 30) : [],
+      recent: library ? (library.generatedAt || null) : null,
+      custom: library && library.custom ? library.custom : null
     },
     building: {
       config: config.building,
@@ -214,7 +217,7 @@ function statusSnapshot(services) {
           verification
         };
       }),
-      custom: services.library && services.library.customStore ? services.library.customStore.statsSummary() : null,
+      custom: services.library && services.library.custom ? services.library.custom.statsSummary() : null,
       projects: (() => { try { return services.construction ? services.construction.list() : []; } catch (_) { return []; } })()
     },
     workZone: services.runtime && services.runtime.actions ? (() => {
@@ -234,7 +237,12 @@ function statusSnapshot(services) {
       objectives: board ? board.listObjectives().map((o) => {
         const linked = (o.tasks || []).map((id) => board.getTask(id)).filter(Boolean);
         const claimed = [...new Set(linked.map((task) => task.claimedBy).filter(Boolean))];
-        return { id: o.id, title: o.title, description: o.description, status: o.status, priority: o.priority, progress: o.progress, assignedBots: [...new Set([...(o.assignedBots || []), ...claimed])], taskCount: linked.length, completionCondition: o.completionCondition };
+        return {
+          id: o.id, title: o.title, description: o.description, status: o.status, priority: o.priority,
+          progress: o.progress, assignedBots: [...new Set([...(o.assignedBots || []), ...claimed])],
+          taskCount: linked.length, completionCondition: o.completionCondition,
+          blockedReason: o.blockedReason || null, failure: o.failure || null
+        };
       }) : []
     },
     diagnostics: {
@@ -309,7 +317,31 @@ function statusSnapshot(services) {
   };
   // Measure after the whole tree (including task objectives and builder
   // projections) has been materialised, not just the early sections.
-  snapshot.performance = { snapshotMs: Date.now() - startedAt, sections };
+  const actionCache = actionStatus.map((a) => ({
+    bot: a.bot || null,
+    maxAgeMs: a.statusCache ? a.statusCache.maxAgeMs : null,
+    refreshedAt: a.statusCache ? a.statusCache.refreshedAt : null,
+    entries: a.statusCache ? a.statusCache.entries : null
+  }));
+  const cacheAges = actionCache.map((entry) => entry.maxAgeMs).filter((ms) => typeof ms === 'number');
+  snapshot.freshness = {
+    generatedAt: snapshot.generatedAt,
+    actionStatus: actionCache,
+    maxActionStatusAgeMs: cacheAges.length ? Math.max(...cacheAges) : null,
+    // True when every controller section in `actions` is present and was
+    // refreshed within two runtime state-sync periods (12 controllers at one
+    // per tick). Anything older is surfaced instead of silently rendered.
+    actionStatusFresh: cacheAges.length > 0 && Math.max(...cacheAges) < 12000
+  };
+  if (!snapshot.freshness.actionStatusFresh) {
+    // A cache that stopped refreshing must be visible, not silently rendered
+    // as if the last value were live.
+    snapshot.overview.alerts.push({
+      level: 'warn',
+      message: `action status cache is stale (max age ${snapshot.freshness.maxActionStatusAgeMs === null ? 'unknown' : `${snapshot.freshness.maxActionStatusAgeMs}ms`})`
+    });
+  }
+  snapshot.performance = { snapshotMs: Date.now() - startedAt, sections, statusCache: snapshot.freshness };
   return snapshot;
 }
 

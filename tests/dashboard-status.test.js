@@ -190,3 +190,32 @@ test('a throwing builder status degrades to an error row instead of blanking the
   assert.match(snapshot.builder.builds[0].error, /builder exploded/);
   assert.equal(snapshot.building.builds[0].state, 'ERROR');
 });
+
+test('home-base status never lazily parses the manifest or scans the custom store', () => {
+  const { HomeBaseManager } = require('../src/actions/homeBase');
+  let lazyReads = 0;
+  const library = {
+    loadedInMemory: false,
+    get loaded() { lazyReads++; return true; },
+    get count() { lazyReads++; return 10000; },
+    get knownCount() { lazyReads++; return 10000; },
+    get customStore() { lazyReads++; return null; }
+  };
+  const homeBase = new HomeBaseManager({ library, bots: [], world: null });
+  const status = homeBase.status();
+  assert.equal(status.availableDesigns, 0);
+  assert.equal(lazyReads, 0, 'a status poll must not trigger a 250ms manifest/custom-store load');
+});
+
+test('the real schematic library exposes a non-loading status count', () => {
+  const { SchematicLibrary } = require('../src/schematics/library');
+  const library = new SchematicLibrary();
+  assert.equal(library.loadedInMemory, false);
+  assert.ok(library.knownCount > 0, 'the generated summary supplies the count');
+  assert.equal(library.loadedInMemory, false, 'knownCount must not trigger the 20 MB manifest load');
+  const stats = library.stats();
+  assert.equal(stats.totalIncludingCustom, library.knownCount);
+  assert.equal(stats.fromSummary, true);
+  assert.equal(library.loadedInMemory, false, 'stats must not trigger the 20 MB manifest load');
+  assert.equal(library.loaded, true);
+});

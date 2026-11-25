@@ -12,6 +12,16 @@ const { ExplorationController } = require('./exploration');
 const { InventoryManager } = require('./inventory');
 const { FishingController } = require('./fishing');
 const { HomeBaseManager } = require('./homeBase');
+
+// One cached status per controller. A dashboard snapshot must never call an
+// arbitrary controller.status() on the request path: some live status methods
+// scan chunks and can block for seconds while a client tick is due. The runtime
+// refreshes one controller per bot per state-sync tick; the snapshot reads this
+// cache and reports its age.
+const STATUS_CONTROLLERS = Object.freeze([
+  'survival', 'combat', 'mining', 'woodcutting', 'farming', 'sleep',
+  'fishing', 'exploration', 'inventory', 'players', 'homeBase', 'recovery'
+]);
 const { RecoveryManager } = require('./recovery');
 const { PlayerController } = require('../players/controller');
 const { ResourceReservations } = require('./reservations');
@@ -70,6 +80,10 @@ class BotActions {
     // The tool bootstrap needs to craft/place and, if wood is missing, chop.
     this.mining.attachHelpers({ inventory: this.inventory, woodcutting: this.woodcutting });
     this.homeBase = new HomeBaseManager({ bots: [bot], world, memory, taskBoard, ledger, library, logger: this.logger });
+    this._statusCache = new Map();
+    this._statusCursor = 0;
+    this._statusWarmedAt = 0;
+    this._statusRefreshedAt = 0;
     this.lastAction = null;
     this.lastActionAt = 0;
     this._lastOverflowAttempt = 0;
@@ -86,21 +100,65 @@ class BotActions {
     this.homeBase.setHome(home);
   }
 
+  statusNames() { return STATUS_CONTROLLERS; }
+
+  /**
+   * Refresh one (or a named) controller status into the cache. Never called
+   * from the dashboard request path except the cold fallback in status().
+   */
+  refreshStatus({ name = null, limit = 1 } = {}) {
+    const names = name ? [name] : STATUS_CONTROLLERS;
+    let refreshed = 0;
+    while (refreshed < Math.max(1, limit)) {
+      const target = names[this._statusCursor % names.length];
+      this._statusCursor = (this._statusCursor + 1) % Math.max(1, names.length);
+      const controller = this[target];
+      if (!controller || typeof controller.status !== 'function') {
+        if (name) break;
+        continue;
+      }
+      try {
+        this._statusCache.set(target, { status: controller.status(), at: Date.now() });
+        this._statusRefreshedAt = Date.now();
+        refreshed++;
+      } catch (err) {
+        this._statusCache.set(target, { status: { bot: this.bot.name, error: err.message }, at: Date.now() });
+        refreshed++;
+      }
+      if (name) break;
+    }
+    return refreshed;
+  }
+
   status() {
+    // Cold callers (tests, a CLI before the runtime tick) still get every
+    // section, but production warms all twelve before the dashboard starts.
+    if (!this._statusCache.size) {
+      for (const target of STATUS_CONTROLLERS) this.refreshStatus({ name: target });
+      this._statusWarmedAt = Date.now();
+    }
+    const at = (name) => this._statusCache.get(name);
+    const ages = [...this._statusCache.values()].map((entry) => Date.now() - entry.at);
     return {
       bot: this.bot.name,
-      survival: this.survival.status(),
-      combat: this.combat.status(),
-      mining: this.mining.status(),
-      woodcutting: this.woodcutting.status(),
-      farming: this.farming.status(),
-      sleep: this.sleep.status(),
-      fishing: this.fishing.status(),
-      exploration: this.exploration.status(),
-      inventory: this.inventory.status(),
-      players: this.players.status(),
-      homeBase: this.homeBase.status(),
-      recovery: this.recovery.status(),
+      survival: at('survival') ? at('survival').status : null,
+      combat: at('combat') ? at('combat').status : null,
+      mining: at('mining') ? at('mining').status : null,
+      woodcutting: at('woodcutting') ? at('woodcutting').status : null,
+      farming: at('farming') ? at('farming').status : null,
+      sleep: at('sleep') ? at('sleep').status : null,
+      fishing: at('fishing') ? at('fishing').status : null,
+      exploration: at('exploration') ? at('exploration').status : null,
+      inventory: at('inventory') ? at('inventory').status : null,
+      players: at('players') ? at('players').status : null,
+      homeBase: at('homeBase') ? at('homeBase').status : null,
+      recovery: at('recovery') ? at('recovery').status : null,
+      statusCache: {
+        warmedAt: this._statusWarmedAt || null,
+        refreshedAt: this._statusRefreshedAt || null,
+        maxAgeMs: ages.length ? Math.max(...ages) : null,
+        entries: this._statusCache.size
+      },
       lastAction: this.lastAction,
       lastActionAt: this.lastActionAt
     };
@@ -113,7 +171,7 @@ class BotActions {
    */
   cancelCurrent(reason = 'action timeout') {
     const stopped = [];
-    for (const name of ['mining', 'woodcutting', 'farming', 'players']) {
+    for (const name of ['mining', 'woodcutting', 'farming', 'players', 'combat']) {
       const controller = this[name];
       if (controller && typeof controller.stop === 'function') {
         try { controller.stop(); stopped.push(name); } catch (_) { /* optional */ }
@@ -136,10 +194,46 @@ class BotActions {
     };
   }
 
-  /** Survival first, then immediate threats. Safe to call every tick. */
+  /**
+   * Hard ceiling for one safety pass. Controllers check deadlines between
+   * stages, but a single adapter await (equip/consume/attack) can still hang
+   * past them: the live log shows a 60.3s `threat` stage and
+   * `action cancelled: exceeded 60000ms`. Racing the whole pass releases the
+   * bot's safety slot at the configured budget and cancels its movement/work;
+   * the underlying await is also told to stop and its late settlement is
+   * ignored.
+   */
   async safetyTick() {
+    const startedAt = Date.now();
+    const budgetMs = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
+    let timer = null;
+    const timedOut = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        const reason = `safety budget ${budgetMs}ms exceeded`;
+        try { this.cancelCurrent(reason); } catch (_) { /* optional */ }
+        try { this.bot.cancelAction?.(reason); } catch (_) { /* optional */ }
+        this.logger.warn(`[${this.bot.name}] ${reason}; released the safety slot and cancelled movement`);
+        resolve({
+          ok: false, timedOut: true, stages: { deadline: budgetMs },
+          totalMs: Date.now() - startedAt, recovery: this.recovery.status()
+        });
+      }, budgetMs + 250);
+    });
+    // Keep this timer referenced: if the hung pass is the only pending work,
+    // the deadline must still fire instead of letting the event loop exit.
+    try {
+      return await Promise.race([this._safetyTickBody(), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Survival first, then immediate threats. Safe to call every tick. */
+  async _safetyTickBody() {
     const bot = this.bot;
     const startedAt = Date.now();
+    const budgetMs = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
+    const deadlineAt = startedAt + budgetMs;
     const stages = {};
     let cursor = startedAt;
     const lap = (name) => {
@@ -174,6 +268,14 @@ class BotActions {
       lap('respawn-rescan');
     }
     const assessment = this.combat.assess(16);
+    // Feed the cheap state-sync summary with the evidence we just computed;
+    // otherwise every _syncBots call rescans all entities on the live server.
+    if (typeof bot.recordThreatSummary === 'function') {
+      bot.recordThreatSummary({
+        threats: assessment.threats.length,
+        nearest: assessment.nearest ? assessment.nearest.distance : null
+      });
+    }
     const now = lap('assess');
     // Initial spawn, respawn and reconnect all need the same protection. The
     // old code only assessed on a respawn, so a first join into a zombie pack
@@ -224,7 +326,7 @@ class BotActions {
     lap('recovery-update');
     // Movement comes before equipment/crafting. A bot at 2 health does not
     // have time to cycle armour slots while a zombie is in melee range.
-    const emergency = await this._threatResponse(assessment);
+    const emergency = await this._threatResponse(assessment, { deadlineAt });
     if (emergency) {
       this.lastAction = emergency.action || 'emergency-threat';
       this.lastActionAt = Date.now();
@@ -240,7 +342,7 @@ class BotActions {
       };
     }
     if (!this.recovery.canWork()) {
-      const recovery = await this._recover(assessment);
+      const recovery = await this._recover(assessment, { deadlineAt });
       lap('recovery-action');
       return {
         ok: recovery.ok !== false, recovering: true, recovery,
@@ -258,8 +360,8 @@ class BotActions {
     const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
     lap('follow');
     let defence = null;
-    if (assessment.threats.length && this.combat.armed) {
-      defence = await this.combat.defend({ maxAttacks: 6 });
+    if (assessment.threats.length && this.combat.armed && Date.now() < deadlineAt) {
+      defence = await this.combat.defend({ maxAttacks: 6, deadlineAt });
     }
     lap('defend');
     const result = {
@@ -278,7 +380,7 @@ class BotActions {
    * Immediate danger response. Independent of task work and home distance:
    * a bot standing on its own chest with three zombies around it must move.
    */
-  async _threatResponse(assessment) {
+  async _threatResponse(assessment, { deadlineAt = 0 } = {}) {
     const threats = (assessment && Array.isArray(assessment.threats) ? assessment.threats : [])
       .filter((threat) => threat && threat.position && Number.isFinite(Number(threat.distance)));
     if (!threats.length) return null;
@@ -298,15 +400,21 @@ class BotActions {
     // Outside the spawn guard, a single distant hostile is not a reason to
     // abandon work; a group or a melee threat is.
     if (!guardingSpawn && !outmatched && nearest.distance > 6) return null;
-    if (now - this._lastEmergencyAt < 1200) return null;
+    // Do not rate-limit a *failed* escape. At 0.8m a zombie can deliver the
+    // next hit before a 1.2s cooldown expires; retrying on the next 750ms
+    // safety pass is the only way out when the first path was blocked.
+    if (now - this._lastEmergencyAt < 1200 && this._lastEmergencyOk !== false) return null;
     this._lastEmergencyAt = now;
     if (!outmatched && !forceEscape && nearest.distance <= 3.5) {
-      const hit = await this.combat.defend({ maxAttacks: 2, radius: 10 });
+      const hit = await this.combat.defend({ maxAttacks: 2, radius: 10, deadlineAt });
+      this._lastEmergencyOk = hit && hit.ok !== false;
       return { action: 'defend', ...hit, emergency: true, reason: `melee ${nearest.name || nearest.type} at ${nearest.distance}m` };
     }
     const retreat = await this._emergencyRetreat(nearest, {
-      reason: `${threats.length} threats, nearest ${nearest.distance}m, ${weapon ? 'armed' : 'no weapon'}, health ${health}`
+      reason: `${threats.length} threats, nearest ${nearest.distance}m, ${weapon ? 'armed' : 'no weapon'}, health ${health}`,
+      deadlineAt
     });
+    this._lastEmergencyOk = retreat && retreat.ok !== false;
     return { ...retreat, emergency: true };
   }
 
@@ -315,7 +423,7 @@ class BotActions {
    * stopped" is not success; if every route fails and the bot is armed it
    * stands and fights rather than waiting to die.
    */
-  async _emergencyRetreat(nearest, { reason = 'threat' } = {}) {
+  async _emergencyRetreat(nearest, { reason = 'threat', deadlineAt = 0 } = {}) {
     const bot = this.bot;
     const start = { ...bot.position };
     const threatPos = nearest && nearest.position ? nearest.position : null;
@@ -327,10 +435,19 @@ class BotActions {
     const baseAngle = Math.atan2(dz, dx);
     const attempts = [];
     const offsets = [0, Math.PI / 3, -Math.PI / 3];
+    // Short hops first. A 9m path computed while a zombie is already in melee
+    // is rarely completed; 4m of verified displacement opens enough space for
+    // the next safety pass to plan a proper retreat.
+    const distances = [4, 7, 10];
+    const timeouts = [900, 1400, 1800];
     for (let i = 0; i < offsets.length; i++) {
       if (bot.health <= 0 || !bot.ready) break;
+      if (deadlineAt && Date.now() >= deadlineAt) {
+        attempts.push({ skipped: true, reason: 'safety budget exhausted before another escape attempt' });
+        break;
+      }
       const angle = baseAngle + offsets[i];
-      const distanceOut = 9 + (i * 2);
+      const distanceOut = distances[i];
       const candidate = {
         x: Math.round(start.x + Math.cos(angle) * distanceOut),
         y: Math.round(start.y),
@@ -338,8 +455,9 @@ class BotActions {
       };
       let move;
       try {
+        const moveBudget = deadlineAt ? Math.max(800, Math.min(timeouts[i], deadlineAt - Date.now())) : timeouts[i];
         move = await bot.goTo(candidate, {
-          range: 2, timeoutMs: 2200, priority: 'emergency', owner: 'recovery'
+          range: 2, timeoutMs: moveBudget, priority: 'emergency', owner: 'recovery'
         });
       } catch (err) {
         move = { ok: false, error: err.message };
@@ -349,12 +467,12 @@ class BotActions {
         ? distance(bot.position, threatPos) - nearest.distance
         : moved;
       attempts.push({ candidate, ok: move && move.ok !== false, moved: Number(moved.toFixed(1)), opened: Number(opened.toFixed(1)), error: move && move.error });
-      if (move && move.ok !== false && moved >= 1.5 && opened > 1) {
+      if (move && move.ok !== false && moved >= 1.2 && opened > 0.5) {
         return { action: 'recovery-retreat', ok: true, verified: true, from: start, to: { ...bot.position }, candidate, moved: Number(moved.toFixed(1)), opened: Number(opened.toFixed(1)), reason, attempts };
       }
     }
     if (this.combat.armed) {
-      const fight = await this.combat.defend({ maxAttacks: 3, radius: 8 });
+      const fight = await this.combat.defend({ maxAttacks: 3, radius: 8, deadlineAt });
       return { action: 'last-stand', ok: fight.ok !== false, reason: `${reason}; every escape route failed`, attempts, defence: fight };
     }
     return { action: 'recovery-retreat', ok: false, verified: false, reason, attempts, error: 'no escape route produced real displacement' };
@@ -393,15 +511,28 @@ class BotActions {
     const bot = this.bot;
     const last = bot.lastDeath || {};
     const threats = typeof bot.entitiesNear === 'function' ? bot.entitiesNear(18) : [];
-    const killer = threats
-      .filter((entity) => entity.hostile || entity.type === 'player')
-      .sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999))[0] || null;
+    // Proximity is not evidence of a kill. The old code selected the nearest
+    // hostile (and therefore called an unrelated chicken the killer when no
+    // hostile was nearby) even when the adapter had no damage-source data.
+    const attackerName = last.attacker && (last.attacker.name || last.attacker.type || last.attacker.username)
+      ? String(last.attacker.name || last.attacker.type || last.attacker.username)
+      : null;
+    // An item/object/arrow is not an attacker. Neither is the generic
+    // "item (1.3m)" attribution an old adapter could write from proximity.
+    const attacker = attackerName && !/^(unknown|item|object|other|entity)$/i.test(attackerName)
+      ? attackerName
+      : null;
+    const rawCause = String(last.cause || '').trim();
+    const objectCause = /^(item|object|other|entity|unknown)\b/i.test(rawCause);
+    const hasCause = rawCause && !objectCause;
+    const evidence = hasCause ? rawCause : null;
+    const cause = evidence || (attacker ? `${attacker} (proximity)` : 'UNKNOWN_CAUSE');
     const assignment = this.team && typeof this.team.getAssignment === 'function' ? this.team.getAssignment(bot.name) : null;
     this.recovery.recordDeath({
       at: Number(last.at) || Date.now(),
       position: last.position || bot.position,
-      cause: last.cause || (killer ? `${killer.name || killer.type}` : 'unknown'),
-      confidence: last.confidence || (last.message ? 'confirmed' : killer ? 'likely' : 'unknown'),
+      cause,
+      confidence: last.confidence || (hasCause && last.message ? 'confirmed' : evidence ? 'likely' : 'unknown'),
       summary: last.summary || null,
       healthBefore: last.healthBefore ?? null,
       food: last.food ?? bot.food,
@@ -428,7 +559,7 @@ class BotActions {
    * Do the minimum needed to break a death loop: heal, re-equip and retreat
    * towards home. This never claims a task and never attacks a player.
    */
-  async _recover(assessment = null) {
+  async _recover(assessment = null, { deadlineAt = 0 } = {}) {
     const now = Date.now();
     if (now - this._lastRecoveryStepAt < 2500) return this.recovery.status();
     this._lastRecoveryStepAt = now;
@@ -442,7 +573,7 @@ class BotActions {
     // occupied 10-22 seconds while the bot was being hit.
     if (threats.length) {
       const nearest = threats.slice().sort((a, b) => a.distance - b.distance)[0];
-      const retreat = await this._emergencyRetreat(nearest, { reason: this.recovery.reason || 'recovery threat' });
+      const retreat = await this._emergencyRetreat(nearest, { reason: this.recovery.reason || 'recovery threat', deadlineAt });
       this.lastAction = retreat.action;
       this.lastActionAt = Date.now();
       return { ...this.recovery.status(), ok: retreat.ok !== false, actions: [retreat] };
@@ -455,7 +586,7 @@ class BotActions {
       const target = this._findSpawnEscape();
       if (target) {
         try {
-          const move = await bot.goTo(target, { range: 1, timeoutMs: 4000, priority: 'recovery', owner: 'recovery-spawn-escape' });
+          const move = await bot.goTo(target, { range: 1, timeoutMs: deadlineAt ? Math.max(800, Math.min(4000, deadlineAt - Date.now())) : 4000, priority: 'recovery', owner: 'recovery-spawn-escape' });
           actions.push({ action: 'recovery-spawn-escape', ok: move.ok !== false, target, error: move.error });
           this.recovery.assessSpawn({
             position: bot.position,
@@ -488,7 +619,7 @@ class BotActions {
     const farFromHome = Math.hypot(bot.position.x - this.home.x, bot.position.z - this.home.z) > 8;
     if (!threats.length && bot.health > 12 && farFromHome) {
       try {
-        const retreat = await bot.goTo(this.home, { range: 3, timeoutMs: 5000, priority: 'recovery', owner: 'recovery-home' });
+        const retreat = await bot.goTo(this.home, { range: 3, timeoutMs: deadlineAt ? Math.max(800, Math.min(5000, deadlineAt - Date.now())) : 5000, priority: 'recovery', owner: 'recovery-home' });
         actions.push({ action: 'recovery-home', ok: retreat.ok !== false, error: retreat.error });
       } catch (err) {
         this.logger.warn(`[${bot.name}] recovery home move failed: ${err.message}`);
