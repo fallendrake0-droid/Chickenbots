@@ -486,6 +486,22 @@ class RealBot extends BotAdapter {
    * set, so the post-physics entity is the only safe anchor. Session code calls
    * this only from the current client's packet handler.
    */
+  /** Settle or fail a mineflayer promise; a hung placement must not own a slot. */
+  async _withTimeout(promise, timeoutMs, message) {
+    let timer = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message || 'operation timed out')), Math.max(250, Number(timeoutMs) || 5000));
+          if (timer.unref) timer.unref();
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   _captureServerPosition(packet) {
     const previous = this.lastServerPosition || {};
     const entity = this.bot && this.bot.entity ? this.bot.entity : null;
@@ -2471,7 +2487,7 @@ class RealBot extends BotAdapter {
     const category = /_log$|_wood$|_planks$|_fence$|_door$/.test(block.name) ? 'axe' : 'pickaxe';
     await this.equipBestTool(category);
     try {
-      await this.bot.dig(block, true);
+      await this._withTimeout(this.bot.dig(block, true), Math.max(1000, Number(timeoutMs) || 20000), `digging ${block.name} timed out`);
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -2523,7 +2539,7 @@ class RealBot extends BotAdapter {
         }
         await this.bot.equip(item, 'hand');
         const face = this._vec3(-reference.dx, -reference.dy, -reference.dz);
-        await this.bot.placeBlock(reference.block, face);
+        await this._withTimeout(this.bot.placeBlock(reference.block, face), 5000, 'server did not confirm the placement');
         this._blockCache.delete(`${pos.x},${pos.y},${pos.z}`);
         this.stats.placed++;
         this._syncInventory();
