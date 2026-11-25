@@ -164,3 +164,22 @@ All are pushed to `origin/arena/de11bd2d-chickenbots`.
 ## 12. Honest conclusion
 
 The synchronous-decompression event-loop block is a real, measured root cause and is now removed. The respawn, snapshot, join-scope and EPIPE defects are fixed at their lifecycle boundaries and covered by tests. The team is still not claimed as live-verified for a ten-minute idle run or a five-bot join. That is the remaining acceptance gap, and it needs a real server run with the redacted diagnostics export.
+
+---
+
+## Round 26 addendum — sections A–M
+
+This section is an addendum, not a rewrite of the live connection report above.
+Round 26's full A–M evidence is in [`V6_ROUND_26_REPORT.md`](V6_ROUND_26_REPORT.md).
+It covers repository baseline, the root-cause bug register, movement authority,
+spawn survival, connection changes, before/after performance, fleet commands, the
+task/objective system, building, genuine library counts, compatibility, tests and
+git state.
+
+The live claims in the original report above are unchanged. The sandbox still
+cannot reach `EmpiSMP.aternos.me:32990`; no round-26 live session is claimed.
+Round-26 evidence is unit tests plus a deterministic ten-bot simulation:
+309/309 tests, lint 148 files, `validate` 10/10 + 5/5, a 10,001-design audit with
+0 issues / 0 invalid blocks / 0 cycles, and a simulation objective that completed
+without the repeated `automatic plan failed` cycle. The live 30-minute acceptance
+checklist remains open.
