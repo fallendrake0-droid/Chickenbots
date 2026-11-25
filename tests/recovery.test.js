@@ -269,3 +269,21 @@ test('a bot spawned inside a solid block has a real escape target', () => {
   assert.equal(world.getBlock(target).name, 'air');
   assert.equal(world.getBlock({ x: target.x, y: target.y + 1, z: target.z }).name, 'air');
 });
+
+test('safety reports each stage and re-scans equipment after a respawn', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '11001010', world, speed: 0, inventory: { iron_sword: 1, cooked_beef: 8 } });
+  bot.position = { x: 0, y: 64, z: 0 };
+  const actions = new BotActions({ bot, world });
+  actions.combat.state = 'DEAD';
+  actions.combat.lastArmorSignature = 'old-armour';
+  actions.combat.lastWeapon = 'old-sword';
+  const result = await actions.safetyTick();
+  assert.equal(result.stages !== undefined, true);
+  assert.equal(typeof result.totalMs, 'number');
+  assert.equal(Object.keys(result.stages).length > 0, true);
+  assert.equal(actions.combat.lastArmorSignature, null);
+  assert.equal(actions.combat.lastWeapon, null);
+  assert.ok(result.equipmentRescan, 'the respawn pass records the real inventory/equipment');
+  assert.equal(result.equipmentRescan.food, bot.food);
+});

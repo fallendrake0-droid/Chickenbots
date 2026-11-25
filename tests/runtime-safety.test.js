@@ -284,3 +284,12 @@ test('pre-join safety is scheduled per bot and never blocks the runtime tick', a
   await Promise.allSettled([...runtime.botSafety.values()]);
   assert.equal(runtime.botSafety.has(bot.name), false, 'the slot is released when the action settles');
 });
+
+test('per-stage safety timings survive for the dashboard diagnostics', () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  runtime._recordSafetyStages('________', { totalMs: 12, stages: { assess: 1, survival: 8, defend: 3 } }, Date.now() - 12);
+  const stored = runtime.safetyStages.get('________');
+  assert.equal(stored.totalMs, 12);
+  assert.deepEqual(stored.stages, { assess: 1, survival: 8, defend: 3 });
+  assert.ok(stored.at > 0);
+});

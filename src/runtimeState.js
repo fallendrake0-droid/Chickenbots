@@ -66,6 +66,7 @@ function statusSnapshot(services) {
   const excavationStatus = services.excavation ? services.excavation.status() : null;
   const board = services.taskBoard;
   const runtime = services.runtime ? services.runtime.state() : null;
+  const safetyByName = new Map((runtime && runtime.bots ? runtime.bots : []).map((bot) => [bot.name, bot.safety || null]));
   const byBot = {};
   for (const status of actionStatus) byBot[status.bot] = status;
   const online = summaries.filter((s) => s.online === true).length;
@@ -220,6 +221,7 @@ function statusSnapshot(services) {
         stage: s.stage || null,
         connection: s.connection || null,
         stageTimings: s.stageTimings || null,
+        safety: safetyByName.get(s.name) || null,
         keepAlive: s.keepAlive || null,
         ticker: s.ticker || null,
         lastDisconnect: s.lastDisconnect || null

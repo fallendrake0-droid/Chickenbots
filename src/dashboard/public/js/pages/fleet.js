@@ -729,6 +729,7 @@ export const connectionsPage = {
                     ['Client ticks', ticker.tickEnds != null ? `${num(ticker.tickEnds)} tick_end · ${ticker.tickRate || 20} tps${ticker.frozen ? ' · frozen' : ''}${ticker.stalls ? ` · ${num(ticker.stalls)} late` : ''}` : 'not active'],
                     ['Freeze guard', `${num(stall.recoveries || 0)} ${Number(stall.recoveries) === 1 ? 'recovery' : 'recoveries'} · ${num(stall.forcedReanchors || 0)} teleport ${Number(stall.forcedReanchors) === 1 ? 'reanchor' : 'reanchors'} · ${num(stall.droppedMovements || 0)} packets held${stall.blockedUntil && stall.blockedUntil > Date.now() ? ' · resyncing' : ''}`],
                     ['Movement owner', movement.owner ? `${esc(String(movement.owner))} · priority ${esc(String(movement.priority))}${Number(movement.invalidDrops) ? ` · ${num(movement.invalidDrops)} malformed dropped` : ''}` : `idle${Number(movement.invalidDrops) ? ` · ${num(movement.invalidDrops)} malformed dropped` : ''}`],
+                    ['Safety stages', row.safety ? `${num(row.safety.totalMs)}ms · ${Object.entries(row.safety.stages || {}).filter(([, ms]) => ms > 0).map(([stage, ms]) => `${esc(stage)} ${num(ms)}ms`).join(' · ') || 'no stage above 0ms'}` : '—'],
                     ['Last inbound', c.lastEventAgeMs != null ? `${duration(c.lastEventAgeMs)} ago` : '—'],
                     ['Last failure', c.failure ? esc(`${c.failure.code} in ${c.failure.stage}: ${c.failure.error}`) : '—'],
                     ['Retry', retry ? `attempt ${num(retry.attempt || 0)}${retry.nextRetryAt ? ` · next in ${duration(Math.max(0, retry.nextRetryAt - Date.now()))}` : ''}${retry.lastError ? ` · ${esc(String(retry.lastError).slice(0, 120))}` : ''}` : '—'],
@@ -753,6 +754,8 @@ export const connectionsPage = {
               ['PVP', config.pvp ? 'Enabled' : 'Disabled'],
               ['AI planner', config.ai ? 'Enabled' : 'Disabled'],
               ['Event loop', runtime.eventLoop ? (runtime.eventLoop.samples ? `mean ${runtime.eventLoop.meanMs}ms · p99 ${runtime.eventLoop.p99Ms}ms · max ${runtime.eventLoop.maxMs}ms` : 'collecting samples') : '—'],
+              ['Runtime load', runtime.performance ? `CPU ${runtime.performance.cpuPercent == null ? '—' : `${runtime.performance.cpuPercent}%`} · RSS ${runtime.performance.rssMb} MB · heap ${runtime.performance.heapUsedMb} MB` : '—'],
+              ['Snapshot / tick', runtime.performance ? `state ${runtime.performance.stateSnapshotMs}ms · tick ${runtime.performance.lastTickMs == null ? '—' : `${runtime.performance.lastTickMs}ms`} · sync ${runtime.performance.lastSyncMs == null ? '—' : `${runtime.performance.lastSyncMs}ms`}` : '—'],
               ['Readiness', `${rows.filter((r) => r.gameplayReady || r.ready).length}/${rows.length} ready · ${rows.filter((r) => r.online).length} online · ${rows.filter((r) => ['joining', 'reconnecting'].includes(r.status)).length} connecting · ${rows.filter((r) => r.authPending || r.status === 'auth_required_manual').length} manual auth · ${rows.filter((r) => ['offline'].includes(r.status)).length} offline`]
             ])}
           </div>

@@ -109,12 +109,35 @@ class BotActions {
     return { ok: true, cancelled: true, stopped, reason };
   }
 
+  /** Real inventory/equipment evidence captured at spawn or respawn. */
+  _equipmentSnapshot() {
+    const bot = this.bot;
+    return {
+      at: Date.now(),
+      inventorySlots: Object.keys(bot.inventory || {}).length,
+      weapon: bot.bestToolFor ? ((bot.bestToolFor('sword') || bot.bestToolFor('axe')) || null) : null,
+      armour: typeof bot.armorPoints === 'function' ? bot.armorPoints() : null,
+      food: bot.food,
+      equipment: { ...(bot.equipment || {}) }
+    };
+  }
+
   /** Survival first, then immediate threats. Safe to call every tick. */
   async safetyTick() {
     const bot = this.bot;
+    const startedAt = Date.now();
+    const stages = {};
+    let cursor = startedAt;
+    const lap = (name) => {
+      const at = Date.now();
+      stages[name] = at - cursor;
+      cursor = at;
+      return at;
+    };
     if (!bot.ready) {
       this._spawnAssessed = false;
-      return { ok: false, notReady: true, recovery: this.recovery.status() };
+      lap('gate');
+      return { ok: false, notReady: true, stages, totalMs: Date.now() - startedAt, recovery: this.recovery.status() };
     }
     if (bot.health <= 0) {
       this._recordDeath();
@@ -122,21 +145,30 @@ class BotActions {
       this._spawnAssessed = false;
       // A dead bot still needs recovery bookkeeping, but cannot act.
       this.recovery.update({ health: 0, food: bot.food, threats: 0 });
-      return { ok: false, dead: true, recovery: this.recovery.status() };
+      lap('dead');
+      return { ok: false, dead: true, stages, totalMs: Date.now() - startedAt, recovery: this.recovery.status() };
     }
+    let equipmentRescan = null;
     if (this._deathHandled || this.combat.state === 'DEAD') {
       this.combat.onRespawn();
       this._deathHandled = false;
-      // The next pass re-scans the respawn position, inventory and threats.
-      // Nothing about the old spawn is allowed to carry over.
+      // The next pass re-scans the respawn position, inventory, equipment and
+      // threats. Nothing about the old spawn is allowed to carry over.
       this._spawnAssessed = false;
+      equipmentRescan = this._equipmentSnapshot();
+      this.lastEquipmentRescan = equipmentRescan;
+      lap('respawn-rescan');
     }
     const assessment = this.combat.assess(16);
-    const now = Date.now();
+    const now = lap('assess');
     // Initial spawn, respawn and reconnect all need the same protection. The
     // old code only assessed on a respawn, so a first join into a zombie pack
     // stood still until something hit it.
     if (!this._spawnAssessed) {
+      if (!equipmentRescan) {
+        equipmentRescan = this._equipmentSnapshot();
+        this.lastEquipmentRescan = equipmentRescan;
+      }
       const spawn = this.recovery.recordSpawn({
         position: bot.position,
         threats: assessment.threats,
@@ -151,6 +183,7 @@ class BotActions {
         this._lastSpawnLogAt = Date.now();
         this.logger.warn(`[${bot.name}] unsafe spawn: ${spawn.reasons.join(', ')}; emergency survival takes priority`);
       }
+      lap('spawn');
     }
     // The first spawn assessment can see a leaf or a tall grass block at head
     // height and call it suffocation. Once the guard expires, re-assess the
@@ -166,6 +199,7 @@ class BotActions {
         food: bot.food,
         hazards: this._spawnHazards()
       });
+      lap('spawn-recheck');
     }
     this.recovery.update({
       health: bot.health,
@@ -173,31 +207,47 @@ class BotActions {
       threats: assessment.threats.length,
       spawnSafe: this.recovery.spawnSafety ? this.recovery.spawnSafety.safe : null
     });
+    lap('recovery-update');
     // Movement comes before equipment/crafting. A bot at 2 health does not
     // have time to cycle armour slots while a zombie is in melee range.
     const emergency = await this._threatResponse(assessment);
     if (emergency) {
       this.lastAction = emergency.action || 'emergency-threat';
       this.lastActionAt = Date.now();
+      lap('threat');
       return {
         ok: emergency.ok !== false,
         emergency: true,
         action: emergency,
         threatCount: assessment.threats.length,
+        stages,
+        totalMs: Date.now() - startedAt,
         recovery: this.recovery.status()
       };
     }
     if (!this.recovery.canWork()) {
       const recovery = await this._recover(assessment);
-      return { ok: recovery.ok !== false, recovering: true, recovery, threatCount: assessment.threats.length };
+      lap('recovery-action');
+      return {
+        ok: recovery.ok !== false, recovering: true, recovery,
+        threatCount: assessment.threats.length, stages, totalMs: Date.now() - startedAt,
+        equipmentRescan
+      };
     }
     const survival = await this.survival.tick();
+    lap('survival');
     const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
+    lap('follow');
     let defence = null;
     if (assessment.threats.length && this.combat.armed) {
       defence = await this.combat.defend({ maxAttacks: 6 });
     }
-    const result = { ok: true, survival, follow, defence, threatCount: assessment.threats.length, recovery: this.recovery.status() };
+    lap('defend');
+    const result = {
+      ok: true, survival, follow, defence, threatCount: assessment.threats.length,
+      stages, totalMs: Date.now() - startedAt, equipmentRescan,
+      recovery: this.recovery.status()
+    };
     if (survival.actions.length || defence) {
       this.lastAction = survival.actions.length ? survival.actions[survival.actions.length - 1].action : 'combat';
       this.lastActionAt = Date.now();

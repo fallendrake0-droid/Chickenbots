@@ -88,6 +88,7 @@ class TeamRuntime {
     // mineflayer pathfinders from starving tick_end and keep-alive.
     this.botSteps = new Map();
     this.botSafety = new Map();
+    this.safetyStages = new Map();
     this.commandLocks = new Set();
     this.botStepCursor = 0;
     this.supervisorTimer = null;
@@ -587,6 +588,7 @@ class TeamRuntime {
    * because coordinator state is only refreshed inside the autonomous path.
    */
   _syncBots() {
+    const snapshotStarted = Date.now();
     this.stateSyncTicks += 1;
     // Inventory metadata is the most expensive part of the snapshot. Actions
     // refresh it after their own writes; a 1.5s fleet-wide cadence is enough
@@ -642,10 +644,12 @@ class TeamRuntime {
         this.logger.warn(`[${bot.name}] state sync took ${elapsed}ms; the snapshot for one bot is blocking the tick`);
       }
     }
+    this.lastSyncMs = Date.now() - snapshotStarted;
   }
 
   async _tick() {
     if (!this.running || this.ticking) return;
+    const tickStarted = Date.now();
     // Hold the guard for the whole tick, including the pre-join safety path.
     // Previously the gate-closed path returned before setting this.ticking, so
     // the 750ms interval could stack dozens of overlapping safety ticks, each
@@ -734,6 +738,7 @@ class TeamRuntime {
           .finally(() => { this.constructionBusy = false; });
       }
     } finally {
+      this.lastTickMs = Date.now() - tickStarted;
       this.ticking = false;
     }
   }
@@ -807,7 +812,9 @@ class TeamRuntime {
     const started = Date.now();
     const task = (async () => {
       try {
-        await actions.safetyTick();
+        const safetyStarted = Date.now();
+        const result = await actions.safetyTick();
+        this._recordSafetyStages(name, result, safetyStarted);
       } catch (err) {
         this.logger.warn(`[${name}] safety tick failed: ${err.message}`);
       }
@@ -818,6 +825,20 @@ class TeamRuntime {
     });
     this.botSafety.set(name, task);
     return task;
+  }
+
+  /** Keep each safety stage's real duration, not just one aggregate total. */
+  _recordSafetyStages(name, result, started) {
+    if (!result || !result.stages) return;
+    const elapsed = Date.now() - started;
+    const totalMs = result.totalMs === undefined ? elapsed : result.totalMs;
+    this.safetyStages.set(name, { at: Date.now(), totalMs, stages: { ...result.stages } });
+    const parts = Object.entries(result.stages)
+      .filter(([, ms]) => ms >= 250)
+      .map(([stage, ms]) => `${stage} ${ms}ms`);
+    if (elapsed >= 5000 || parts.length) {
+      this.logger.warn(`[${name}] safety stages ${elapsed}ms${parts.length ? `: ${parts.join(', ')}` : ''}`);
+    }
   }
 
   _startBotStep(actions) {
@@ -837,7 +858,9 @@ class TeamRuntime {
       try {
         // Safety and death bookkeeping must run for a dead bot too; the
         // controller returns early without moving it.
-        await actions.safetyTick();
+        const safetyStarted = Date.now();
+        const safetyResult = await actions.safetyTick();
+        this._recordSafetyStages(name, safetyResult, safetyStarted);
         if (bot.health <= 0) return;
         const assignment = this.coordinator.getAssignment(name);
         if (assignment) {
@@ -1106,7 +1129,19 @@ class TeamRuntime {
   }
 
   state() {
-    return {
+    const started = process.hrtime.bigint();
+    const cpu = process.cpuUsage();
+    const at = Date.now();
+    let cpuPercent = null;
+    if (this._lastCpuSample) {
+      const elapsed = at - this._lastCpuSample.at;
+      if (elapsed > 0) {
+        const usedUs = (cpu.user - this._lastCpuSample.user) + (cpu.system - this._lastCpuSample.system);
+        cpuPercent = Number(((usedUs / 1000) / elapsed * 100).toFixed(1));
+      }
+    }
+    this._lastCpuSample = { at, user: cpu.user, system: cpu.system };
+    const state = {
       mode: this.mode,
       running: this.running,
       paused: this.paused,
@@ -1131,6 +1166,7 @@ class TeamRuntime {
           online: status.online, status: status.status, statusLabel: status.statusLabel, statusDetail: status.statusDetail,
           health: bot.health, deaths: bot.deaths || 0, lastSpawn: bot.lastSpawn || null,
           stageTimings: bot.stageTimings || null,
+          safety: this.safetyStages.get(bot.name) || null,
           retry: this.retryMeta.get(bot.name) || null,
           connection: connection ? {
             generation: connection.generation, state: connection.state, label: connection.label, detail: connection.detail,
@@ -1154,8 +1190,20 @@ class TeamRuntime {
       dashboard: this.dashboard ? this.dashboard.url : null,
       construction: this.construction ? { activeId: this.construction.activeId, projects: this.construction.projects.size } : null,
       combat: this.combatTeam ? this.combatTeam.status() : null,
-      pausedAt: this.paused ? Date.now() : null
+      pausedAt: this.paused ? Date.now() : null,
+      performance: {
+        stateSnapshotMs: 0,
+        cpuPercent,
+        rssMb: Number((process.memoryUsage().rss / 1024 / 1024).toFixed(1)),
+        heapUsedMb: Number((process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)),
+        lastTickMs: this.lastTickMs === undefined ? null : this.lastTickMs,
+        lastSyncMs: this.lastSyncMs === undefined ? null : this.lastSyncMs
+      }
     };
+    const elapsedMs = Number(Number(process.hrtime.bigint() - started) / 1e6).toFixed(1);
+    state.performance.stateSnapshotMs = Number(elapsedMs);
+    this._lastStateSnapshotMs = Number(elapsedMs);
+    return state;
   }
 
   async shutdown(reason = 'shutdown') {

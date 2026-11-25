@@ -294,6 +294,11 @@ class CombatController {
     this._deadNotified = false;
     this.target = null;
     this.stopRequested = false;
+    // Death can remove armour, a weapon or an offhand item. Clear the cached
+    // signatures so the next prepare() re-reads the actual inventory instead of
+    // believing the dead session's equipment is still equipped.
+    this.lastWeapon = null;
+    this.lastArmorSignature = null;
     this._setState('RECOVERING', 'respawned');
     return { ok: true, state: this.state };
   }
