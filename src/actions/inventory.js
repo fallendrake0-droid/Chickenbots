@@ -93,6 +93,51 @@ class InventoryManager {
     return { ok: false, error: `cannot craft a ${category}` };
   }
 
+  /** Public wrapper used by the pickaxe bootstrap (planks/table/furnace). */
+  async ensurePlanks(needed = 4) {
+    if (this._countPlanks() >= needed) return { ok: true, planks: this._countPlanks(), already: true };
+    return this._convertLogsToPlanks(needed);
+  }
+
+  async ensureCraftingTable() {
+    if (!this.home) return { ok: false, error: 'no home position for a crafting table' };
+    return this._ensureCraftingTable(this.home, []);
+  }
+
+  async craftAt(item, count = 1) {
+    let result = await this.bot.craft(item, count).catch((err) => ({ ok: false, error: err.message }));
+    if (!result.ok && /recipe|table|crafting/i.test(String(result.error || ''))) {
+      const table = await this.ensureCraftingTable();
+      if (table.ok) result = await this.bot.craft(item, count).catch((err) => ({ ok: false, error: err.message }));
+    }
+    return result;
+  }
+
+  /**
+   * A live furnace must exist within reach for realBot.smelt(). Craft and place
+   * one at home when the bot lacks it; a real tool bootstrap cannot smelt iron
+   * without this step.
+   */
+  async ensureFurnace() {
+    const near = this.home || this.bot.position;
+    const found = findBlocks(this.bot, ['furnace', 'blast_furnace'], { near, radius: 8, limit: 1 });
+    if (found.length) return { ok: true, existing: true, position: { x: found[0].x, y: found[0].y, z: found[0].z } };
+    if (!this.bot.countItem('furnace')) {
+      if (this.bot.countItem('cobblestone') < 8) return { ok: false, error: 'need 8 cobblestone to craft a furnace' };
+      const crafted = await this.craftAt('furnace', 1);
+      if (!crafted.ok) return { ok: false, error: `cannot craft a furnace: ${crafted.error}` };
+    }
+    const site = this._freeChestSites(this.home, 6)[0];
+    if (!site) return { ok: false, error: 'no free site for a furnace near home' };
+    const move = await this.bot.goTo(site, { range: 4, timeoutMs: 12000 });
+    if (move && move.ok === false) return { ok: false, error: `cannot reach the furnace site: ${move.error}` };
+    const placed = await this.bot.placeBlock(site, 'furnace');
+    if (!placed.ok) return { ok: false, error: `cannot place a furnace: ${placed.error}` };
+    const name = this._blockName(site);
+    if (name !== 'furnace' && name !== 'blast_furnace') return { ok: false, error: `furnace placement was not visible (${name})` };
+    return { ok: true, position: site, placed: true };
+  }
+
   async findStorage() {
     if (!this.ledger) return null;
     let best = null;

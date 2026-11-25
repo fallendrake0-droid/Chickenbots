@@ -336,6 +336,14 @@ const config = {
     shelterRadius: 8
   },
   reserves: { ...DEFAULT_RESERVES },
+  workZone: {
+    // One shared 100x100 area centred on home. Woodcutting and mining refuse
+    // targets outside it, so a bot cannot chase a tree across the map and get
+    // lost. Set WORK_ZONE_ENABLED=false only for a deliberate expedition.
+    enabled: envBool('WORK_ZONE_ENABLED', true),
+    size: envInt('WORK_ZONE_SIZE', 100),
+    margin: envInt('WORK_ZONE_MARGIN', 2)
+  },
   mining: {
     maxSearchRadius: 48,
     torchInterval: 6,
@@ -445,6 +453,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   const team = candidate.team || {};
   const autonomy = candidate.autonomy || {};
   const survival = candidate.survival || {};
+  const workZone = candidate.workZone || config.workZone || { enabled: true, size: 100, margin: 2 };
   const reconnect = server.reconnect || {};
 
   text('server.host', server.host, 255);
@@ -555,6 +564,10 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('team.maxObservations', team.maxObservations, 1, 100000);
   integer('team.taskStallMs', team.taskStallMs, 1000, 3600000);
   integer('team.taskStallCycles', team.taskStallCycles, 1, 100);
+  boolean('workZone.enabled', workZone.enabled);
+  integer('workZone.size', workZone.size, 16, 1000);
+  integer('workZone.margin', workZone.margin, 0, 16);
+  if (workZone.enabled && workZone.size % 2 !== 0) warn('workZone.size', 'odd sizes are rounded down to whole blocks; 100 keeps the intended 100x100 area');
 
   boolean('autonomy.enabled', autonomy.enabled);
   integer('autonomy.tickMs', autonomy.tickMs, 50, 60000);

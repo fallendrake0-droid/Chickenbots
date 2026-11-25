@@ -11,6 +11,7 @@ const { ExcavationManager } = require('./excavate/manager');
 const { ConstructionManager } = require('./construction/manager');
 const { SchematicLibrary } = require('./schematics/library');
 const { ActionRegistry } = require('./actions');
+const { ResourceReservations } = require('./actions/reservations');
 const { PlayerRegistry } = require('./players/registry');
 const { TeamCombatCoordinator } = require('./combat/team');
 const { createCommandHandler } = require('./commands');
@@ -114,6 +115,9 @@ class TeamRuntime {
     // excluded autonomy; two dashboard clicks could still both call into the
     // same pathfinder/eat/drop sequence at once.
     this.commandWaiters = new Map();
+    // Fleet-wide tree/ore leases. Shared by every BotActions instance so two
+    // bots never walk to the same trunk or vein.
+    this.reservations = new ResourceReservations();
     this.botStepCursor = 0;
     this.supervisorTimer = null;
     this.disconnectedNotified = new Set();
@@ -222,7 +226,8 @@ class TeamRuntime {
     this.actions = new ActionRegistry({
       memory: this.memory, taskBoard: this.board, ledger: this.ledger, team: this.coordinator,
       home: this.home, library: this.library, logger: this.logger, builders: this.builders,
-      excavationManager: this.excavation, world: this.world, players: this.players
+      excavationManager: this.excavation, world: this.world, players: this.players,
+      reservations: this.reservations
     });
     let index = 0;
     for (const bot of this.bots.values()) {
@@ -673,6 +678,7 @@ class TeamRuntime {
         if (!status.online) {
           if (!this.disconnectedNotified.has(bot.name)) {
             this.coordinator.setDisconnected(bot.name, status.statusDetail || 'connection lost');
+            this.reservations.releaseOwner(bot.name);
             this.disconnectedNotified.add(bot.name);
           }
         } else {
@@ -1164,6 +1170,7 @@ class TeamRuntime {
     if (!bot) return { ok: false, error: 'unknown bot' };
     this.intentionalDisconnects.add(name);
     this.retryMeta.delete(name);
+    this.reservations.releaseOwner(name);
     try {
       if (typeof bot.disconnect === 'function') await bot.disconnect(reason);
       else { bot.connected = false; bot.spawned = false; bot.authenticated = false; }

@@ -12,6 +12,8 @@ const { exportSchematic } = require('../building/schematicIO');
 const { statusSnapshot } = require('../runtimeState');
 const { connectionStatus } = require('../bot/status');
 const { botWorldView } = require('../construction/constants');
+const { normalizeMineTarget, isMineableTarget, isOreName, BLOCK_TIERS } = require('../actions/miningCatalog');
+const { workZone } = require('../world/workZone');
 
 const TASK_TYPES = new Set([
   'CHOP_WOOD', 'MINE_ORE', 'MINE_BLOCK', 'FARM_CROP', 'FARM_ANIMAL', 'BUILD_BLOCK', 'BUILD_PHASE', 'EXCAVATE_REGION',
@@ -131,16 +133,17 @@ function targetActions(services, target) {
 }
 
 const SURVIVAL_FEATURES = ['eat', 'healing', 'armour', 'tools', 'crafting', 'shield'];
-const ORE_ALIASES = {
-  coal: 'coal', copper: 'copper', iron: 'iron', gold: 'gold', redstone: 'redstone',
-  lapis: 'lapis', diamond: 'diamond', diamonds: 'diamond', emerald: 'emerald', emeralds: 'emerald'
-};
-const MINE_BLOCK_TARGETS = new Set(['stone', 'cobblestone', 'deepslate', 'dirt', 'sand', 'gravel']);
+const MINE_BLOCK_TARGETS = new Set(Object.keys(BLOCK_TIERS));
 
 function normalizeOre(value) {
   if (!value) return null;
-  const key = String(value).toLowerCase();
-  return ORE_ALIASES[key] || key;
+  return normalizeMineTarget(value);
+}
+
+function assertMineable(value) {
+  if (!isMineableTarget(value)) {
+    throw new CommandError(`unknown mineable target '${value}'; use an ore (diamond, iron, coal...) or a block (stone, dirt, obsidian...)`);
+  }
 }
 
 function orchestrateSurvival(services, target, feature, enabled) {
@@ -368,16 +371,26 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
   }
   if (action === 'mine') {
     const ore = normalizeOre(args[2]);
-    if (!ore) { const result = await actions.mining.mineNearby({ radius: 24, limit: 8 }); return { ok: Boolean(result.ok), ...result, status: actions.mining.status() }; }
+    if (!ore) {
+      const result = await actions.mining.mineNearby({ radius: 24, limit: 8 });
+      return { ok: Boolean(result.ok), ...result, status: actions.mining.status() };
+    }
+    assertMineable(ore);
     if (MINE_BLOCK_TARGETS.has(ore)) {
+      // Every block request uses the same tool gate; dirt/sand need no pick,
+      // while obsidian needs a diamond pick and will bootstrap one.
       const result = await actions.mining.mineBlocks({ block: ore, radius: 24, limit: 8 });
-      return { ok: Boolean(result.ok), ...result };
+      return {
+        ok: Boolean(result.ok), ...result,
+        verified: Boolean(result.ok),
+        error: result.ok ? undefined : (result.error || `no ${ore} block was removed`)
+      };
     }
     // A surface scan is not proof that ore is unreachable. Use the deep path:
     // it searches the local cube, then sinks safe shafts/branches toward the
     // requested ore. Success is only reported for an ore that was actually
     // removed; digging an access shaft is reported as work, not as the quota.
-    const only = /_ore$/.test(ore) ? ore : `${ore}_ore`;
+    const only = isOreName(ore) ? ore : `${ore}_ore`;
     const result = await actions.mining.mineOresDeep({
       radius: Math.max(48, config.mining.maxSearchRadius),
       limit: 4,
@@ -390,7 +403,7 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
       ...result,
       mined: result.mined || 0,
       verified: result.mined > 0,
-      error: result.mined > 0 ? undefined : `no ${args[2]} ore was reached and removed`
+      error: result.mined > 0 ? undefined : (result.error || `no ${args[2]} ore was reached and removed`)
     };
   }
   if (action === 'chop') {
@@ -515,6 +528,14 @@ function registerAll(services, registry) {
         });
       }
       checks.push({ name: 'bots-configured', ok: services.bots.size === BOT_NAMES.length, detail: `${services.bots.size} bots loaded` });
+      const zone = workZone(services.runtime ? services.runtime.home : null, { margin: config.workZone ? config.workZone.margin : 0 });
+      checks.push({
+        name: 'work-zone',
+        ok: zone.enabled ? (zone.maxX - zone.minX + 1 === zone.size && zone.maxZ - zone.minZ + 1 === zone.size) : true,
+        detail: zone.enabled
+          ? `${zone.label} around ${zone.center.x},${zone.center.z} (x ${zone.minX}..${zone.maxX}, z ${zone.minZ}..${zone.maxZ})`
+          : 'disabled'
+      });
       const taskBoard = services.taskBoard;
       checks.push({ name: 'task-board', ok: Boolean(taskBoard), detail: taskBoard ? `${taskBoard.tasks.size} tasks` : 'missing' });
       const ledger = services.ledger;
@@ -744,7 +765,7 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'mine', category: 'mining', summary: 'Mine ores or stone with safety checks; one bot, or the whole fleet with all', usage: 'mine [bot|all] [ore|stone|stop]',
+    name: 'mine', category: 'mining', summary: 'Mine ores or any mineable block; bootstraps the pickaxe tier and confines work to home', usage: 'mine [bot|all] [ore|block|stop]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
       if (first === 'stop') {
@@ -756,9 +777,19 @@ function registerAll(services, registry) {
         if (requested === 'stop') {
           return { ok: true, stopped: true, results: allActions(services).map((actions) => actions.mining.stop()) };
         }
-        return runFleetActions(services, 'all', (actions) => runBotAction(
+        const fleet = await runFleetActions(services, 'all', (actions) => runBotAction(
           services, actions.bot, [actions.bot.name, 'mine', ...args.slice(1)], {}
         ));
+        const mined = (fleet.results || []).reduce((sum, row) => sum + (Number(row.mined) || 0), 0);
+        const breakdown = (fleet.results || []).reduce((out, row) => {
+          for (const [drop, count] of Object.entries(row.breakdown || {})) out[drop] = (out[drop] || 0) + count;
+          return out;
+        }, {});
+        return {
+          ...fleet, mined, breakdown, verified: mined > 0,
+          ok: fleet.ok && mined > 0,
+          error: mined > 0 ? undefined : (fleet.results || []).map((row) => row.error).filter(Boolean).join('; ') || 'no ore was reached and removed'
+        };
       }
       const named = isBotName(services, args[0]) ? args[0] : null;
       const requested = String(named ? args[1] || '' : args[0] || '').toLowerCase();
@@ -780,9 +811,15 @@ function registerAll(services, registry) {
         if (requested === 'stop') {
           return { ok: true, stopped: true, results: allActions(services).map((actions) => actions.woodcutting.stop()) };
         }
-        return runFleetActions(services, 'all', (actions) => runBotAction(
+        const fleet = await runFleetActions(services, 'all', (actions) => runBotAction(
           services, actions.bot, [actions.bot.name, 'chop', ...args.slice(1)], {}
         ));
+        const chopped = (fleet.results || []).reduce((sum, row) => sum + (Number(row.chopped) || 0), 0);
+        return {
+          ...fleet, chopped, verified: chopped > 0,
+          ok: fleet.ok && chopped > 0,
+          error: chopped > 0 ? undefined : (fleet.results || []).map((row) => row.error).filter(Boolean).join('; ') || 'no tree was chopped and verified'
+        };
       }
       const named = isBotName(services, args[0]) ? args[0] : null;
       const rest = named ? args.slice(1) : args;

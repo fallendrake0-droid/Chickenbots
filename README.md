@@ -152,10 +152,18 @@ tests/                      team, excavation, construction, schematics, builder,
   recovery state: it stops claiming work, heals/equips, retreats toward home, releases its task for
   re-planning and only resumes after a quiet safe-hold period. An unsafe spawn (hostiles within
   range, critical health or hunger) starts the same recovery instead of feeding the loop.
-* Mining scans for every Overworld ore, enforces pickaxe tiers, refuses lava-adjacent digs,
-  liquid ceilings and unsupported floors, lights tunnels, records ore discoveries.
-* Woodcutting chops trunks top-down, clears attached leaves, collects saplings and replants on the
-  original soil. Farming reads vanilla crop ages, harvests only mature crops, harvests pumpkin/melon
+* Mining scans for every Overworld ore **and block target**, enforces pickaxe tiers, refuses
+  lava-adjacent digs, liquid ceilings and unsupported floors, lights tunnels, records ore
+  discoveries, and bootstraps the missing tool chain. `mine diamonds` on a bot with no iron pick
+  gathers wood/stone, mines iron and coal, smelts three ingots, crafts the iron pick, then mines the
+  diamond. The same gate covers `mine stone`, `mine obsidian`, `mine ancient_debris` and every other
+  catalogued target; success still means a block was actually removed.
+* Woodcutting chops trunks bottom-up, clears attached leaves, collects saplings and replants on the
+  original soil. Fleet-wide tree/ore leases mean two bots never walk to the same trunk or vein;
+  expired leases are released on disconnect. All tree and mining targets are confined to a shared
+  **100x100 work zone centred on home** (`WORK_ZONE_SIZE`), so a bot cannot chase a tree out of the
+  area and get lost. The bot returns to the zone before scanning and reports `OUTSIDE_WORK_ZONE`
+  rather than silently leaving it. Farming reads vanilla crop ages, harvests only mature crops, harvests pumpkin/melon
   fruit without breaking the stem, replants and verifies each block, tills soil with a real hoe,
   builds a hydrated plot when needed, and feeds/breeds animals with a verified food deduction.
 * Inventory fullness uses real storage slots (36, stack-aware, and the live
@@ -335,6 +343,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_AUTH` | `offline` | Mineflayer connection auth: `offline` or `microsoft`. This is not plugin authentication. |
 | `MC_JOIN_INTERVAL_MS` / `MC_JOIN_JITTER_MS` | `2000` / `750` | positive, jittered gap between login sockets. A five-bot burst is not the default; a real server throttle still opens a bounded fleet-wide pause. |
 | `MC_CONNECT_STAGGER_MS` / `MC_CONNECT_JITTER_MS` | `1500` / `750` | gap before queuing each bot's initial connection task |
+| `WORK_ZONE_SIZE` | `100` | shared square work area centred on home; woodcutting and mining refuse targets outside it. `WORK_ZONE_ENABLED=false` is an explicit expedition opt-out |
+| `WORK_ZONE_MARGIN` | `2` | inset used when returning/relocating inside the zone, so a bot does not stand on the boundary |
 | `FLEET_CONCURRENCY` | `4` | maximum bots executing one fleet command at the same time; every bot still gets its own structured result |
 | `MC_THROTTLE_DELAY_MS` / `MC_THROTTLE_MAX_DELAY_MS` | `90000` / `600000` | fleet-wide pause after a throttle or a socket that never reaches spawn. One outage episode records **one** strike no matter how many bots fail in it; a genuinely separate outage (after a bot became ready) escalates the bounded, jittered pause up to the maximum |
 | `MC_AUTH_PROFILE` | `none` | `none`, `offline`, `microsoft`, `manual`, `authme`, `simpleauth` or `generic`. Plugin profiles are challenge-driven and never send a password without a server prompt. See `AUTHENTICATION_PROFILES.md`. |
@@ -401,11 +411,11 @@ requires an explicit `confirm` token or `confirmed:true`.
 ```
 help [command]                 status                         diagnostics
 ai [status|off]                team [state|on|off|memory|locks|tasks|roles|leader|formation|resources|objectives|follow|regroup|retreat|defend|reassign]
-bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore]|chop [type]|farm [plant [crop] [count]|maintain|status|crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
+bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore|block]|chop [type]|farm [plant [crop] [count]|maintain|status|crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
 inventory [bot]                eat [bot]                       sleep [bot|all|auto on|off]
 survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
 auto <eat|healing|armour|tools|crafting|shield|weapon|totem|potions|food> [on|off] [bot|all]
-mine [bot|all] [ore|stone|stop]  chop [bot|all] [species|stop]   farm [bot|all] [plant [crop] [count]|maintain|status|crop|animals|stop]
+mine [bot|all] [ore|block|stop]   chop [bot|all] [species|stop]   farm [bot|all] [plant [crop] [count]|maintain|status|crop|animals|stop]
 fish [bot|all] [casts]          fish stop [bot|all]            eat [bot|all]
 batch <bot|all> <action> [args] then <action> [args] ...   # sequential, per-bot results
 bot all <action>                # one command tasks every gameplay-ready bot

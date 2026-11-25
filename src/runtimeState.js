@@ -217,6 +217,11 @@ function statusSnapshot(services) {
       custom: services.library && services.library.customStore ? services.library.customStore.statsSummary() : null,
       projects: (() => { try { return services.construction ? services.construction.list() : []; } catch (_) { return []; } })()
     },
+    workZone: services.runtime && services.runtime.actions ? (() => {
+      const first = services.runtime.actions.list()[0];
+      return first && first.mining ? first.mining.zone() : null;
+    })() : null,
+    reservations: services.runtime && services.runtime.reservations ? services.runtime.reservations.status() : null,
     homeBase: {
       home: services.runtime ? services.runtime.home : null,
       source: services.runtime ? services.runtime.homeSource : null,

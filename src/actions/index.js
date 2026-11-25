@@ -14,7 +14,9 @@ const { FishingController } = require('./fishing');
 const { HomeBaseManager } = require('./homeBase');
 const { RecoveryManager } = require('./recovery');
 const { PlayerController } = require('../players/controller');
+const { ResourceReservations } = require('./reservations');
 const { distance } = require('../util/vec');
+const { clampToWorkZone } = require('../world/workZone');
 
 /**
  * Per-bot action layer. Wires every controller to the same adapter and routes
@@ -26,7 +28,7 @@ class BotActions {
   constructor({
     bot, index = 0, memory = null, taskBoard = null, ledger = null, team = null, home = null,
     library = null, logger = null, builders = null, excavationManager = null, world = null,
-    combatTeam = null, comms = null, players = null
+    combatTeam = null, comms = null, players = null, reservations = null
   } = {}) {
     if (!bot) throw new Error('BotActions requires a bot');
     this.bot = bot;
@@ -51,15 +53,22 @@ class BotActions {
     this._escapeCursor = 0;
     this.survival = new SurvivalController({ bot, memory, logger: this.logger });
     this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp, pve: config.autonomy.pve });
+    this.reservations = reservations || new ResourceReservations();
     this.players = new PlayerController({ bot, registry: players, combat: this.combat, logger: this.logger });
-    this.mining = new MiningController({ bot, memory, ledger, logger: this.logger });
-    this.woodcutting = new WoodcuttingController({ bot, memory, ledger, logger: this.logger, home: this.home, index });
+    this.mining = new MiningController({
+      bot, memory, ledger, logger: this.logger, home: this.home, reservations: this.reservations
+    });
+    this.woodcutting = new WoodcuttingController({
+      bot, memory, ledger, logger: this.logger, home: this.home, index, reservations: this.reservations
+    });
     this.farming = new FarmingController({ bot, memory, home: this.home, logger: this.logger });
     this.sleep = new SleepController({ bot, memory, taskBoard, home: this.home, logger: this.logger });
     this.fishing = new FishingController({ bot, memory, ledger, logger: this.logger });
     this.exploration = new ExplorationController({ bot, memory, home: this.home, logger: this.logger, teamIndex: index });
     this.inventory = new InventoryManager({ bot, ledger, memory, logger: this.logger, home: this.home });
     this.farming.inventory = this.inventory;
+    // The tool bootstrap needs to craft/place and, if wood is missing, chop.
+    this.mining.attachHelpers({ inventory: this.inventory, woodcutting: this.woodcutting });
     this.homeBase = new HomeBaseManager({ bots: [bot], world, memory, taskBoard, ledger, library, logger: this.logger });
     this.lastAction = null;
     this.lastActionAt = 0;
@@ -70,7 +79,8 @@ class BotActions {
     this.home = home;
     if (this.sleep) this.sleep.home = home ? { ...home } : null;
     if (this.farming) this.farming.home = home ? { ...home } : null;
-    if (this.woodcutting) this.woodcutting.home = home ? { ...home } : null;
+    if (this.woodcutting) this.woodcutting.updateHome(home);
+    if (this.mining) this.mining.updateHome(home);
     if (this.inventory) this.inventory.updateHome(home);
     this.exploration.home = home;
     this.homeBase.setHome(home);
@@ -636,16 +646,19 @@ class BotActions {
     const index = Number(this.index) || 0;
     const distance = 18 + attempts * 8 + index * 3;
     const angle = (index / config.team.names.length) * Math.PI * 2 + attempts * 1.3;
-    const x = Math.floor(home.x + Math.cos(angle) * distance);
-    const z = Math.floor(home.z + Math.sin(angle) * distance);
-    const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(x, z) + 1 : home.y;
-    const move = await this.bot.goTo({ x, y, z }, { range: 3, timeoutMs: 20000 });
+    const site = clampToWorkZone({
+      x: Math.floor(home.x + Math.cos(angle) * distance),
+      y: Math.floor(home.y),
+      z: Math.floor(home.z + Math.sin(angle) * distance)
+    }, home, { margin: config.workZone ? config.workZone.margin : 0 });
+    const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(site.x, site.z) + 1 : home.y;
+    const move = await this.bot.goTo({ x: site.x, y, z: site.z }, { range: 3, timeoutMs: 20000 });
     return {
       pending: true,
       relocated: move && move.ok !== false,
       error: move && move.ok === false
         ? `could not reach a fresh mining site: ${move.error || 'path unavailable'}`
-        : `moving to a fresh mining site at ${x},${y},${z}`
+        : `moving to a fresh mining site at ${site.x},${y},${site.z}`
     };
   }
 
@@ -661,18 +674,22 @@ class BotActions {
     if (attempts >= 3) return null;
     task.relocationAttempts = attempts + 1;
     const index = Number(this.index) || 0;
-    const distance = 32 + attempts * 16 + index * 5;
+    const zoneHalf = Math.max(12, Math.floor((config.workZone ? config.workZone.size : 100) / 2) - 4);
+    const distance = Math.min(zoneHalf, 32 + attempts * 16 + index * 5);
     const angle = (index / config.team.names.length) * Math.PI * 2 + Math.PI / 3 + attempts * 1.1;
-    const x = Math.floor(home.x + Math.cos(angle) * distance);
-    const z = Math.floor(home.z + Math.sin(angle) * distance);
-    const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(x, z) + 1 : home.y;
-    const move = await this.bot.goTo({ x, y, z }, { range: 3, timeoutMs: 20000 });
+    const site = clampToWorkZone({
+      x: Math.floor(home.x + Math.cos(angle) * distance),
+      y: Math.floor(home.y),
+      z: Math.floor(home.z + Math.sin(angle) * distance)
+    }, home, { margin: config.workZone ? config.workZone.margin : 0 });
+    const y = typeof this.bot.surfaceAt === 'function' ? this.bot.surfaceAt(site.x, site.z) + 1 : home.y;
+    const move = await this.bot.goTo({ x: site.x, y, z: site.z }, { range: 3, timeoutMs: 20000 });
     return {
       pending: true,
       relocated: move && move.ok !== false,
       error: move && move.ok === false
         ? `could not reach a fresh forest: ${move.error || 'path unavailable'}`
-        : `searching for trees at ${x},${y},${z}`
+        : `searching for trees at ${site.x},${y},${site.z}`
     };
   }
 
@@ -1129,7 +1146,8 @@ class BotActions {
 class ActionRegistry {
   constructor(options = {}) {
     this.bots = new Map();
-    this.options = options;
+    this.reservations = options.reservations || new ResourceReservations();
+    this.options = { ...options, reservations: this.reservations };
   }
 
   register(bot, index = this.bots.size) {

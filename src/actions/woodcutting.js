@@ -1,8 +1,10 @@
 'use strict';
 
 const { Logger } = require('../logger');
-const { BOT_NAMES } = require('../config');
+const { config, BOT_NAMES } = require('../config');
 const { findBlocks } = require('./common');
+const { inWorkZone, clampToWorkZone, outsideWorkZone, workZone } = require('../world/workZone');
+const { treeKey } = require('./reservations');
 
 const LOG_PATTERN = /_log$/;
 const SAPLING_FOR = {
@@ -32,7 +34,7 @@ function normalizeLogTypes(value) {
  * block. Every completed tree is recorded in shared memory.
  */
 class WoodcuttingController {
-  constructor({ bot, memory = null, ledger = null, logger = null, reserveTarget = 64, home = null, index = 0 } = {}) {
+  constructor({ bot, memory = null, ledger = null, logger = null, reserveTarget = 64, home = null, index = 0, reservations = null } = {}) {
     if (!bot) throw new Error('WoodcuttingController requires a bot');
     this.bot = bot;
     this.memory = memory;
@@ -41,10 +43,56 @@ class WoodcuttingController {
     this.reserveTarget = reserveTarget;
     this.home = home ? { ...home } : null;
     this.index = Number(index) || 0;
-    this.stats = { treesChopped: 0, logsCollected: 0, replanted: 0, saplingsCollected: 0, leavesCleared: 0 };
+    this.reservations = reservations || null;
+    this.stats = { treesChopped: 0, logsCollected: 0, replanted: 0, saplingsCollected: 0, leavesCleared: 0, treesReserved: 0, treesSkipped: 0 };
     this.replanted = [];
     this.stopRequested = false;
     this._searchAttempts = 0;
+  }
+
+  updateHome(home) {
+    this.home = home ? { ...home } : null;
+  }
+
+  zone() {
+    return workZone(this.home, { margin: config.workZone ? config.workZone.margin : 0 });
+  }
+
+  _inZone(pos) {
+    if (!this.home) return true;
+    return inWorkZone(pos, this.home, { margin: 0 });
+  }
+
+  _zoneError(pos) {
+    const outside = outsideWorkZone(pos, this.home, { margin: 0 });
+    const zone = outside ? outside.zone : this.zone();
+    return {
+      ok: false, code: 'OUTSIDE_WORK_ZONE',
+      error: `tree at ${pos.x},${pos.z} is outside the ${zone.label} work zone`,
+      position: { ...pos }, zone
+    };
+  }
+
+  _claimTree(base) {
+    if (!this.reservations) return { ok: true, local: true };
+    const lease = this.reservations.claim(treeKey(base), this.bot.name, { ttlMs: 180000 });
+    if (!lease.ok) this.stats.treesSkipped++;
+    return lease;
+  }
+
+  _releaseTree(base) {
+    if (this.reservations) this.reservations.release(treeKey(base), this.bot.name);
+  }
+
+  async _returnToZone() {
+    if (!this.home || this._inZone(this.bot.position)) return { ok: true };
+    const target = clampToWorkZone(this.bot.position, this.home, { margin: config.workZone ? config.workZone.margin : 0 });
+    const move = await this.bot.goTo(target, { range: 3, timeoutMs: 15000, priority: 'operator', owner: 'work-zone-return' });
+    return {
+      ok: !(move && move.ok === false),
+      position: { ...this.bot.position }, target,
+      error: move && move.ok === false ? move.error : undefined
+    };
   }
 
   status() {
@@ -57,6 +105,8 @@ class WoodcuttingController {
       stopped: Boolean(this.stopRequested),
       treesChopped: this.stats.treesChopped,
       replanted: this.replanted.slice(-10),
+      zone: this.zone(),
+      reservations: this.reservations ? this.reservations.status() : null,
       stats: { ...this.stats }
     };
   }
@@ -81,7 +131,12 @@ class WoodcuttingController {
       if (log.y < group.base.y) group.base = { x: log.x, y: log.y, z: log.z };
     }
     return groups
-      .map((g) => ({ base: g.base, type: g.type, count: g.logs.length, distance: Math.hypot(g.base.x - this.bot.position.x, g.base.z - this.bot.position.z) }))
+      .filter((g) => this._inZone(g.base))
+      .map((g) => ({
+        base: g.base, type: g.type, count: g.logs.length,
+        distance: Math.hypot(g.base.x - this.bot.position.x, g.base.z - this.bot.position.z),
+        holder: this.reservations ? (this.reservations.holder(treeKey(g.base)) || {}).owner || null : null
+      }))
       .sort((a, b) => a.distance - b.distance)
       .slice(0, limit);
   }
@@ -96,20 +151,38 @@ class WoodcuttingController {
     const position = bot.position;
     if (!position) return { ok: false, error: 'bot has no position' };
     const origin = this.home || position;
-    const distance = Math.max(24, Number(range) || 40) + this._searchAttempts * 24;
+    const zone = this.zone();
+    // Never search outside the shared work zone. The old expanding radius kept
+    // walking farther from home on every failed attempt and is exactly how a
+    // bot got lost. When the allowed ring is exhausted, report it honestly.
+    const maxDistance = zone.enabled
+      ? Math.max(8, Math.floor(zone.size / 2) - Math.max(4, Number(config.workZone && config.workZone.margin) || 2))
+      : 512;
+    const wanted = Math.max(16, Number(range) || 40) + this._searchAttempts * 16;
+    const distance = Math.min(maxDistance, wanted);
+    if (zone.enabled && this._searchAttempts > 0 && distance >= maxDistance) {
+      return {
+        ok: false, code: 'OUTSIDE_WORK_ZONE', zone,
+        error: `no trees found inside the ${zone.label} work zone; refusing to leave it`
+      };
+    }
     const angle = (this.index / BOT_NAMES.length) * Math.PI * 2 + Math.PI / 3 + this._searchAttempts * 1.15;
     const x = Math.floor(origin.x + Math.cos(angle) * distance);
     const z = Math.floor(origin.z + Math.sin(angle) * distance);
-    const surface = typeof bot.surfaceAt === 'function' ? bot.surfaceAt(x, z) : null;
+    const target = clampToWorkZone({ x, y: position.y, z }, origin, { margin: config.workZone ? config.workZone.margin : 0 });
+    const surface = typeof bot.surfaceAt === 'function' ? bot.surfaceAt(target.x, target.z) : null;
     const y = Number.isFinite(Number(surface)) ? Number(surface) : Math.floor(position.y);
-    const move = await bot.goTo({ x, y, z }, {
+    const move = await bot.goTo({ x: target.x, y, z: target.z }, {
       range: 3, timeoutMs: 20000, priority: 'operator', owner: `wood-search:${this.bot.name}`
     });
     if (move && move.ok === false) {
-      return { ok: false, x, y, z, error: `could not reach a fresh forest: ${move.error || 'path unavailable'}` };
+      return {
+        ok: false, x: target.x, y, z: target.z, zone,
+        error: `could not reach a fresh forest inside the work zone: ${move.error || 'path unavailable'}`
+      };
     }
     this._searchAttempts++;
-    return { ok: true, x, y, z, moved: true };
+    return { ok: true, x: target.x, y, z: target.z, moved: true, zone };
   }
 
   /**
@@ -120,10 +193,14 @@ class WoodcuttingController {
    * yield verified logs instead of losing the entire tree.
    */
   async chopTree(base, { maxHeight = 24 } = {}) {
+    if (!this._inZone(base)) return this._zoneError(base);
     const baseBlock = this.bot.getBlock(base);
     if (!baseBlock) return { ok: false, error: `world returned no block at ${base.x},${base.y},${base.z}` };
     const type = baseBlock.name;
     if (!LOG_PATTERN.test(type)) return { ok: false, error: `not a tree at ${base.x},${base.y},${base.z} (${type})` };
+    // Equip the axe once per tree, not once per log. A held tool is both faster
+    // and the only way a live dig uses the intended speed.
+    if (typeof this.bot.equipBestTool === 'function') await this.bot.equipBestTool('axe').catch(() => null);
     const logs = [];
     let y = base.y;
     while (y < base.y + maxHeight) {
@@ -142,7 +219,13 @@ class WoodcuttingController {
       if (reach > 4.5) {
         // Stand beside the trunk once, then re-measure. Upper logs beyond arm's
         // reach are left standing rather than aborting the logs already won.
-        const move = await this.bot.goTo({ x: log.x + 1, y: log.y, z: log.z + 1 }, { range: 2, timeoutMs: 12000 });
+        // Clamp the stance too: a trunk at the zone edge must not make the bot
+        // step one block outside the 100x100 area.
+        const stance = clampToWorkZone(
+          { x: log.x + 1, y: log.y, z: log.z + 1 }, this.home,
+          { margin: config.workZone ? config.workZone.margin : 0 }
+        );
+        const move = await this.bot.goTo(stance, { range: 2, timeoutMs: 12000 });
         if (move && move.ok === false) {
           failure = `cannot reach ${log.x},${log.y},${log.z}: ${move.error}`;
           break;
@@ -223,13 +306,21 @@ class WoodcuttingController {
 
   async tick({ radius = 24, maxTrees = 2, types = null, relocate = false, maxRelocations = 1 } = {}) {
     this._begin();
+    const startedAt = Date.now();
+    const zoneReturn = await this._returnToZone();
+    if (!zoneReturn.ok) {
+      return {
+        ok: false, code: 'OUTSIDE_WORK_ZONE', zone: this.zone(), zoneReturn,
+        error: `outside the work zone and could not return: ${zoneReturn.error || 'path unavailable'}`
+      };
+    }
     const radii = [radius];
     if (radius < 48) radii.push(48);
     let trees = [];
-    let scannedRadius = radius;
+    let searchedRadius = radius;
     for (const scanRadius of radii) {
-      trees = this.findTrees({ radius: scanRadius, limit: maxTrees, types });
-      scannedRadius = scanRadius;
+      trees = this.findTrees({ radius: scanRadius, limit: Math.max(maxTrees * 3, maxTrees), types });
+      searchedRadius = scanRadius;
       if (trees.length) break;
     }
     let relocations = [];
@@ -239,25 +330,67 @@ class WoodcuttingController {
       if (!moved.ok) break;
       // The fresh site is validated by the same bounded scan; a path that
       // arrived somewhere without logs is reported as such, not as success.
-      trees = this.findTrees({ radius: 32, limit: maxTrees, types });
-      scannedRadius = 32;
+      trees = this.findTrees({ radius: 32, limit: Math.max(maxTrees * 3, maxTrees), types });
+      searchedRadius = 32;
     }
-    if (!trees.length) {
+    const usable = trees.filter((tree) => !tree.holder || tree.holder === this.bot.name);
+    const reservedAtScan = trees.length - usable.length;
+    if (!usable.length) {
       return {
-        ok: true, idle: true, reason: relocations.length ? 'no trees at the fresh forest site' : 'no trees nearby',
-        searchedRadius: scannedRadius, relocations, status: this.status()
+        ok: true, idle: true, chopped: 0,
+        reason: reservedAtScan > 0
+          ? 'all nearby trees are reserved by teammates'
+          : relocations.length ? 'no trees at the fresh forest site' : 'no trees inside the work zone',
+        searchedRadius, reserved: reservedAtScan, relocations, zone: this.zone(), status: this.status()
       };
     }
     this._searchAttempts = 0;
     const results = [];
-    for (const tree of trees) {
-      if (this.stopRequested) break;
-      results.push(await this.chopTree(tree.base));
+    let chopped = 0;
+    let reserved = reservedAtScan;
+    let lastError = null;
+    for (let index = 0; index < maxTrees && !this.stopRequested; index++) {
+      let selected = null;
+      let lease = null;
+      // Claims are atomic and synchronous: if two bots scanned the same trunk,
+      // only one gets this lease and the other immediately picks a different
+      // tree instead of both walking to it.
+      const candidates = this.findTrees({ radius: searchedRadius, limit: Math.max(maxTrees * 3, 12), types })
+        .filter((tree) => !tree.holder || tree.holder === this.bot.name);
+      for (const tree of candidates) {
+        const claim = this._claimTree(tree.base);
+        if (!claim.ok) { reserved++; continue; }
+        selected = tree;
+        lease = claim;
+        break;
+      }
+      if (!selected) {
+        if (reserved > 0) lastError = 'all nearby trees are reserved by teammates';
+        break;
+      }
+      try {
+        const result = await this.chopTree(selected.base);
+        results.push(result);
+        chopped += Number(result.chopped) || 0;
+        if (result.chopped === 0) {
+          lastError = result.error || 'tree was not chopped';
+          break;
+        }
+      } finally {
+        if (lease && lease.ok) this._releaseTree(selected.base);
+      }
       if (this.bot.health <= 8) break;
     }
+    const elapsedMs = Date.now() - startedAt;
+    if (chopped > 0) {
+      const treesDone = results.filter((result) => result.chopped > 0).length;
+      this.logger.info(`[${this.bot.name}] chop summary: ${treesDone} tree(s), ${chopped} log(s) in ${elapsedMs}ms${reserved ? `, ${reserved} reserved` : ''}`);
+    }
     return {
-      ok: results.some((r) => r.ok), stopped: this.stopRequested, results,
-      searchedRadius: scannedRadius, relocations, status: this.status()
+      ok: chopped > 0, chopped, stopped: this.stopRequested, results,
+      searchedRadius, relocations, reserved, elapsedMs, zone: this.zone(),
+      error: chopped > 0 ? undefined : (lastError || 'no tree was chopped and verified'),
+      status: this.status()
     };
   }
 }

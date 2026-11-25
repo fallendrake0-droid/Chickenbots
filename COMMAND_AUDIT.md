@@ -4,6 +4,17 @@ All commands were sent through the dashboard's real `POST /api/command`
 (`{"line":"..."}`) against a fresh deterministic simulation. The command registry
 is the same one used by the CLI and internal automation.
 
+## Round 33 re-audit (46 commands)
+
+The registry is unchanged at 46 commands. `mine` now accepts `stop`, ores and
+minable block targets (`mine [bot|all] [ore|block|stop]`) and `doctor`
+includes a `work-zone` check. `npm run commands:audit` still covers **45/46**
+(`stop` is the deliberate skip) with **0 failures**. The deterministic mock
+world has no ore near spawn, so `bot all mine iron` remains an honest
+UNVERIFIED row rather than a fake success. A separate runtime probe with
+placed iron/coal/diamond ore verified `mine diamonds` end to end (see
+`V6_ROUND_33_REPORT.md`).
+
 ## Round 32 re-audit (46 commands)
 
 `npm run commands:audit` now resolves every command and alias, runs

@@ -166,3 +166,28 @@ failure is event-loop starvation and slow safety follow.
 The round-26 movement arbiter, tick scheduler, spawn safety, bed-quota fix,
 bounded dig/place, per-stage safety timings and 10,001-design library audit are
 unchanged. No feature was disabled to make this pass green.
+
+
+## Round 33 — fleet claims, 100x100 work zone and tool self-service
+
+**Starting head:** `8fc01cb`
+**Evidence:** 406 unit tests, deterministic two-bot and zone simulations, a
+runtime `mine diamonds` command probe, lint, command audit, validation and
+deploy checks. No live server was reached.
+
+| ID | Sev | Component | Symptom / reproduction | Root cause | Fix | Regression test | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-33-01 | P0 | Logging teamwork | `bot all chop` sent several bots at the same nearby trunk; repeated runs exhausted the same tree | No shared claim registry; each controller filtered only its own state | `ResourceReservations` shared by the runtime; atomic `treeKey` leases, reserved trunks skipped, `releaseOwner` on disconnect | two-controller no-shared-trunk simulation; `tests/mining-teamwork.test.js` | FIXED (unit) |
+| BUG-33-02 | P0 | Mining teamwork | Two bots could path to and dig the same vein | Ores had no lease at all | `oreKey` lease before pathing; `ORE_RESERVED` with holder; `mineNearby` reports reserved count | reservation semantics and second-bot `ORE_RESERVED` tests | FIXED (unit) |
+| BUG-33-03 | P0 | Work boundary | A bot could chase a tree or ore out of the intended area and get lost | No geographic boundary; relocation was unbounded | 100x100 home-centred `workZone`; `OUTSIDE_WORK_ZONE` on chop/mine, tunnelling, relocation and shaft entry; `doctor` work-zone check | zone geometry, chop refusal, ore refusal, relocation-in-zone tests | FIXED (unit) |
+| BUG-33-04 | P0 | Tool prerequisite | `mine diamonds` stopped at `need pickaxe tier 3`; the operator had to hand-feed an iron pick | Only the block-level tool check existed | `ensurePickaxeFor()` ladder for every ore/block: wood/sticks -> stone -> iron (mine iron + coal, smelt 3) -> diamond; honest step chain on failure | diamond bootstrap test; runtime `mine diamonds` probe; stone/dirt block tests | FIXED (unit) |
+| BUG-33-05 | P1 | Tool bootstrap | A bot with no wood could not make sticks for a wooden pick | The chain assumed logs/planks existed | `_ensureSticks` bootstraps one tree through the same zone + lease rules | diamond bootstrap test from logs; runtime probe with depleted pickaxes | FIXED (unit) |
+| BUG-33-06 | P1 | Catalog aliases | `requiredPickaxeTier('diamond')` returned 0 and skipped the gate | Alias lookup compared the wrong table | Normalise aliases first; tier 3 returned for `diamond` | catalog test | FIXED (unit) |
+| BUG-33-07 | P1 | Coal/fuel | Iron smelting could fail after mining because no coal was gathered | The chain assumed coal/fuel existed | Mine coal when neither coal nor charcoal is held; planks/charcoal remain a fallback; explicit fuel error otherwise | diamond bootstrap test with `coal:1`; runtime probe | FIXED (unit) |
+| BUG-33-08 | P2 | Lease lifecycle | A disconnected bot could leave a lease until TTL expiry | Disconnect did not release reservations | `runtime.disconnectBot()` calls `reservations.releaseOwner(name)` | disconnect safety test / reservation release | FIXED (unit) |
+| BUG-33-09 | P2 | Mining speed | Repeated goTo/collect calls dominated each ore | Pathing and collection ran per ore | In-reach ores skip pathing; collection batched after a run; breakdown logs | mining-teamwork tests | FIXED (unit) |
+| BUG-27-10 | P1 | Runtime performance | Supplied live log shows multi-second event-loop blocks at `MINE_BLOCK` | Synchronous action/chunk work still exceeds budget | Reduced redundant scans/paths this round; core block remains | live log; open | OPEN |
+
+The supplied live log shows no disconnect/kick, and this sandbox still cannot
+reach the server. The new tests prove teamwork and boundaries in simulation,
+not live Mineflayer behaviour.
