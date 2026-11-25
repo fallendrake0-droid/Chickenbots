@@ -2,7 +2,8 @@
 
 **Branch:** `arena/de11bd2d-chickenbots`
 **Starting commit:** `00c3dc9`
-**Final commit:** this document's commit
+**Implementation commit:** `56566a4`
+**Documentation commit:** this document's commit
 **Push:** `origin/arena/de11bd2d-chickenbots`
 
 > **Evidence boundary:** this sandbox cannot reach any Minecraft server. No live
@@ -53,8 +54,8 @@ Modules changed:
 | BUG-27-16 | P1 | `/register` could auto-fire with registration disabled | Auto-create now requires the registration opt-in | not-registered test |
 | BUG-27-17 | P1 | Permanent auth codes were retried by the supervisor | `shouldPauseAuthRetry` pauses rejected/not-registered/missing-credential/no-challenge outcomes | permanent-auth-pause test |
 
-Open: BUG-27-09 (`bot all chop oak` intermittently 9/10 when trees run out;
-the final run was 10/10), BUG-27-10 (one 1,155 ms
+Open: BUG-27-09 (`bot all chop oak` varies 8–10/10 when nearby trees run out),
+BUG-27-10 (one 1,155 ms
 event-loop block at `MINE_ORE` in an 89-minute simulation), all live-only bugs.
 
 ## C. Movement
@@ -85,21 +86,22 @@ recovery; no live survival claim is made.
 
 ## F. Performance (simulation only)
 
-Fresh 10-bot simulation at 253 s uptime:
+Fresh 10-bot simulation on the final build at 169 s uptime:
 
 | Metric | Value |
 |---|---|
-| Event loop mean | 21.3 ms |
-| p99 | 44.2 ms |
-| max | 802.7 ms |
-| `/api/state` snapshot | 0.9 ms |
-| tick / sync | 2 ms / 1 ms |
-| CPU | 4.4% |
-| RSS | 204.2 MB |
-| heap | 117.2 MB |
+| Event loop mean | 22.0 ms |
+| p99 | 62.7 ms |
+| max | 1,433.4 ms |
+| `/api/state` snapshot | 2.1 ms |
+| tick / sync | 0 / 0 ms |
+| CPU | 8.3% |
+| RSS | 256.9 MB |
+| heap | 107.1 MB |
 
-The 802.7 ms maximum is not a solved-performance claim. An earlier 89-minute
-simulation logged one 1,155.5 ms block at `MINE_ORE` (p99 64.3 ms at that point).
+The 1,433.4 ms maximum is **not** a solved-performance claim. An earlier
+89-minute simulation logged one 1,155.5 ms block at `MINE_ORE` (p99 64.3 ms at
+that point). The max remains an open P2.
 
 ## G. Commands actually exercised
 
@@ -111,7 +113,7 @@ simulation logged one 1,155.5 ms block at `MINE_ORE` (p99 64.3 ms at that point)
 | `bot all inventory` | 10/10 |
 | `bot all defend` | 10/10, IDLE |
 | `batch all eat then return home` | 2/2 steps, 10/10 per step |
-| `bot all chop oak` | final build 10/10 (replant reported); earlier 9/10 `no trees nearby` |
+| `bot all chop oak` | repeated runs 10/10 once, 9/10 once, 8/10 twice; misses `no trees nearby` |
 | `bot all mine iron` | not claimed on untouched mock terrain |
 
 See `COMMAND_AUDIT.md`.

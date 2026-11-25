@@ -59,8 +59,9 @@ the mock transport has no socket.
 
 A previous 89-minute simulation remained stable enough to complete a base
 objective, but logged **one 1,155.5 ms event-loop block at `MINE_ORE`** (p99
-64.3 ms at that warning). That remains an open P2 (BUG-27-10), not a solved
-performance claim.
+64.3 ms at that warning). A fresh final-build simulation reached a **1,433.4 ms**
+maximum with p99 62.7 ms at 169 s uptime. That remains an open P2
+(BUG-27-10), not a solved performance claim.
 
 ## Still unverified
 

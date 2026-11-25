@@ -14,16 +14,15 @@ is the same one used by the CLI and internal automation.
 | `bot all inventory` | 10/10; e.g. 34/36 slots, 653 items | PASS |
 | `bot all defend` | 10/10 dispatched, all IDLE with `remaining:0` | PASS (no threats) |
 | `batch all eat then return home` | 2/2 steps; 10/10 bots per step | PASS |
-| `bot all chop oak` | final build: 10/10 completed, replant reported; an earlier run: 9/10 with “no trees nearby” | PASS (terrain-dependent) |
+| `bot all chop oak` | repeated runs: 10/10 once, 8/10 twice and 9/10 once; misses report `no trees nearby` | PARTIAL |
 | `bot all collect` (round 26 capture) | 10/10 dispatched, `collected:0` | PASS-DISPATCH / NO DROPS |
 | `explore all 1` (round 26 capture) | 10/10, real discoveries returned | PASS-SIM |
 | `bot all mine iron` | **not claimed** on untouched mock terrain | UNVERIFIED |
 
-A previous run returned 9/10: the last bot had no reachable tree after the other
-bots harvested the nearby set, with `partial:true` and the per-bot reason. A
-fresh run on the final build completed 10/10. The difference is terrain, not a
-proven fix; tree allocation remains a real, intermittent limitation
-(BUG-27-09). Neither result is hidden or rounded up.
+Repeated runs returned 10/10 once, 9/10 once and 8/10 twice. The misses were
+`no trees nearby` after the earlier bots harvested the nearby set, with
+`partial:true` and the per-bot reason. This is a real tree-allocation limitation,
+not a proven fix, and it is not rounded up (BUG-27-09).
 
 ## Command system checks
 
