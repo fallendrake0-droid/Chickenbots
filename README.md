@@ -214,7 +214,7 @@ Commands (all real state):
 combat [status|on|off|start|stop|mode <TEAM_FIGHT|DEFENSIVE|GUARD|FOLLOW|ARENA|BOSS|ESCORT|RETREAT>|guard x y z|duel <player>|rescue|heal]
 pve [on|off|status]            pvp [on|off|status]         target [add|remove|protect|unprotect|clear|list] <player>
 follow <bot|player> [distance] | follow stop
-players [list|near [radius]|info <player>|follow <player> [bot|all] [distance]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
+players [list|near [radius]|info <player>|following [bot|all]|watches [bot|all]|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
 gear [status|optimise|durability|progression|layout] [bot]         totem [status|reserve [n]|refill]
 food [status] [bot]            potions [status] [bot]        guard x y z [bot] | guard stop
 duel <player> confirm          arena on [radius] | arena off
@@ -410,10 +410,11 @@ fish [bot|all] [casts]          fish stop [bot|all]            eat [bot|all]
 batch <bot|all> <action> [args] then <action> [args] ...   # sequential, per-bot results
 bot all <action>                # one command tasks every gameplay-ready bot
 defend [bot|stop]              explore [bot] [steps] | explore stop [bot|all]
+# Every command accepts --help (side-effect free); `npm run commands:audit` exercises the surface.
 combat [status|on|off|start|stop|mode|guard|duel|rescue]   pve [on|off|status]   pvp [on|off|status]
 target [add|remove|protect|unprotect|clear|list] <player>                   arena on [radius]|off
 follow <bot|player> [distance] | follow stop
-players [list|near [radius]|info <player>|follow <player> [bot|all] [distance]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
+players [list|near [radius]|info <player>|following [bot|all]|watches [bot|all]|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
 gear [status|optimise|durability|progression|layout] [bot]    totem [status|reserve [n]|refill]   food|potions [status] [bot]
 guard x y z [bot] | guard stop             duel <player> confirm
 team combat [status|on|off|retreat|regroup|rescue|heal|attack <player>]
@@ -482,8 +483,9 @@ that related tasks sit together rather than in one long tab strip:
 * **Activity** – live activity, notifications and logs.
 * **Fleet** – all bots, **Players**, team board, profiles and connection management. The Players
   page lists every player any bot has seen (plus server-list players with no position yet) and
-  offers follow, guard, escort, come, greet, give-item, drop-loot and message controls. It also
-  shows which bot is following or guarding which player.
+  offers follow, unfollow, guard, escort, come, greet, give-item, drop-loot and message controls.
+  A dedicated **Following players** section lists every active follow with a per-row Unfollow
+  button and an Unfollow all action; unfollow clears only follow watches, never guard or escort.
 * **Gameplay** – survival, inventory, mining, excavation, woodcutting, farming, fishing,
   exploration and sleep.
 * **Combat Operations** – combat overview and live engagement log, team roles/focus/retreat,

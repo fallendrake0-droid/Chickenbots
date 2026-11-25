@@ -66,6 +66,24 @@ test('follow moves toward a real player and stop clears the watch', async () => 
   assert.equal(missing.code, 'PLAYER_NOT_SEEN');
 });
 
+test('unfollow clears only a follow watch and leaves a guard alone', async () => {
+  const { controller } = fixture();
+  assert.equal(controller.follow('Alex', { distance: 2 }).ok, true);
+  const cleared = controller.unfollow('Alex');
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.stopped, true);
+  assert.equal(controller.isActive(), false);
+  const again = controller.unfollow('Alex');
+  assert.equal(again.ok, true);
+  assert.equal(again.already, true);
+  assert.equal(controller.guard('Alex', { radius: 8 }).ok, true);
+  const guarded = controller.unfollow('Alex');
+  assert.equal(guarded.ok, true);
+  assert.equal(guarded.stopped, false, 'unfollow never disables guard');
+  assert.equal(controller.mode, 'GUARD');
+  assert.equal(controller.unfollow('bad name').ok, false);
+});
+
 test('guard attacks a hostile mob near the player and never the player', async () => {
   const { world, bot, alex, controller } = fixture({ iron_sword: 1 }, { playerPosition: { x: 3, y: 65, z: 0 } });
   const zombie = world.addMob('zombie', { x: 5, y: 65, z: 2 });
@@ -128,6 +146,20 @@ test('message refuses chat-command injection and prefixes the player name', asyn
   assert.match(bot.lastChat, /Hello Alex/);
 });
 
+test('inventory all returns a real per-bot row with capacity arithmetic', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false, connect: false });
+  await runtime.init();
+  const result = await runtime.commands.execute('inventory all', { source: 'cli' });
+  assert.equal(result.ok, true, JSON.stringify(result.result));
+  assert.equal(result.result.completed, runtime.bots.size);
+  for (const row of result.result.results) {
+    assert.equal(row.ok, true);
+    assert.equal(typeof row.capacity, 'number');
+    assert.equal(row.used + row.free, row.capacity);
+  }
+  await runtime.shutdown('inventory all test');
+});
+
 test('players command drives the fleet and reports every bot', async () => {
   const runtime = await createRuntime({ simulate: true, dashboard: false });
   try {
@@ -142,13 +174,33 @@ test('players command drives the fleet and reports every bot', async () => {
     assert.equal(follow.result.completed, runtime.bots.size);
     assert.equal(follow.result.results.every((row) => row.ok && row.mode === 'FOLLOW'), true);
     const bad = await runtime.commands.execute('players follow Alex all 999', { source: 'cli' });
-    assert.equal(bad.ok, true, 'distance is clamped by the controller');
+    assert.equal(bad.ok, false, 'an out-of-range distance is a clear arg error, not a silent clamp');
+    assert.equal(bad.result.code, 'COMMAND_ERROR');
+    const following = await runtime.commands.execute('players following all', { source: 'cli' });
+    assert.equal(following.ok, true);
+    assert.equal(following.result.watches.length, runtime.bots.size);
+    assert.equal(following.result.watches.every((row) => row.mode === 'FOLLOW' && row.target === 'Alex'), true);
+    const unfollow = await runtime.commands.execute('players unfollow Alex all', { source: 'cli' });
+    assert.equal(unfollow.ok, true, JSON.stringify(unfollow.result));
+    assert.equal(unfollow.result.cancelled, runtime.bots.size);
+    assert.equal(runtime.actions.list().every((actions) => actions.players.isActive() === false), true);
+    assert.equal((await runtime.commands.execute('players guard Alex all 8', { source: 'cli' })).ok, true);
+    const followingGuard = await runtime.commands.execute('players following all', { source: 'cli' });
+    assert.equal(followingGuard.result.count, 0, 'guard is not a follow');
+    const allWatches = await runtime.commands.execute('players watches all', { source: 'cli' });
+    assert.equal(allWatches.result.count, runtime.bots.size, 'watches shows guard state');
     const stop = await runtime.commands.execute('players stop all', { source: 'cli' });
     assert.equal(stop.ok, true);
-    assert.equal(runtime.actions.list().every((actions) => actions.players.isActive() === false), true);
     const unknown = await runtime.commands.execute('players follow Ghost', { source: 'cli' });
     assert.equal(unknown.ok, false);
     assert.equal(unknown.result.results[0].code, 'PLAYER_NOT_SEEN');
+    const ambiguous = await runtime.commands.execute('players unfollow all Alex', { source: 'cli' });
+    assert.equal(ambiguous.ok, false, 'must not ignore Alex and clear every follow');
+    assert.match(ambiguous.result.error, /usage: players unfollow/);
+    const wildcard = await runtime.commands.execute('players follow Alex * 4', { source: 'cli' });
+    assert.equal(wildcard.ok, true, JSON.stringify(wildcard.result));
+    assert.equal(wildcard.result.completed, runtime.bots.size);
+    await runtime.commands.execute('players stop all', { source: 'cli' });
   } finally {
     await runtime.shutdown('test');
   }

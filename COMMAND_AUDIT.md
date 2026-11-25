@@ -4,6 +4,29 @@ All commands were sent through the dashboard's real `POST /api/command`
 (`{"line":"..."}`) against a fresh deterministic simulation. The command registry
 is the same one used by the CLI and internal automation.
 
+## Round 32 re-audit (46 commands)
+
+`npm run commands:audit` now resolves every command and alias, runs
+`<command> --help` for every entry, and performs a real safe invocation in the
+deterministic simulation for 45/46 commands. `stop` is the only deliberate
+skip because it shuts the runtime down. Result: **45/46 covered (stop skipped), 0 failures**
+(`duel` correctly returns `CONFIRMATION_REQUIRED`).
+
+The audit found and fixed real command defects:
+
+| Command | Defect | Fix |
+|---|---|---|
+| `team leader` | `services.leadership.status is not a function` | Return the actual leader, preferred name, succession order and election history |
+| `fish all stop` | `casts must be an integer (got stop)` | Accept both `fish stop all` and `fish all stop` |
+| `explore all stop` | `steps must be an integer (got stop)` | Accept both `explore stop all` and `explore all stop` |
+| `inventory all` | `unknown bot all` | Fleet rows with per-bot inventory |
+| `diagnostics` | Reported 10,000/10,001 unique after a custom design existed | Compare manifest hashes with manifest count, report custom designs separately |
+| `site status` / `materials status` | Failed when no project existed | Status returns an inactive state instead of an execution error |
+| `players follow Alex nope` | Silently fell back to the leader | Unknown bot/fleet target is a clear argument error |
+| `players follow Alex all 999` | Silently clamped | Out-of-range distance/radius is rejected |
+| `players stop nope` | Silently stopped all | Unknown target is rejected |
+| `players follow Alex *` | `unknown bot *` | `targetActions` now recognises the full fleet word set |
+
 ## Captured results
 
 | Command | Actual result | Verdict |

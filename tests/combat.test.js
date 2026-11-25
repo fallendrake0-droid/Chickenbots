@@ -407,6 +407,25 @@ test('team focus accepts an authorised player and auto-rescue chooses a healthy 
 });
 
 
+test('a blocked formation follow is bounded and backs off instead of holding the safety tick', async () => {
+  const { bot } = flatBot(NAMES[0]);
+  const leader = flatBot(NAMES[1], {}, { x: 0, y: 64, z: 40 }).bot;
+  const controller = new CombatController({ bot });
+  let calls = 0;
+  bot.goNear = async () => { calls++; return { ok: false, error: 'path timeout' }; };
+  assert.equal((await controller.follow(leader, { distance: 3 })).ok, true);
+  const first = await controller.followTick();
+  assert.equal(first.ok, false);
+  assert.equal(first.deferred, true);
+  assert.equal(calls, 1);
+  const second = await controller.followTick();
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, 'follow retry backoff');
+  assert.equal(calls, 1, 'the blocked target is not retried every 750ms tick');
+  controller.stopFollow();
+  assert.equal(controller._followBackoffUntil, 0);
+});
+
 test('follow keeps distance without granting PvP, and death clears target before respawn', async () => {
   const { bot } = flatBot(NAMES[0], { iron_sword: 1 });
   const leader = flatBot(NAMES[1], { iron_sword: 1 }, { x: 0, y: 64, z: 12 }).bot;

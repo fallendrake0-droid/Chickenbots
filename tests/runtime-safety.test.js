@@ -261,6 +261,53 @@ test('an operator command takes an exclusive slot and cancels the autonomous ste
   assert.equal(runtime.commandLocks.has('________'), false, 'the lock is released in finally');
 });
 
+test('operator commands for one bot queue in FIFO order instead of racing', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  runtime.bots = new Map([['________', { name: '________' }]]);
+  const order = [];
+  let releaseFirst;
+  const first = runtime.runExclusive('________', async () => {
+    order.push('first-start');
+    await new Promise((resolve) => { releaseFirst = resolve; });
+    order.push('first-end');
+    return { ok: true };
+  });
+  const second = runtime.runExclusive('________', async () => {
+    order.push('second-start');
+    return { ok: true };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ['first-start']);
+  assert.equal(runtime.commandLocks.has('________'), true);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['first-start', 'first-end', 'second-start']);
+  assert.equal(runtime.commandLocks.has('________'), false);
+  assert.equal(runtime.commandWaiters.size, 0);
+});
+
+test('an operator command also cancels an in-flight safety task', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const cancelled = [];
+  runtime.bots = new Map([['________', { name: '________', cancelAction: (reason) => cancelled.push(reason) }]]);
+  let finishSafety;
+  const safety = new Promise((resolve) => { finishSafety = resolve; });
+  runtime.botSafety.set('________', safety);
+  let ran = false;
+  const command = runtime.runExclusive('________', async () => {
+    ran = true;
+    assert.equal(runtime.commandLocks.has('________'), true);
+    return { ok: true };
+  });
+  assert.equal(runtime.commandLocks.has('________'), true);
+  assert.deepEqual(cancelled, ['operator command']);
+  assert.equal(ran, false, 'the command waits for the cancelled safety task to settle');
+  finishSafety();
+  assert.deepEqual(await command, { ok: true });
+  assert.equal(ran, true);
+  assert.equal(runtime.commandLocks.has('________'), false);
+});
+
 test('pre-join safety is scheduled per bot and never blocks the runtime tick', async () => {
   const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
   const bot = new MockBot({ name: '________', world: new MockWorld({ flat: true }) });

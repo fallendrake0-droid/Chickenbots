@@ -72,6 +72,8 @@ class CombatController {
     this.serverPvp = Boolean(bot.serverPvp === undefined ? config.autonomy.serverPvp !== false : bot.serverPvp);
     this.lastPlan = null;
     this.followTarget = null;
+    this._followBackoffUntil = 0;
+    this._followFailures = 0;
     this._deadNotified = false;
   }
 
@@ -251,6 +253,8 @@ class CombatController {
 
   stopFollow() {
     this.followTarget = null;
+    this._followBackoffUntil = 0;
+    this._followFailures = 0;
     if (this.mode === 'FOLLOW') this.mode = 'BALANCED';
     this._setState('IDLE', 'follow stopped');
     return { ok: true, mode: this.mode };
@@ -258,6 +262,13 @@ class CombatController {
 
   async followTick() {
     if (this.mode !== 'FOLLOW' || !this.followTarget) return { ok: false, reason: 'not following' };
+    // Formation following runs inside the safety tick. A 20s pathfinder call
+    // for a blocked leader used to hold one bot's whole safety pass open and
+    // starve the next tick; a short bounded move plus backoff keeps the loop
+    // responsive without pretending the bot caught up.
+    if (this._followBackoffUntil && Date.now() < this._followBackoffUntil) {
+      return { ok: false, action: 'follow', deferred: true, reason: 'follow retry backoff', retryInMs: this._followBackoffUntil - Date.now() };
+    }
     let target = this.followTarget.kind === 'bot' ? this.followTarget.bot : null;
     if (!target) {
       target = typeof this.bot.entitiesNear === 'function'
@@ -271,10 +282,19 @@ class CombatController {
     const wanted = this.followTarget.distance || 4;
     if (dist > wanted + 1.5) {
       const move = typeof this.bot.goNear === 'function'
-        ? await this.bot.goNear(target, wanted)
-        : await this.bot.goTo(target.position, { range: wanted });
-      return { ok: move.ok !== false, action: 'follow', target: target.name, distance: Number(dist.toFixed(1)), move, visible: true };
+        ? await this.bot.goNear(target, wanted, { timeoutMs: 4000, priority: 'task', owner: 'team-follow' })
+        : await this.bot.goTo(target.position, { range: wanted, timeoutMs: 4000, priority: 'task', owner: 'team-follow' });
+      if (move && move.ok === false) {
+        this._followFailures = Math.min(6, (this._followFailures || 0) + 1);
+        this._followBackoffUntil = Date.now() + Math.min(15000, 1000 * (2 ** this._followFailures));
+        return { ok: false, action: 'follow', target: target.name, distance: Number(dist.toFixed(1)), move, visible: true, deferred: true };
+      }
+      this._followFailures = 0;
+      this._followBackoffUntil = 0;
+      return { ok: true, action: 'follow', target: target.name, distance: Number(dist.toFixed(1)), move, visible: true };
     }
+    this._followFailures = 0;
+    this._followBackoffUntil = 0;
     return { ok: true, action: 'follow', target: target.name, distance: Number(dist.toFixed(1)), inRange: true, visible: true };
   }
 

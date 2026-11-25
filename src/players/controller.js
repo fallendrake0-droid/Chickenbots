@@ -122,6 +122,44 @@ class PlayerController {
     return { ok: true, bot: this.bot.name, stopped: true, previous };
   }
 
+  /**
+   * Clear only a follow watch. Guard and escort are deliberate protection
+   * modes and must not be removed by an "unfollow" button. A player name is
+   * optional: when it is supplied, a follow for a different player is left
+   * untouched and the result says so.
+   */
+  unfollow(name = null) {
+    const wanted = name == null || name === '' ? null : cleanName(name);
+    if (name != null && name !== '' && !wanted) {
+      return { ok: false, code: 'INVALID_NAME', error: `invalid player name '${name}'` };
+    }
+    if (this.mode !== 'FOLLOW' || !this.target) {
+      return {
+        ok: true, bot: this.bot.name, active: false, stopped: false, already: true,
+        mode: this.mode, target: this.target
+      };
+    }
+    if (wanted && this.target !== wanted) {
+      return {
+        ok: true, bot: this.bot.name, active: false, stopped: false, already: true,
+        mode: this.mode, target: this.target, skippedTarget: wanted
+      };
+    }
+    const previousTarget = this.target;
+    const previousMode = this.mode;
+    this.mode = null;
+    this.target = null;
+    if (this.combat && this.combat.mode === 'FOLLOW' && typeof this.combat.stopFollow === 'function') this.combat.stopFollow();
+    if (typeof this.bot.cancelMotion === 'function') {
+      try { this.bot.cancelMotion('player unfollowed'); } catch (_) { /* optional */ }
+    }
+    this._note(`unfollow ${previousTarget}`);
+    return {
+      ok: true, bot: this.bot.name, active: false, stopped: true,
+      previousMode, target: previousTarget, mode: null
+    };
+  }
+
   async come(name, { distance = 2, timeoutMs = 15000 } = {}) {
     const target = this._target(name);
     if (!target.ok) return target;

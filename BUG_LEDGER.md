@@ -135,6 +135,32 @@ Live-only items remain **UNVERIFIED LIVE** because the sandbox cannot reach
 `EmpiSMP.aternos.me:32990`.
 
 
+## Round 32 — command audit, bounded follow and unfollow
+
+**Starting head:** `7a69ba4`
+**Evidence:** 395 tests, 165-file lint, `commands:audit` in deterministic
+simulation, and a local dashboard. The supplied live log is analysed but was
+not produced by this sandbox.
+
+| ID | Sev | Component | Symptom / reproduction | Root cause | Fix | Regression test | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-32-01 | P1 | Team command | `team leader` threw `services.leadership.status is not a function` | Command called a method the model does not have | Return actual leader, preferred name, succession and history | `command-audit.test.js` | FIXED (unit) |
+| BUG-32-02 | P1 | Fish command | `fish all stop` parsed `stop` as a cast count | Only `fish stop all` was recognised | Accept either word order | command audit | FIXED (unit) |
+| BUG-32-03 | P1 | Explore command | `explore all stop` parsed `stop` as a step count | Only `explore stop all` was recognised | Accept either word order | command audit | FIXED (unit) |
+| BUG-32-04 | P1 | Inventory command | `inventory all` returned `unknown bot all` | Fleet target was never accepted | Fleet inventory fan-out with per-bot rows | command audit | FIXED (unit) |
+| BUG-32-05 | P1 | Diagnostics | Reported `10,000/10,001 unique` after one custom design existed | Compared manifest hashes with the combined manifest+custom count | Compare manifest to manifest, report custom count separately | command audit | FIXED (unit) |
+| BUG-32-06 | P2 | Builder status | `site status` and `materials status` failed with no active project | Treated an empty project as an execution error | Return an honest inactive status | command audit | FIXED (unit) |
+| BUG-32-07 | P1 | Players arguments | `players follow Alex nope` silently used the leader; `players stop nope` stopped all; `*` was not a fleet word | Loose target parser | Strict target validation; full fleet word set | `players.test.js`, command audit | FIXED (unit) |
+| BUG-32-08 | P1 | Safety follow | Live log showed `follow` safety stages of 20 s repeatedly | `goTo` defaulted to a 20 s path and retried every tick | 4 s bound + exponential backoff; no movement claim after failure | `combat.test.js` | FIXED (unit) |
+| BUG-32-09 | P1 | Command exclusivity | A command could start while a safety/watch path held the bot; two commands could race | `runExclusive` cancelled only autonomous steps and did not queue | Cancel safety too, FIFO queue per bot, bounded 3 s drain | `runtime-safety.test.js` | FIXED (unit) |
+| BUG-32-10 | P2 | Player controls | No way to clear a follow without also stopping guard/escort; no follow list | Only `players stop` existed | `unfollow` + `players following` + Following players dashboard section | `players.test.js`, `controllers.test.js` | FIXED (unit) |
+| BUG-27-10 | P1 | Runtime performance | Supplied live log shows 4.8 s, 9.8 s and 11.9 s event-loop blocks at `MINE_BLOCK` / `launch-actions` | Synchronous action/chunk work still exceeds the budget | Follow no longer contributes 20 s; core block remains | live log; open | OPEN |
+
+The supplied live log shows no disconnect/kick. The five bots stayed online for
+over 20 minutes. “Bots leaving” was not reproduced in the log; the observed
+failure is event-loop starvation and slow safety follow.
+
+
 ## Preserved fixes
 
 The round-26 movement arbiter, tick scheduler, spawn safety, bed-quota fix,

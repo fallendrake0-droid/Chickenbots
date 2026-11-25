@@ -124,7 +124,9 @@ function isBotName(services, value) {
 
 function targetActions(services, target) {
   const value = String(target || '').toLowerCase();
-  if (!value || value === 'all' || value === 'fleet' || value === 'team') return allActions(services);
+  // FLEET_WORDS includes '*'. Keeping a second literal list here made
+  // `players follow Alex *` fail with "unknown bot" instead of fanning out.
+  if (!value || isFleetTarget(value)) return allActions(services);
   return [actionsFor(services, pickBot(services, value).name)];
 }
 
@@ -500,8 +502,17 @@ function registerAll(services, registry) {
       const library = services.library;
       checks.push({ name: 'schematic-library', ok: Boolean(library && library.loaded && library.count >= config.schematics.minimumCount), detail: library && library.loaded ? `${library.count} designs` : 'not generated' });
       if (library && library.loaded) {
-        const hashes = new Set(library.manifest.designs.map((d) => d.geometryHash));
-        checks.push({ name: 'schematic-uniqueness', ok: hashes.size === library.count, detail: `${hashes.size}/${library.count} unique geometry hashes` });
+        // The manifest and the custom store are separate catalogues. Comparing
+        // manifest hashes with the combined count made a valid 10,000-design
+        // manifest fail as soon as one custom design existed.
+        const base = library.manifest.designs;
+        const hashes = new Set(base.map((d) => d.geometryHash));
+        const custom = library.customStore ? library.customStore.count : 0;
+        checks.push({
+          name: 'schematic-uniqueness',
+          ok: hashes.size === base.length,
+          detail: `${hashes.size}/${base.length} unique manifest hashes${custom ? ` + ${custom} custom design(s)` : ''}`
+        });
       }
       checks.push({ name: 'bots-configured', ok: services.bots.size === BOT_NAMES.length, detail: `${services.bots.size} bots loaded` });
       const taskBoard = services.taskBoard;
@@ -555,7 +566,23 @@ function registerAll(services, registry) {
         if (!args[1]) throw new CommandError('usage: team attack <authorised-player>');
         return teamAttack(services, args[1]);
       }
-      if (sub === 'leader') return { ok: true, leader: coordinator.leader, election: services.leadership ? services.leadership.status() : null };
+      if (sub === 'leader') {
+        const leadership = services.leadership || coordinator.leadership;
+        if (!leadership) return { ok: true, leader: coordinator.leader, election: null, note: 'leadership model unavailable' };
+        const states = [...services.bots.values()].map((bot) => ({
+          name: bot.name, connected: bot.connected, spawned: bot.spawned,
+          health: bot.health, food: bot.food, uptimeMs: bot.uptimeMs,
+          taskLoad: coordinator.assignments && coordinator.assignments.has(bot.name) ? 1 : 0
+        }));
+        return {
+          ok: true,
+          leader: coordinator.leader || leadership.leader,
+          preferred: leadership.preferred,
+          succession: leadership.successionOrder(states).slice(0, 10),
+          history: leadership.history.slice(-10),
+          election: { preferred: leadership.preferred, candidates: states.length, history: leadership.history.length }
+        };
+      }
       if (sub === 'on' || sub === 'off') return { ok: true, ...coordinator.setEnabled(sub === 'on') };
       if (sub === 'memory') {
         const type = args[1] ? args[1].toUpperCase() : null;
@@ -645,8 +672,14 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'inventory', aliases: ['inv'], category: 'survival', summary: 'Inventory, reserves and tool status', usage: 'inventory [bot]',
+    name: 'inventory', aliases: ['inv'], category: 'survival', summary: 'Inventory, reserves and tool status', usage: 'inventory [bot|all]',
     execute: async (args) => {
+      if (isFleetTarget(args[0])) {
+        return runFleetActions(services, 'all', (actions) => {
+          const status = actions.inventory.status();
+          return { ok: true, inventory: status, capacity: status.capacity, used: status.slotsUsed, free: status.slotsFree };
+        });
+      }
       const bot = pickBot(services, args[0]);
       return { ok: true, inventory: actionsFor(services, bot.name).inventory.status() };
     }
@@ -793,9 +826,11 @@ function registerAll(services, registry) {
     name: 'fish', category: 'farming', summary: 'Fish from real water with a fishing rod', usage: 'fish [bot|all] [casts] | fish stop [bot|all]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
-      if (first === 'stop') {
-        const target = String(args[1] || '').toLowerCase();
-        const targets = target === 'all' || target === 'fleet' ? allActions(services) : [actionsFor(services, pickBot(services, args[1]).name)];
+      if (first === 'stop' || String(args[1] || '').toLowerCase() === 'stop') {
+        // Both `fish stop all` and `fish all stop` are natural; accept either.
+        const targetToken = first === 'stop' ? args[1] : args[0];
+        const target = String(targetToken || 'all').toLowerCase();
+        const targets = isFleetTarget(target) ? allActions(services) : [actionsFor(services, pickBot(services, targetToken).name)];
         const results = targets.map((actions) => actions.fishing.stop());
         return { ok: true, stopped: results };
       }
@@ -862,9 +897,11 @@ function registerAll(services, registry) {
     name: 'explore', category: 'exploration', summary: 'Explore the spiral and record discoveries; stop cancels', usage: 'explore [bot|all] [steps] | explore stop [bot|all]',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
-      if (first === 'stop') {
-        const target = String(args[1] || 'all').toLowerCase();
-        const targets = target === 'all' || target === 'fleet' ? allActions(services) : [actionsFor(services, pickBot(services, args[1]).name)];
+      if (first === 'stop' || String(args[1] || '').toLowerCase() === 'stop') {
+        // Accept both `explore stop all` and `explore all stop`.
+        const targetToken = first === 'stop' ? args[1] : args[0];
+        const target = String(targetToken || 'all').toLowerCase();
+        const targets = isFleetTarget(target) ? allActions(services) : [actionsFor(services, pickBot(services, targetToken).name)];
         return { ok: true, stopped: targets.map((actions) => actions.exploration.stop()) };
       }
       const fleet = isFleetTarget(args[0]);
@@ -1815,8 +1852,8 @@ function registerPlayers(registry, services) {
 
   registry.register({
     name: 'players', aliases: ['player'], category: 'players', maxArgs: 64,
-    summary: 'See real players and follow, guard, escort, feed, give loot or message them',
-    usage: 'players [list|near [radius]|info <player>|follow <player> [bot|all] [distance]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>]',
+    summary: 'See real players, follow/unfollow, guard, escort, feed, give loot or message them',
+    usage: 'players [list|near [radius]|info <player>|following [bot|all]|watches [bot|all]|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>]',
     execute: async (args) => {
       const sub = String(args[0] || 'list').toLowerCase();
       const directory = registryForPlayers();
@@ -1836,7 +1873,19 @@ function registerPlayers(registry, services) {
         const watch = controllerTargets('all').map((controller) => controller.status()).filter((row) => row.target === name);
         return { ok: true, player: directory.list({ limit: 200 }).find((row) => row.name === name) || null, watch };
       }
+      if (sub === 'following' || sub === 'watches') {
+        if (args[2] !== undefined) throw new CommandError(`usage: players ${sub} [bot|all]`);
+        if (args[1] !== undefined && !targetOrDefault(args[1])) throw new CommandError(`unknown bot or fleet target '${args[1]}'`);
+        const target = targetOrDefault(args[1]) || 'all';
+        const all = targetActions(services, target)
+          .map((actions) => (actions.players ? actions.players.status() : null))
+          .filter((row) => row && row.active);
+        const results = sub === 'following' ? all.filter((row) => row.mode === 'FOLLOW') : all;
+        return { command: `players ${sub}`, target, count: results.length, watches: results };
+      }
       if (sub === 'stop') {
+        if (args[2] !== undefined) throw new CommandError('usage: players stop [bot|all]');
+        if (args[1] !== undefined && !targetOrDefault(args[1])) throw new CommandError(`unknown bot or fleet target '${args[1]}'`);
         const target = targetOrDefault(args[1]) || 'all';
         // Stop must clear a watch even for a bot that is currently offline;
         // otherwise it would resume following a stale player after reconnect.
@@ -1846,11 +1895,52 @@ function registerPlayers(registry, services) {
         }));
         return { command: 'players stop', ok: results.every((row) => row.ok !== false), completed: results.length, results };
       }
+      if (sub === 'unfollow') {
+        // "unfollow" is narrower than "stop": it only clears a FOLLOW watch,
+        // leaving a guard or escort in place. It also stays available for an
+        // offline bot so a stale follow cannot resume after reconnect.
+        const first = args[1];
+        let player = null;
+        let explicitTarget = first;
+        if (first && !isFleetTarget(first) && !isBotName(services, first)) {
+          player = validPlayer(first);
+          explicitTarget = args[2];
+          if (args[3] !== undefined) throw new CommandError('usage: players unfollow [player] [bot|all]');
+        } else if (args[2] !== undefined) {
+          // `players unfollow all Alex` must not silently ignore Alex and clear
+          // every follow. Require the documented order.
+          throw new CommandError('usage: players unfollow [player] [bot|all]');
+        }
+        if (explicitTarget !== undefined && !targetOrDefault(explicitTarget)) {
+          throw new CommandError(`unknown bot or fleet target '${explicitTarget}'`);
+        }
+        const target = targetOrDefault(explicitTarget) || 'all';
+        const results = targetActions(services, target).map((actions) => ({
+          bot: actions.bot.name,
+          ...(actions.players ? actions.players.unfollow(player) : { ok: false, error: 'player controller unavailable' })
+        }));
+        const cancelled = results.filter((row) => row.stopped).length;
+        return {
+          command: 'players unfollow', target, player,
+          ok: results.every((row) => row.ok !== false),
+          cancelled,
+          already: results.filter((row) => row.already).length,
+          completed: results.length,
+          results
+        };
+      }
       if (sub === 'follow' || sub === 'guard' || sub === 'escort') {
         const name = validPlayer(args[1]);
-        const target = targetOrDefault(args[2]) || defaultTarget();
-        const numeric = args[3] !== undefined || (args[2] !== undefined && /^\d+$/.test(String(args[2])));
-        const value = numeric ? Number(args[3] !== undefined ? args[3] : args[2]) : undefined;
+        const numericTarget = args[2] !== undefined && /^\d+$/.test(String(args[2]));
+        if (args[2] !== undefined && !numericTarget && !targetOrDefault(args[2])) {
+          throw new CommandError(`unknown bot or fleet target '${args[2]}'`);
+        }
+        if (numericTarget && args[3] !== undefined) {
+          throw new CommandError(`usage: players ${sub} <player> [bot|all] [${sub === 'follow' ? 'distance' : 'radius'}]`);
+        }
+        const target = numericTarget ? defaultTarget() : (targetOrDefault(args[2]) || defaultTarget());
+        const rawValue = args[3] !== undefined ? args[3] : (numericTarget ? args[2] : undefined);
+        const value = rawValue === undefined ? undefined : intArg(rawValue, sub === 'follow' ? 'distance' : 'radius', { min: sub === 'follow' ? 1 : 3, max: sub === 'follow' ? 8 : 16 });
         return {
           command: `players ${sub}`, target: name,
           ...(await runFor(target, (actions) => {
@@ -1861,6 +1951,8 @@ function registerPlayers(registry, services) {
         };
       }
       if (sub === 'come') {
+        if (args[3] !== undefined) throw new CommandError('usage: players come <player> [bot|all]');
+        if (args[2] !== undefined && !targetOrDefault(args[2])) throw new CommandError(`unknown bot or fleet target '${args[2]}'`);
         const name = validPlayer(args[1]);
         const target = targetOrDefault(args[2]) || defaultTarget();
         return { command: 'players come', target: name, ...(await runFor(target, (actions) => actions.players.come(name))) };
@@ -1871,15 +1963,17 @@ function registerPlayers(registry, services) {
         const rest = args.slice(3);
         const trailing = targetOrDefault(rest[rest.length - 1]);
         if (trailing) rest.pop();
+        if (rest.length > 1) throw new CommandError('usage: players give <player> <item> [count] [bot|all]');
         const count = rest[0] === undefined ? 1 : intArg(rest[0], 'count', { min: 1, max: 2304 });
         const target = trailing || defaultTarget();
         return { command: 'players give', target: name, item, count, ...(await runFor(target, (actions) => actions.players.give(name, item, count))) };
       }
       if (sub === 'drop' || sub === 'loot') {
         const name = validPlayer(args[1]);
-        let rest = args.slice(2);
+        const rest = args.slice(2);
         const trailing = targetOrDefault(rest[rest.length - 1]);
         if (trailing) rest.pop();
+        if (rest.length > 2) throw new CommandError('usage: players drop <player> [loot|item] [count] [bot|all]');
         let item = 'loot';
         let count = null;
         if (rest[0] !== undefined && /^\d+$/.test(String(rest[0]))) {
@@ -1910,6 +2004,8 @@ function registerPlayers(registry, services) {
         return { command: 'players message', target: name, ...(await runFor(sender, (actions) => actions.players.message(name, text))) };
       }
       if (sub === 'greet' || sub === 'wave') {
+        if (args[3] !== undefined) throw new CommandError('usage: players greet <player> [bot|all]');
+        if (args[2] !== undefined && !targetOrDefault(args[2])) throw new CommandError(`unknown bot or fleet target '${args[2]}'`);
         const name = validPlayer(args[1]);
         const target = targetOrDefault(args[2]) || defaultTarget();
         return { command: 'players greet', target: name, ...(await runFor(target, (actions) => actions.players.greet(name))) };
@@ -2005,9 +2101,10 @@ function registerConstruction(registry, services) {
       const sub = (args[0] || 'status').toLowerCase();
       const m = manager();
       if (sub === 'status') {
-        const project = projectOrThrow();
+        const project = m.activeProject();
+        if (!project) return { ok: true, active: false, project: null, message: 'No active construction project; create one with builder create.' };
         return {
-          ok: true, project: m.summary(project), preparation: project.sitePreparation,
+          ok: true, active: true, project: m.summary(project), preparation: project.sitePreparation,
           boundaries: project.sitePreparation.boundaries, pipeline: project.buildPhases.filter((phase) => ['SURVEY', 'SITE_SELECTION', 'CLEARANCE', 'EXCAVATION', 'LEVELLING', 'DRAINAGE', 'LIGHTING', 'PERIMETER', 'TEMPORARY_STORAGE'].includes(phase.id))
         };
       }
@@ -2060,7 +2157,12 @@ function registerConstruction(registry, services) {
       const m = manager();
       if (sub === 'status' || sub === 'calculate' || sub === 'bom') {
         const result = m.materials();
-        if (!result.ok) return result;
+        if (!result.ok) {
+          if (sub === 'status' && /no active project/i.test(String(result.error || ''))) {
+            return { ok: true, active: false, project: null, ready: false, message: 'No active construction project; start one with builder create.' };
+          }
+          return result;
+        }
         return {
           ok: true, project: result.project, ready: result.ready, deficit: result.deficit,
           totalNeeded: result.totalNeeded, totalAvailable: result.totalAvailable,

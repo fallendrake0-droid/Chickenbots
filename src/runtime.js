@@ -110,6 +110,10 @@ class TeamRuntime {
     this.botSafety = new Map();
     this.safetyStages = new Map();
     this.commandLocks = new Set();
+    // Commands for the same bot must queue, not race. The lock alone only
+    // excluded autonomy; two dashboard clicks could still both call into the
+    // same pathfinder/eat/drop sequence at once.
+    this.commandWaiters = new Map();
     this.botStepCursor = 0;
     this.supervisorTimer = null;
     this.disconnectedNotified = new Set();
@@ -959,20 +963,42 @@ class TeamRuntime {
   async runExclusive(name, fn) {
     if (typeof fn !== 'function') throw new TypeError('runExclusive needs a command function');
     const bot = this.bots.get(name);
-    const prior = this.botSteps.get(name);
+    // Queue behind an earlier operator command for this bot. Resolving one
+    // waiter on release preserves FIFO order without an unbounded array scan.
+    while (this.commandLocks.has(name)) {
+      await new Promise((resolve) => {
+        const waiters = this.commandWaiters.get(name) || [];
+        waiters.push(resolve);
+        this.commandWaiters.set(name, waiters);
+      });
+    }
     this.commandLocks.add(name);
     try {
-      if (prior) {
+      const prior = this.botSteps.get(name);
+      // A player-watch or formation follow also owns the pathfinder. Cancelling
+      // only the autonomous step let a 20s follow continue under the command,
+      // so the operator saw a slow command and two movement owners.
+      const safety = this.botSafety.get(name);
+      if (prior || safety) {
         try { bot?.cancelAction?.('operator command'); } catch (_) { /* optional */ }
         const grace = new Promise((resolve) => {
           const timer = setTimeout(resolve, 3000);
           if (timer.unref) timer.unref();
         });
-        await Promise.race([prior.catch(() => null), grace]);
+        await Promise.race([
+          Promise.allSettled([prior, safety].filter(Boolean)),
+          grace
+        ]);
       }
       return await fn();
     } finally {
       this.commandLocks.delete(name);
+      const waiters = this.commandWaiters.get(name);
+      if (waiters && waiters.length) {
+        const next = waiters.shift();
+        if (!waiters.length) this.commandWaiters.delete(name);
+        next();
+      }
     }
   }
 

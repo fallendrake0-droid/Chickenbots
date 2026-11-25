@@ -94,14 +94,30 @@ class CommandRegistry {
     return [...this.commands.values()]
       .filter((c) => !category || c.category === category)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map(({ name, aliases, category: cat, summary, usage, dangerous, requiresConfirmation }) => ({ name, aliases, category: cat, summary, usage, dangerous, requiresConfirmation }));
+      .map(({ name, aliases, category: cat, summary, usage, examples, dangerous, requiresConfirmation, minArgs, maxArgs }) => ({
+        name, aliases, category: cat, summary, usage, examples, dangerous, requiresConfirmation, minArgs, maxArgs
+      }));
   }
 
   help(name = null) {
     if (name) {
-      const command = this.get(name);
-      if (!command) return { ok: false, error: `unknown command: ${name}`, commands: this.list() };
-      return { ok: true, command: { name: command.name, usage: command.usage, summary: command.summary, examples: command.examples, dangerous: command.dangerous, requiresConfirmation: command.requiresConfirmation, args: command.minArgs } };
+      const label = String(name).toLowerCase();
+      const command = this.get(label);
+      if (command) {
+        return {
+          ok: true,
+          command: {
+            name: command.name, category: command.category, aliases: command.aliases,
+            usage: command.usage, summary: command.summary, examples: command.examples,
+            dangerous: command.dangerous, requiresConfirmation: command.requiresConfirmation,
+            minArgs: command.minArgs, maxArgs: command.maxArgs
+          }
+        };
+      }
+      // `help builder` is more useful as the category list than as an error.
+      const category = this.list().filter((entry) => entry.category === label);
+      if (category.length) return { ok: true, category: label, count: category.length, commands: category };
+      return { ok: false, error: `unknown command or category: ${name}`, commands: this.list() };
     }
     const categories = {};
     for (const command of this.list()) {
@@ -131,6 +147,19 @@ class CommandRegistry {
     }
     if (source === 'chat' && (command.dangerous || command.requiresConfirmation)) {
       return this._record({ ok: false, error: `refusing '${command.name}' from chat; use the dashboard or terminal`, code: 'CHAT_REFUSED' }, { line, source, operator, started });
+    }
+    // `--help` is a universal, side-effect-free probe. It makes every command
+    // discoverable without running it and gives scripts a safe audit path.
+    if (args.includes('--help') || args.includes('-h')) {
+      return this._record({
+        ok: true, command: command.name,
+        help: {
+          name: command.name, category: command.category, aliases: command.aliases,
+          usage: command.usage, summary: command.summary, examples: command.examples,
+          dangerous: command.dangerous, requiresConfirmation: command.requiresConfirmation,
+          minArgs: command.minArgs, maxArgs: command.maxArgs
+        }
+      }, { line, source, operator, started });
     }
     if (args.length < command.minArgs) {
       return this._record({ ok: false, error: `missing arguments. usage: ${command.usage}`, code: 'ARGS' }, { line, source, operator, started });

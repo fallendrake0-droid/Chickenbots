@@ -43,6 +43,7 @@ function playerCommand(root, action, player, args = '') {
   const bot = selectedBot(root);
   const distance = Math.max(1, Math.min(8, Number((root.querySelector('[data-player-distance]') || {}).value) || 3));
   if (action === 'follow') return `players follow ${player} ${bot} ${distance}`;
+  if (action === 'unfollow') return `players unfollow ${player} ${bot}`;
   if (action === 'guard') return `players guard ${player} ${bot} ${args || 8}`;
   if (action === 'escort') return `players escort ${player} ${bot}`;
   if (action === 'come') return `players come ${player} ${bot}`;
@@ -82,7 +83,8 @@ function controlBar() {
         <select class="select select--sm" id="player-bot" data-player-bot aria-label="Bot used for player actions">${botOptions()}</select>
         <label class="tiny muted" for="player-distance">Follow distance</label>
         <input class="input input--sm" id="player-distance" data-player-distance type="number" min="1" max="8" value="3" aria-label="Follow distance">
-        ${commandButton('Stop watches', 'players stop all', 'stop', { danger: true })}
+        ${commandButton('Unfollow all', 'players unfollow all', 'user-x', { danger: true })}
+        ${commandButton('Stop all watches', 'players stop all', 'stop', { danger: true })}
         ${commandButton('Refresh', 'players list', 'refresh')}
       </div>
     </div>
@@ -99,6 +101,7 @@ function playerCard(player) {
       </div>
       <div class="row row--wrap">
         ${playerButton('Follow', 'follow', name, 'route')}
+        ${playerButton('Unfollow', 'unfollow', name, 'user-x')}
         ${playerButton('Guard', 'guard', name, 'shield-check')}
         ${playerButton('Escort', 'escort', name, 'users')}
         ${playerButton('Come', 'come', name, 'map-pin')}
@@ -137,6 +140,31 @@ function playersList() {
     return `<div class="card">${emptyState('No players seen yet', 'A player appears here after any bot sees them in render distance or in the server player list. Following a player never authorises PvP.', 'users')}</div>`;
   }
   return `<div class="grid" style="gap:12px">${list.map(playerCard).join('')}</div>`;
+}
+
+function followingSection() {
+  const list = watches().filter((row) => row.mode === 'FOLLOW');
+  return `<section class="card" style="margin-bottom:16px">
+    <div class="card-header">
+      <div class="card-title">${icon('route')} Following players <span class="badge badge--info">${num(list.length)}</span></div>
+      <div class="row row--wrap">
+        ${commandButton('Unfollow all', 'players unfollow all', 'user-x', { danger: true })}
+        ${commandButton('Refresh', 'players following all', 'refresh')}
+      </div>
+    </div>
+    <div class="card-body">
+      ${list.length ? `<table class="table"><thead><tr><th>Bot</th><th>Following</th><th>Distance</th><th>Visible</th><th>Last action</th><th></th></tr></thead><tbody>
+        ${list.map((row) => `<tr>
+          <td class="mono">${esc(row.bot)}</td>
+          <td>${esc(row.target || '—')}</td>
+          <td>${row.distance === null || row.distance === undefined ? '—' : num(row.distance)}</td>
+          <td>${row.visible ? badge('Visible', 'success') : badge('No', 'warn')}</td>
+          <td class="tiny muted">${esc(row.lastAction || '—')}${row.lastActionAt ? ` · ${timeAgo(row.lastActionAt)}` : ''}</td>
+          <td>${commandButton('Unfollow', `players unfollow ${row.target || ''} ${row.bot || 'all'}`.trim(), 'user-x', { danger: true })}</td>
+        </tr>`).join('')}
+      </tbody></table>` : `<div class="muted">No bot is following a player. Use Follow on a player card to start; Unfollow only clears follow watches and leaves guard or escort running.</div>`}
+    </div>
+  </section>`;
 }
 
 function watchTable() {
@@ -239,6 +267,7 @@ export const playersPage = {
       })}
       ${summaryStrip()}
       ${controlBar()}
+      ${followingSection()}
       <div class="grid grid--2" style="align-items:start; gap:16px">
         <div>
           <div class="section-title">Seen players</div>
