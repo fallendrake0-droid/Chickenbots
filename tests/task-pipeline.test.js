@@ -9,6 +9,7 @@ const { TeamCoordinator } = require('../src/team/teamCoordinator');
 const { MockWorld } = require('../src/bot/mockWorld');
 const { MockBot } = require('../src/bot/mockBot');
 const { BotActions } = require('../src/actions');
+const { createSurvivalBasePlan } = require('../src/team/plans');
 
 function clock(start = 1000000) {
   let t = start;
@@ -329,4 +330,21 @@ test('woodcutting searches a fresh forest patch when the base is stripped', asyn
   assert.equal(result.relocated, true, JSON.stringify(result));
   assert.ok(Math.hypot(bot.position.x, bot.position.z) >= 32, 'the bot must leave the stripped radius');
   assert.equal(task.relocationAttempts, 1);
+});
+
+test('the survival plan never demands more beds than the team actually owns', () => {
+  const empty = new TaskBoard({ now: () => 1000 });
+  const noBeds = createSurvivalBasePlan(empty, { botNames: BOT_NAMES, bedStock: 0 });
+  assert.equal(noBeds.created, true);
+  assert.equal(noBeds.objective.requirements.bed, undefined);
+  assert.ok(!noBeds.tasks.some((task) => task.type === 'PLACE_BED'), 'no impossible bed quota');
+  assert.doesNotMatch(noBeds.objective.completionCondition, /ten beds/);
+
+  const stocked = new TaskBoard({ now: () => 1000 });
+  const five = createSurvivalBasePlan(stocked, { botNames: BOT_NAMES, bedStock: 5 });
+  const bedTask = five.tasks.find((task) => task.type === 'PLACE_BED');
+  assert.ok(bedTask, 'real bed stock creates a bed task');
+  assert.equal(bedTask.params.count, 5);
+  assert.equal(bedTask.units.target, 5);
+  assert.equal(five.objective.requirements.bed, 5);
 });

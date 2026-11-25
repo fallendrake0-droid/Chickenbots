@@ -9,6 +9,7 @@ const { EmergencyManager } = require('./emergencies');
 const { computeSlots, separation, normalizeFormation, formationForTask } = require('./formations');
 const { createSurvivalBasePlan } = require('./plans');
 const { config } = require('../config');
+const { sumCategory } = require('../world/items');
 
 const ROLE_BY_TASK = {
   CHOP_WOOD: 'WOODCUTTER',
@@ -280,7 +281,12 @@ class TeamCoordinator {
       return null;
     }
     if (now < this.planRetryAt) return null;
-    const plan = createSurvivalBasePlan(this.board, { botNames: this.botNames });
+    // One task is claimed by one bot, so the quota is the largest single-bot
+    // stock, not the fleet total. Summing ten bots' five beds would create a
+    // ten-bed task no individual bot could ever finish.
+    let bedStock = 0;
+    for (const state of this.botStates.values()) bedStock = Math.max(bedStock, sumCategory(state.inventory || {}, 'bed'));
+    const plan = createSurvivalBasePlan(this.board, { botNames: this.botNames, bedStock });
     if (plan.created) {
       this.planAttempts++;
       this.lastPlanObjectiveId = plan.objective.id;

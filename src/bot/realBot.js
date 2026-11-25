@@ -480,6 +480,34 @@ class RealBot extends BotAdapter {
     return true;
   }
 
+  /**
+   * Store the server-authoritative position after mineflayer has applied a
+   * position packet. The raw packet contains deltas when its relative flags are
+   * set, so the post-physics entity is the only safe anchor. Session code calls
+   * this only from the current client's packet handler.
+   */
+  _captureServerPosition(packet) {
+    const previous = this.lastServerPosition || {};
+    const entity = this.bot && this.bot.entity ? this.bot.entity : null;
+    const live = entity ? entity.position : null;
+    const pick = (axis) => {
+      if (live && Number.isFinite(Number(live[axis]))) return Number(Number(live[axis]).toFixed(3));
+      if (packet && Number.isFinite(Number(packet[axis]))) return Number(Number(packet[axis]).toFixed(3));
+      return previous[axis];
+    };
+    const authoritative = {
+      x: pick('x'), y: pick('y'), z: pick('z'),
+      yaw: entity && Number.isFinite(Number(entity.yaw)) ? Number(entity.yaw) : previous.yaw,
+      pitch: entity && Number.isFinite(Number(entity.pitch)) ? Number(entity.pitch) : previous.pitch,
+      flags: packet ? packet.flags : null,
+      teleportId: packet ? packet.teleportId : null
+    };
+    if (Number.isFinite(authoritative.x) && Number.isFinite(authoritative.y) && Number.isFinite(authoritative.z)) {
+      this.lastServerPosition = authoritative;
+    }
+    return this.lastServerPosition;
+  }
+
   _reanchorAfterInvalidPacket() {
     const server = this.lastServerPosition;
     if (!this.bot?.entity?.position || !finitePosition(server)) return false;
@@ -1355,19 +1383,12 @@ class RealBot extends BotAdapter {
       });
       client.on('position', (packet) => {
         if (!owns()) return;
-        // Relative flags can leave a field absent. Never overwrite the last
-        // authoritative anchor with undefined/NaN; the re-anchor path depends
-        // on this object being usable.
-        const previous = this.lastServerPosition || {};
-        const pick = (axis) => (Number.isFinite(Number(packet[axis])) ? Number(Number(packet[axis]).toFixed(3)) : previous[axis]);
-        const authoritative = {
-          x: pick('x'), y: pick('y'), z: pick('z'),
-          yaw: Number.isFinite(Number(packet.yaw)) ? Number(packet.yaw) : previous.yaw,
-          pitch: Number.isFinite(Number(packet.pitch)) ? Number(packet.pitch) : previous.pitch,
-          flags: packet.flags,
-          teleportId: packet.teleportId
-        };
-        this.lastServerPosition = authoritative;
+        // Mineflayer's physics plugin has already applied this packet, including
+        // the relative flags (the raw x/y/z fields are deltas when a flag is
+        // set). Read the resulting entity, not the raw packet, or a small
+        // relative correction becomes a wildly wrong anchor. The entity yaw and
+        // pitch are radians; store them in the same units the re-anchor uses.
+        this._captureServerPosition(packet);
         this.logger.debug(`[${this.name}] TRACE in position x=${packet.x} y=${packet.y} z=${packet.z} yaw=${packet.yaw} pitch=${packet.pitch} flags=${JSON.stringify(packet.flags)} teleportId=${packet.teleportId}`);
       });
       client.on('respawn', () => {

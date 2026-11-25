@@ -16,20 +16,25 @@ function objectiveExists(board, template) {
   return board.listObjectives().find((o) => o.metadata && o.metadata.template === template && o.status === 'ACTIVE') || null;
 }
 
-function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BASE' } = {}) {
+function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BASE', bedStock = 0 } = {}) {
   const existing = objectiveExists(board, template);
   if (existing) return { objective: existing, created: false };
+  // Never require ten beds when the team owns none. The old plan hard-coded a
+  // quota of ten, then failed three attempts and restarted the whole base plan
+  // forever. The quota is now bounded by real bed items the bots actually hold.
+  const bedTarget = Math.max(0, Math.min(10, Math.floor(Number(bedStock) || 0)));
+  const bedText = bedTarget > 0 ? `${bedTarget} bed${bedTarget === 1 ? '' : 's'}` : 'beds when materials allow';
   const objective = board.createObjective({
     id: `obj-${template.toLowerCase()}-${++planSeq}`,
     title: 'BUILD A PERMANENT SURVIVAL BASE',
-    description: 'Find a site, gather materials, excavate the foundation, build a secure base with storage, farms and ten beds.',
+    description: `Find a site, gather materials, excavate the foundation, build a secure base with storage, farms and ${bedText}.`,
     priority: 90,
     progress: { current: 0, target: 1, unit: 'phases' },
-    completionCondition: 'foundation, walls, roof, storage, ten beds and perimeter verified',
+    completionCondition: `foundation, walls, roof, storage, ${bedText} and perimeter verified`,
     failureCondition: 'site unusable and no alternative within 256 blocks',
     recoveryStrategy: 're-plan site and reuse gathered materials',
-    requirements: { oak_log: 256, stone: 128, iron_ingot: 32, food: 128, bed: 10 },
-    metadata: { template, botNames }
+    requirements: { oak_log: 256, stone: 128, iron_ingot: 32, food: 128, ...(bedTarget > 0 ? { bed: bedTarget } : {}) },
+    metadata: { template, botNames, bedTarget }
   });
 
   const tasks = [];
@@ -145,16 +150,16 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     estimatedMs: 90000
   });
 
-  add({
+  const beds = bedTarget > 0 ? add({
     type: 'PLACE_BED',
-    label: 'Install ten beds',
+    label: `Install ${bedTarget} bed${bedTarget === 1 ? '' : 's'}`,
     priority: 74,
     requires: { items: { 'category:bed': 1 } },
-    params: { count: 10, reservedFor: botNames },
+    params: { count: bedTarget, reservedFor: botNames },
     dependsOn: foundation ? [foundation.id, roof ? roof.id : null].filter(Boolean) : [],
-    units: { target: 10 },
+    units: { target: bedTarget },
     estimatedMs: 120000
-  });
+  }) : null;
 
   const perimeter = add({
     type: 'BUILD_PHASE',
@@ -167,7 +172,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
   });
 
   board.refreshObjectiveProgress(objective.id);
-  return { objective, tasks, created: true, food, perimeter };
+  return { objective, tasks, created: true, food, perimeter, beds };
 }
 
 function createCollectPlan(board, { resource, count, method, parts = 4, priority = 60, template = null, label = null } = {}) {

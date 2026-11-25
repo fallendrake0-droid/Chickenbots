@@ -928,3 +928,17 @@ test('five independent bots keep five generations and their own tick loops', asy
   await Promise.all(bots.map(({ real }) => real.disconnect('test')));
   assert.equal(bots.every(({ real }) => real.connection.terminal), true);
 });
+
+test('the server anchor is read after relative teleport flags are applied', () => {
+  const real = new RealBot({ name: '________', createBot: () => new FakeBot(), authEnabled: false, loginPassword: '', registerPassword: '' });
+  real.bot = new FakeBot();
+  real.bot.entity = { position: { x: 5.123, y: 64, z: 6.456 }, yaw: 0.75, pitch: -0.25 };
+  real.lastServerPosition = { x: 5, y: 64, z: 6, yaw: 0, pitch: 0 };
+  // The packet itself carries only a small delta; mineflayer has already added
+  // it to the entity. The anchor must match the entity, not the raw delta.
+  const anchor = real._captureServerPosition({ x: 0.123, y: 0, z: 0.456, yaw: 10, pitch: 0, flags: { x: true, z: true } });
+  assert.equal(anchor.x, 5.123);
+  assert.equal(anchor.z, 6.456);
+  assert.equal(anchor.yaw, 0.75);
+  assert.equal(anchor.pitch, -0.25);
+});
