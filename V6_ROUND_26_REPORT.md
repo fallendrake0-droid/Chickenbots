@@ -1,7 +1,8 @@
 # Chickenbots V6 — round 26 report (Sections A–M)
 
 **Branch:** `arena/de11bd2d-chickenbots`
-**Round-26 commits:** `d9dc9a8`, `65405ee`, `8b06acd` (pushed), plus this report commit
+**Round-26 commits:** `d9dc9a8`, `65405ee`, `8b06acd`, `e4afbcd`, `d9d90a6`,
+plus the safety-evidence commit and this report commit
 **Scope:** movement authority and wire validity, emergency spawn survival, recovery
 pre-emption, safety-pass performance, feasible base planning, then the phase 6–17
 audit items from the master directive.
@@ -18,14 +19,14 @@ audit items from the master directive.
 | Branch | `arena/de11bd2d-chickenbots` |
 | Base commit | `7764c410934a71bc22d69bb1ef1fad5647e0e640` (`main`) |
 | Round-25 head | `a71daa2` |
-| Round-26 head | this report commit (after `8b06acd`) |
+| Round-26 head | this report commit (after `9b8b3ac`) |
 | Runtime | Node `>=18.17`, CommonJS |
 | Server target | `EmpiSMP.aternos.me:32990` |
 | Server version observed by earlier live run | `26.1`, protocol `775` |
 
 The round-25 baseline gates were 293 tests, lint over 148 files, and a passing
-`validate`. Round 26 adds 16 tests and fixes defects found while exercising the
-fleet in deterministic simulation.
+`validate`. Round 26 adds 18 tests and fixes defects found while exercising the
+fleet in deterministic simulation. The final gate is 311 tests, 0 failed.
 
 ## B. Root-cause bug register
 
@@ -50,6 +51,25 @@ No fabricated fix was used. In particular: the server protocol was not changed,
 physics was not disabled, `/register` and `/login` remain impossible to enable
 through configuration, and no movement retry/backoff was added for
 `invalid_player_movement` (the malformed/ordered packet is prevented instead).
+
+### Per-bot evidence
+
+The reported live log names only some bots. The table keeps the attribution
+exactly as narrow as the evidence: a named bot is named, and a symptom whose bot
+was not recorded is not assigned to a bot.
+
+| Bot | Reported live symptom | Round-26 coverage | Still unverified |
+|---|---|---|---|
+| `00110000` | `invalid_player_movement` twice | packet ordering plus finite/range validation (`BUG-26-01`, `BUG-26-02`) | the same bot on a live server |
+| `01010100` | `invalid_player_movement` once | same | live re-check |
+| `10101000` | `invalid_player_movement` once | same | live re-check |
+| `11001100` | `invalid_player_movement` once | same | live re-check |
+| not recorded | health 2.33, low-food recovery | survival heal/eat ordering, `emergencyHeal`, recovery pre-emption | bot identity and live cause |
+| not recorded | three zombie deaths in ten minutes at 0.2–1.3 m | first-join spawn assessment, zombie retreat, creeper/no-melee escape | live threat density and server damage timing |
+
+`11001010` is the one bot with a round-26 **simulation** spawn finding:
+`unsafe spawn: suffocation risk` on a mock tree spawn, cleared after the guard
+with no deaths. That is not presented as a live-server observation.
 
 ## C. Movement: one authoritative owner
 
@@ -121,24 +141,45 @@ kicks or false “online” states:
 - Malformed movement is dropped instead of sent.
 
 Connection evidence is unit-level only: 37 lifecycle tests, 17 connection tests
-and 14 runtime-safety tests pass. The live 30-minute connection acceptance is
-still open (Section M).
+and 15 runtime-safety tests pass. In deterministic simulation the sockets are
+replaced by the mock transport, so the keep-alive gap field is `null` there; a
+real inbound packet gap can only be measured in the live check. The 30-minute
+live connection acceptance is still open (Section M).
 
 ## F. Performance before and after
 
-| Measurement | Before (live 03:19 log / round 25) | After (round-26 simulation) |
+| Measurement | Before (live 03:19 log / round 25) | After (round-26 simulation, 7.9 min) |
 |---|---|---|
-| Event-loop max block | 2,342.5 ms | 470.8 ms |
-| Event-loop p99 | 330.6 ms | 41.2 ms |
-| Event-loop mean | not reported | 21.0 ms |
-| Worst safety pass | 22,491 ms | bounded; `_tick` returns <150 ms while a 250 ms pass is in flight |
-| Longest observed controller ownership | 1,802.2 s (`PLACE_BED`) | bed task 5/5 in 120 s; objective completed in ~7.4 min |
-| Repeated plan failures | `automatic plan failed` 1, 2, 3 … | none in the 7.5-minute run after the bed-quota fix |
+| Event-loop max block | 2,342.5 ms | 524.0 ms |
+| Event-loop p99 | 330.6 ms | 37.4 ms |
+| Event-loop mean | not reported | 20.9 ms |
+| Worst safety pass | 22,491 ms | 1–2 ms per bot; no stage reached the 250 ms warning gate |
+| Safety stages | one aggregate total only | `assess 0`, `recovery-update 0`, `survival 1–2`, `follow 0`, `defend 0` ms, stored per bot |
+| Runtime tick | blocked by awaited safety work | 1–3 ms |
+| `_syncBots` | part of the blocked tick | 1 ms |
+| Dashboard `/api/state` snapshot | not measured | 0.9–1.3 ms |
+| Process CPU (sampled) | not measured | 3.2–16.9% (multicore process figure) |
+| RSS | not measured | 188.5–231.6 MB |
+| Heap used | not measured | 99.1–137.5 MB |
+| Inbound packet gap | live only; 10 s limit | `null` in simulation (mock transport has no socket) |
+| Longest observed controller ownership | 1,802.2 s (`PLACE_BED`) | bed task 5/5; objective completed in 7.9 min |
+| Repeated plan failures | `automatic plan failed` 1, 2, 3 … | none in the 7.9-minute run |
+
+The event-loop maximum varies between runs (470.8 ms in the earlier 7.5-minute
+run, 524.0 ms here), which is consistent with a large block scan plus GC rather
+than a new unbounded block; p99 and mean are stable. The 250 ms stage gate means
+a normal 1–2 ms pass is stored in the dashboard but is not logged as a warning.
 
 These are **not** the same workload. The “before” numbers come from the reported
 live server run; the “after” numbers are ten deterministic simulated bots on this
 sandbox. The comparison shows the direction and magnitude of the event-loop fix,
 not a live-server benchmark. No hardware-improvement claim is made.
+
+The dashboard 3D viewer endpoint was exercised in the same simulation:
+`GET /api/world?name=11001010` returned `ok:true` with `source`, `bounds`,
+`baseY`, `columns`, `palette`, `chunks`, `bots` and `entities` (45,940 bytes for
+one bot). That proves the snapshot payload, not that a browser canvas renders on
+a live server; live viewer acceptance is still open.
 
 The simulation also showed the remaining cost honestly: the first full audit run
 takes ~17 minutes for 10,001 designs, and the event-loop max is still hundreds of
@@ -146,22 +187,35 @@ milliseconds during large block scans. It is not claimed to be zero.
 
 ## G. Commands
 
-- `bot all status` → 10 rows, 10 online, 10 ready.
-- `eat all` → 10/10.
-- `return home all` → 10/10.
-- `bot all inventory` → 10 rows with real capacity.
-- `bot all collect` → 10/10.
-- `bot all defend` → 10 rows.
-- `explore all 1` → 10 rows.
-- `bot all mine iron` (test fixture with a real reachable deposit per bot) → at
-  least 8 bots mined >0 and at least 8 iron-ore blocks disappeared from the world.
+These commands were sent to a live deterministic simulation through
+`POST /api/command` (`node src/index.js --simulate --host 0.0.0.0 --port 3000
+--allow-insecure`) and the returned JSON was recorded. “Completed” means the
+command pipeline returned success for every bot; it does not upgrade a mock-world
+result into a live-server result.
+
+| Command | Actual result |
+|---|---|
+| `bot all status` | 10 bots, all `online:true`, `ready:true`, `gameplayReady:true` |
+| `eat all` | 10/10 completed; each reported `cooked_beef`, food 20, saturation 17.8 |
+| `return home all` | 10/10 completed; nine at `3,65,3`, `11001010` at `6,65,2`, home `3,65,2` |
+| `bot all inventory` | 10/10; example `________`: 33/36 slots, 666 items, 5 `white_bed` |
+| `bot all collect` | 10/10 dispatched, but every bot returned `collected:0` (no drops nearby); collection itself is not claimed |
+| `bot all defend` | 10/10 dispatched; every controller was `IDLE` with `remaining:0` |
+| `explore all 1` | 10/10 completed; every bot returned a discovery, e.g. an oak-plank structure at `8,65,12` and water at `-2,64,-3` |
+
+The following are covered by tests, not by the command capture above, and are
+reported that way:
+
 - A not-ready bot is skipped by fleet commands and cannot execute a direct
   gameplay action (`BOT_NOT_READY`).
 - Operator `goto`/`come`/`return` use the `operator` priority and cannot be
   pre-empted by routine work.
+- `bot all mine iron` is **not** claimed from the untouched mock terrain. The
+  fixture test uses a reachable deposit per bot and asserts on
+  `world.blockNameAt()` before/after, not on an `ok` flag.
 
-The command audit did not invent results: the mining assertion is on
-`world.blockNameAt()` before/after, not on a returned `ok` flag.
+`explore all 1` was the only command that changed positions/discoveries; the
+simulation was not restarted between the command runs above.
 
 ## H. Task and objective system
 
@@ -176,11 +230,37 @@ The command audit did not invent results: the mining assertion is on
   warning. The previous impossible ten-bed task is now a feasible five-bed task
   because one bot owned five beds.
 
+### Fleet bed semantics
+
+A bed count is **not** fleet-summed. Sleeping requires a bed that the executing
+bot can reach and use, so the planner uses the largest real stock held by any
+single bot (`maxSingleBotBedStock`), capped by the task need. Ten bots holding
+one bed each do not satisfy a ten-bed task for one builder, and a bot with zero
+beds omits the requirement instead of creating an impossible task. This rule is
+what removed the repeated `automatic plan failed` loop (`BUG-26-10`).
+
 ## I. Building engine
 
-The building engine validates, plans dependencies and verifies blocks by
-position. The independent audit is Section J. It does not place blocks; block
-placement/verification is covered by the building and construction tests.
+`src/building/engine.js` is a live placement engine, not only a planner:
+
+- `buildPlan()` orders blocks by phase and support: foundation before walls,
+  lower door half before upper, bed foot before head, and a supported block only
+  after the block below it.
+- `place(block, bot)` checks the target, clears a replaceable block when needed,
+  moves within reach, calls `bot.placeBlock(pos, item)` with a timeout-backed
+  action path, then re-reads the world at that position.
+- A placement is successful only when the observed block matches the desired
+  block state; the return carries `observed`, `apiResult` and a status such as
+  `VERIFIED`, `WAITING_FOR_WORLD_UPDATE`, `RETRY_PENDING` or `FAILED`.
+- `placeMany()` and `repair()` reuse the same path; `verify()` is an independent
+  fresh world audit (missing, wrong and extra blocks), and `validate()` combines
+  blueprint validity, per-block placement evidence and that audit.
+- Block entities (chests/signs) are reported as a warning because their payload
+  cannot be written through the placement API.
+
+The independent 10,001-design audit is Section J. Live placement against the
+server's block-update latency is still unverified (Section M); block placement
+and wrong-state repair are covered by the building/construction tests.
 
 ## J. Schematic library: genuine counts
 
@@ -239,12 +319,12 @@ claim.
 ## L. Tests and validation
 
 ```text
-npm test             309 passed, 0 failed, 0 cancelled, 0 skipped
+npm test             311 passed, 0 failed, 0 cancelled, 0 skipped
 npm run lint         LINT PASSED (148 files checked)
 npm run validate     VALIDATION PASSED
                      secret leak check PASS
                      lint PASS
-                     tests PASS 309/309
+                     tests PASS 311/311
                      schematics validation PASS
                      consistency 10/10
 ```
@@ -254,8 +334,8 @@ Focused suites:
 ```text
 tests/connection-lifecycle.test.js   37/37
 tests/connection.test.js             17/17
-tests/runtime-safety.test.js         14/14
-tests/recovery.test.js               14/14
+tests/runtime-safety.test.js         15/15
+tests/recovery.test.js               15/15
 tests/task-pipeline.test.js          18/18
 tests/team.test.js                   24/24 (with task-pipeline run: 42/42)
 tests/fleet-commands.test.js         powering the fleet fan-out/batch assertions
@@ -264,33 +344,48 @@ tests/fleet-commands.test.js         powering the fleet fan-out/batch assertions
 New tests in this round cover: deferred position ordering, malformed payload
 rejection, priority pre-emption both ways, post-physics relative teleport anchor,
 non-blocking safety, action-stop flags, unsafe spawn, spawn re-assessment, short
-non-loop recovery, spawn escape, creeper escape, plan bed feasibility and action
-stop. The flaky “never-resolving promise” unit test was removed rather than
-weakened with a ref hack; `_withTimeout` remains covered indirectly by the
-bounded action path.
+non-loop recovery, spawn escape, creeper escape, plan bed feasibility, action
+stop, per-stage safety retention and the post-respawn equipment re-scan. The
+flaky “never-resolving promise” unit test was removed rather than weakened with
+a ref hack; `_withTimeout` remains covered indirectly by the bounded action path.
 
-Simulation run (10 bots, deterministic, `node src/index.js --simulate`):
+Simulation run (10 bots, deterministic, `node src/index.js --simulate`,
+7.9 minutes, 472 s uptime at the final sample):
 
-- first objective completed after ~7.4 minutes; replacement objective created;
+- first objective `BUILD A PERMANENT SURVIVAL BASE` reached 444/444 `COMPLETED`;
+  a replacement objective was created and reached 402/444 by the end;
 - no `automatic plan failed`;
 - no `NaN`;
 - no `Path was stopped before it could be completed!` after the fix;
 - no `invalid_player_movement`;
+- zero deaths in the 7.9-minute run;
 - one initial `unsafe spawn: suffocation risk` on a mock spawn inside a tree, then
   `unsafe spawn cleared; no deaths in window`;
 - bed task `5/5 COMPLETED`;
-- event loop `max 470.8 ms`, `p99 41.2 ms`, `mean 21.0 ms` at the sampled point.
+- every bot exposed `safety.stages`; all ten reported
+  `{assess:0, recovery-update:0, survival:2, follow:0, defend:0}` at the sample;
+- event loop `max 524.0 ms`, `p99 37.4 ms`, `mean 20.9 ms`, 22,516 samples;
+- process `CPU 9.5%`, `RSS 231.6 MB`, heap `137.5 MB` at the final sample;
+- `/api/state` snapshot `1.1 ms`; `/api/world?name=11001010` returned a
+  45,940-byte payload with real columns/chunks/entities.
 
 ## M. Git and remaining risk
 
-Commits (pushed to `arena/de11bd2d-chickenbots`):
+Commits on `arena/de11bd2d-chickenbots`:
 
 ```text
 d9dc9a8 fix(movement): single authoritative owner and valid packet ordering
 65405ee fix(survival): act on spawn threats immediately and bound recovery work
 8b06acd fix(team): make base planning feasible and anchor on post-physics teleports
-<next>   test/perf: bound dig/place and document round 26
+e4afbcd fix(actions): bound mineflayer dig and placement calls
+d9d90a6 docs(v6): round 26 A-M report and honest evidence boundary
+9b8b3ac perf(safety): record per-stage timings and respawn equipment
+this commit docs(v6): final round-26 evidence and live acceptance checklist
 ```
+
+All six commits through `9b8b3ac` are pushed. This report commit is pushed
+immediately after them; `git log origin/arena/de11bd2d-chickenbots` should end at
+this commit.
 
 Not verified, and not claimed:
 
@@ -301,8 +396,14 @@ Not verified, and not claimed:
 5. The host's CPU absorbing ten live bots at the configured chunk view.
 6. Live building against server block-update latency; the audit validates plans
    against the block registry, not a live world.
-7. A full live test of the dashboard 3D viewer with real chunk data.
+7. A full live test of the dashboard 3D viewer with real chunk data. The
+   `/api/world` payload was exercised in simulation, but a browser canvas was
+   not.
+8. A live inbound packet gap. The simulation has no socket, so
+   `keepAlive.maxGapMs` is `null` there; the 10 s bound is checked in the live
+   procedure.
 
 The sandbox limitation is a network limitation, not a code result. The correct
-next step is the live acceptance checklist in
-`V6_ROUND_25_REPORT.md`, run on a host that can reach EmpiSMP.
+next step is [`V6_LIVE_ACCEPTANCE.md`](V6_LIVE_ACCEPTANCE.md), run on a host that
+can reach EmpiSMP; the earlier rationale remains in
+`V6_ROUND_25_REPORT.md`.

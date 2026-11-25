@@ -183,3 +183,26 @@ Round-26 evidence is unit tests plus a deterministic ten-bot simulation:
 0 issues / 0 invalid blocks / 0 cycles, and a simulation objective that completed
 without the repeated `automatic plan failed` cycle. The live 30-minute acceptance
 checklist remains open.
+
+### Round 26 close-out — stage evidence and live checklist
+
+The round-26 addendum above is unchanged. The final round-26 gates are **311/311
+tests**, lint over 148 files and `npm run validate` passing (consistency 10/10).
+This supersedes the addendum's 309/309 figure, which was captured before the last
+two tests (stage retention and respawn equipment) were added.
+
+Two pieces of evidence were added after the addendum was first written:
+
+- every safety pass now keeps a per-stage duration (`assess`,
+  `recovery-update`, `survival`, `follow`, `defend`) and the dashboard diagnostics
+  expose it; the 7.9-minute simulation measured 1–2 ms per pass, with `survival`
+  as the only non-zero stage;
+- a respawn clears `lastWeapon`/`lastArmorSignature` and records the real
+  inventory/equipment snapshot instead of assuming death-lost gear is equipped.
+
+The ten-bot simulation completed its base objective in 7.9 minutes with zero
+deaths, no `automatic plan failed`, no `NaN`, no stopped-path error and no
+`invalid_player_movement`. Those remain simulation results, not live-server
+results. The executable live procedure is now
+[`V6_LIVE_ACCEPTANCE.md`](V6_LIVE_ACCEPTANCE.md); it has not been run because
+this sandbox cannot reach `EmpiSMP.aternos.me:32990`.
