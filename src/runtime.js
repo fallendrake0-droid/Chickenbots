@@ -97,6 +97,8 @@ class TeamRuntime {
     this.retryPausedBots = new Map();
     this.supervisorTicks = 0;
     this.supervisorBusy = false;
+    this.stateSyncTicks = 0;
+    this._lastSlowSyncWarnAt = 0;
     this._phase = 'startup';
     this._lastPhase = 'startup';
     this.serverVersion = null;
@@ -585,9 +587,15 @@ class TeamRuntime {
    * because coordinator state is only refreshed inside the autonomous path.
    */
   _syncBots() {
+    this.stateSyncTicks += 1;
+    // Inventory metadata is the most expensive part of the snapshot. Actions
+    // refresh it after their own writes; a 1.5s fleet-wide cadence is enough
+    // for the dashboard and halves the per-tick allocation.
+    const refreshInventory = this.stateSyncTicks % 2 === 1;
     for (const bot of this.bots.values()) {
+      const started = Date.now();
       try {
-        if (typeof bot._syncInventory === 'function') bot._syncInventory();
+        if (refreshInventory && typeof bot._syncInventory === 'function') bot._syncInventory();
         const status = connectionStatus(bot);
         const fallback = {
           name: bot.name,
@@ -627,6 +635,11 @@ class TeamRuntime {
           this.coordinator.setDisconnected(bot.name, `state sync failed: ${err.message}`);
           this.disconnectedNotified.add(bot.name);
         }
+      }
+      const elapsed = Date.now() - started;
+      if (elapsed >= 250 && Date.now() - this._lastSlowSyncWarnAt >= 10000) {
+        this._lastSlowSyncWarnAt = Date.now();
+        this.logger.warn(`[${bot.name}] state sync took ${elapsed}ms; the snapshot for one bot is blocking the tick`);
       }
     }
   }
@@ -672,10 +685,10 @@ class TeamRuntime {
         // A ready bot must still eat, flee or defend itself while the team waits
         // for the remaining members; otherwise it stands still and is slain by
         // the first zombie that finds it.
-        const safetyStarted = Date.now();
+        // Schedule per-bot safety work and return. A retreat can take seconds;
+        // awaiting it here held the whole runtime tick (and every other join)
+        // hostage, which is how "pre-join safety pass took 22491ms" happened.
         await this._safetyOnlyTick();
-        const safetyMs = Date.now() - safetyStarted;
-        if (safetyMs >= 2000) this.logger.warn(`pre-join safety pass took ${safetyMs}ms; a ready bot cannot keep the fleet waiting on a blocking safety action`);
         return;
       }
       this.ticks++;
@@ -791,6 +804,7 @@ class TeamRuntime {
 
   _startBotSafety(actions) {
     const name = actions.bot.name;
+    const started = Date.now();
     const task = (async () => {
       try {
         await actions.safetyTick();
@@ -798,6 +812,8 @@ class TeamRuntime {
         this.logger.warn(`[${name}] safety tick failed: ${err.message}`);
       }
     })().finally(() => {
+      const elapsed = Date.now() - started;
+      if (elapsed >= 5000) this.logger.warn(`[${name}] safety task took ${(elapsed / 1000).toFixed(1)}s (movement is bounded, but this bot was slow)`);
       if (this.botSafety.get(name) === task) this.botSafety.delete(name);
     });
     this.botSafety.set(name, task);
@@ -812,7 +828,9 @@ class TeamRuntime {
     // its pathfinder is dead. Cancel the movement at the configured budget; a
     // rejected path lets the action return and the slot free honestly.
     const watchdog = setTimeout(() => {
-      try { bot.cancelAction?.(`exceeded ${config.autonomy.actionTimeoutMs}ms`); } catch (_) { /* optional */ }
+      const reason = `exceeded ${config.autonomy.actionTimeoutMs}ms`;
+      try { bot.cancelAction?.(reason); } catch (_) { /* optional */ }
+      try { actions.cancelCurrent?.(reason); } catch (_) { /* optional */ }
     }, Math.max(5000, config.autonomy.actionTimeoutMs));
     if (typeof watchdog.unref === 'function') watchdog.unref();
     const task = (async () => {
@@ -902,20 +920,22 @@ class TeamRuntime {
   }
 
   async _safetyOnlyTick() {
-    if (!this.actions) return;
-    // One safety pass per bot, all in parallel. Serialising ten pathfinders
-    // could hold the only runtime tick for many seconds and delay the reconnect
-    // supervisor; the outer `ticking` guard still prevents another pass from
-    // stacking on top.
-    await Promise.allSettled(this.actions.list().map(async (actions) => {
+    if (!this.actions) return { scheduled: 0 };
+    // Start one bounded safety task per ready bot and return immediately. The
+    // per-bot map prevents overlap; a long retreat for one bot no longer
+    // delays state sync, reconnect supervision or another bot's safety pass.
+    let scheduled = 0;
+    for (const actions of this.actions.list()) {
       const bot = actions.bot;
-      if (!bot.ready || !bot.connected || !bot.spawned) return;
-      try {
-        await actions.safetyTick();
-      } catch (err) {
-        this.logger.warn(`[${bot.name}] pre-join safety tick failed: ${err.message}`);
-      }
-    }));
+      if (!bot || !bot.ready || !bot.connected || !bot.spawned || bot.health <= 0) continue;
+      const name = bot.name;
+      if (this.commandLocks.has(name) || this.botSafety.has(name)) continue;
+      this._startBotSafety(actions);
+      scheduled++;
+      // Do not start ten pathfinders inside one synchronous turn.
+      if (scheduled % 2 === 0) await new Promise((resolve) => setImmediate(resolve));
+    }
+    return { scheduled };
   }
 
   /**

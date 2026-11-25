@@ -119,7 +119,7 @@ function describeFood(bot) {
 }
 
 /** Step away from a point along the dominant axis; deterministic and safe. */
-async function moveAway(bot, from, blocks = 8, { vertical = false } = {}) {
+async function moveAway(bot, from, blocks = 8, { vertical = false, priority = 'recovery', owner = 'retreat', timeoutMs = 8000 } = {}) {
   const dx = bot.position.x - from.x;
   const dz = bot.position.z - from.z;
   const length = Math.hypot(dx, dz) || 1;
@@ -128,7 +128,7 @@ async function moveAway(bot, from, blocks = 8, { vertical = false } = {}) {
     y: Math.round(bot.position.y + (vertical ? blocks : 0)),
     z: Math.round(bot.position.z + (dz / length) * blocks)
   };
-  return bot.goTo(target, { range: 2 });
+  return bot.goTo(target, { range: 2, priority, owner, timeoutMs });
 }
 
 function isBed(name) { return BED_NAMES.has(name); }

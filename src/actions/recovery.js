@@ -42,6 +42,12 @@ function iso(ms) {
   return new Date(ms).toISOString();
 }
 
+/** A distance is either a real finite number or unknown; never NaN. */
+function finiteDistance(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 class RecoveryManager {
   constructor({
     botName,
@@ -137,7 +143,7 @@ class RecoveryManager {
       food: food === undefined ? null : food,
       threats: (threats || []).slice(0, 6).map((threat) => ({
         name: threat.name || threat.type || threat.username || 'unknown',
-        distance: threat.distance ?? null,
+        distance: finiteDistance(threat.distance),
         hostile: Boolean(threat.hostile),
         username: threat.username || null
       })),
@@ -177,22 +183,32 @@ class RecoveryManager {
 
   /** Assess whether the place the server put the bot is survivable. */
   assessSpawn({ threats = [], health = 20, food = 20, position = null, hazards = [] } = {}) {
-    const hostiles = threats.filter((threat) => threat && (threat.hostile || threat.type === 'player'));
-    const nearest = hostiles.slice().sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999))[0] || null;
+    const hostiles = threats
+      .filter((threat) => threat && (threat.hostile || threat.type === 'player'))
+      .map((threat) => ({ ...threat, distance: finiteDistance(threat.distance) }));
+    const nearest = hostiles
+      .slice()
+      .sort((a, b) => (a.distance === null ? Number.POSITIVE_INFINITY : a.distance) - (b.distance === null ? Number.POSITIVE_INFINITY : b.distance))[0] || null;
+    const nearestDistance = nearest ? nearest.distance : null;
     const reasons = [];
-    if (nearest) reasons.push(`${nearest.name || nearest.type || 'hostile'} ${Number(nearest.distance).toFixed(1)}m away`);
+    if (nearest) {
+      reasons.push(nearestDistance === null
+        ? `${nearest.name || nearest.type || 'hostile'} at unknown distance`
+        : `${nearest.name || nearest.type || 'hostile'} ${nearestDistance.toFixed(1)}m away`);
+    }
     if (hostiles.length >= 3) reasons.push(`${hostiles.length} hostiles nearby`);
     if (Number(health) <= this.criticalHealth) reasons.push(`health ${health}`);
     if (Number(food) <= 6) reasons.push(`food ${food}`);
     for (const hazard of hazards || []) if (!reasons.includes(hazard)) reasons.push(hazard);
     const safe = reasons.length === 0;
+    const proximity = nearestDistance === null ? 0 : Math.max(0, 20 - nearestDistance);
     const assessment = {
       at: this.now(),
       position: position ? { ...position } : null,
       safe,
-      score: Math.max(0, 100 - hostiles.length * 20 - (nearest ? Math.max(0, 20 - nearest.distance) : 0) - (Number(health) <= this.criticalHealth ? 30 : 0)),
+      score: Math.max(0, 100 - hostiles.length * 20 - proximity - (Number(health) <= this.criticalHealth ? 30 : 0)),
       threats: hostiles.length,
-      nearest: nearest ? { name: nearest.name || nearest.type || 'unknown', distance: nearest.distance ?? null } : null,
+      nearest: nearest ? { name: nearest.name || nearest.type || 'unknown', distance: nearestDistance } : null,
       health,
       food,
       hazards: (hazards || []).slice(),
@@ -235,7 +251,11 @@ class RecoveryManager {
       }
     } else if (this.state === RECOVERY_STATES.RECOVERING) {
       const quiet = !dying && !threatPressure && (spawnSafe !== false);
-      const heldLongEnough = at - this.stateSince >= this.recoverHoldMs;
+      // A death loop earns the full 90s hold. An unsafe-but-survived spawn is
+      // not a loop; keeping the bot idle for a minute and a half after a false
+      // "suffocation" warning starves real work. Use the shorter suspect hold.
+      const holdMs = this.deathLoop ? this.recoverHoldMs : this.suspectHoldMs;
+      const heldLongEnough = at - this.stateSince >= holdMs;
       if (quiet && heldLongEnough) {
         this._setState(RECOVERY_STATES.TASK_REPLAN, 'recovery window complete; release old work');
         this.recoveredAt = at;
@@ -246,7 +266,14 @@ class RecoveryManager {
       const replanExpired = at - this.stateSince >= 15000;
       if (!this.needsReplan || replanExpired) {
         this.needsReplan = false;
-        this._setState(RECOVERY_STATES.SAFE_HOLD, 'waiting for a safe survival period');
+        // Recovery that started from a bad spawn (not a death) has already
+        // proved the point by surviving the hold. Do not add another 60s
+        // SAFE_HOLD for a leaf at head height.
+        if (!this.deathLoop && this.deaths.filter((death) => at - death.at <= this.shortWindowMs).length === 0) {
+          this._setState(RECOVERY_STATES.ACTIVE, 'unsafe spawn cleared; no deaths in window');
+        } else {
+          this._setState(RECOVERY_STATES.SAFE_HOLD, 'waiting for a safe survival period');
+        }
       }
     } else if (this.state === RECOVERY_STATES.SAFE_HOLD) {
       const survived = Number(health) > this.criticalHealth && !threatPressure && at - this.stateSince >= this.safeHoldMs;
@@ -272,7 +299,11 @@ class RecoveryManager {
     if (!this.needsReplan && this.state !== RECOVERY_STATES.TASK_REPLAN) return false;
     this.needsReplan = false;
     if (this.state === RECOVERY_STATES.TASK_REPLAN) {
-      this._setState(RECOVERY_STATES.SAFE_HOLD, 'old work released; proving safety');
+      if (!this.deathLoop && this.deaths.filter((death) => this.now() - death.at <= this.shortWindowMs).length === 0) {
+        this._setState(RECOVERY_STATES.ACTIVE, 'old work released; unsafe spawn cleared');
+      } else {
+        this._setState(RECOVERY_STATES.SAFE_HOLD, 'old work released; proving safety');
+      }
     }
     return true;
   }

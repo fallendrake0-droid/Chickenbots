@@ -3,6 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { TeamRuntime } = require('../src/runtime');
+const { MockWorld } = require('../src/bot/mockWorld');
+const { MockBot } = require('../src/bot/mockBot');
 const { config } = require('../src/config');
 
 test('ready bots run safety ticks while the team is still joining', async () => {
@@ -257,4 +259,28 @@ test('an operator command takes an exclusive slot and cancels the autonomous ste
   assert.deepEqual(result, { ok: true });
   assert.equal(ran, true);
   assert.equal(runtime.commandLocks.has('________'), false, 'the lock is released in finally');
+});
+
+test('pre-join safety is scheduled per bot and never blocks the runtime tick', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const bot = new MockBot({ name: '________', world: new MockWorld({ flat: true }) });
+  runtime.bots = new Map([[bot.name, bot]]);
+  let started = 0;
+  runtime.actions = {
+    list: () => [{
+      bot,
+      safetyTick: async () => { started++; await new Promise((resolve) => setTimeout(resolve, 250)); }
+    }]
+  };
+  runtime.running = true;
+  runtime.ticking = false;
+  Object.defineProperty(runtime, 'autonomyAllowed', { configurable: true, get: () => false });
+  const began = Date.now();
+  await runtime._tick();
+  const elapsed = Date.now() - began;
+  assert.ok(elapsed < 150, `_tick returned in ${elapsed}ms instead of waiting for the safety action`);
+  assert.equal(started, 1, 'the safety action really started');
+  assert.equal(runtime.botSafety.has(bot.name), true, 'the per-bot map prevents a second overlapping pass');
+  await Promise.allSettled([...runtime.botSafety.values()]);
+  assert.equal(runtime.botSafety.has(bot.name), false, 'the slot is released when the action settles');
 });

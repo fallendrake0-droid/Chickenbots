@@ -93,11 +93,16 @@ class SleepController {
     return true;
   }
 
-  async ensureBed({ placeNew = false } = {}) {
+  async ensureBed({ placeNew = false, budgetMs = 8000 } = {}) {
     const beds = this.findBeds({ radius: 12, limit: 1 });
     if (!placeNew && beds.length) return { ok: true, bed: beds[0] };
     const item = this.bot.hasBed ? this.bot.hasBed() : null;
     if (!item) return { ok: false, error: 'no bed available' };
+    // A bed search used to try every ring cell (120 positions), each with its
+    // own path request. When pathfinding stalled that turned one PLACE_BED
+    // step into a 30-minute concurrency-slot owner. Collect candidates first,
+    // then attempt only the nearest few inside a hard wall-clock budget.
+    const deadline = Date.now() + Math.max(2000, Number(budgetMs) || 8000);
     // Place a bed on a clear, solid surface near the bot. Search outward in
     // rings: a single fixed six-cell list misses beds when teammates stand in
     // the way or the surface is uneven.
@@ -114,11 +119,9 @@ class SleepController {
     // which is where a shared bed belongs anyway.
     const anchors = [this.bot.position];
     if (this.home && distance(this.home, this.bot.position) > 4) anchors.push(this.home);
+    const homeAnchor = anchors.length > 1 ? anchors[1] : null;
+    const candidates = [];
     for (const anchor of anchors) {
-      if (anchor !== this.bot.position) {
-        const travel = await this.bot.goTo(anchor, { range: 3 });
-        if (travel && travel.ok === false) continue;
-      }
       for (const [dx, dz] of offsets) {
         const pos = { x: Math.floor(anchor.x) + dx, y: Math.floor(anchor.y), z: Math.floor(anchor.z) + dz };
         const below = this.bot.getBlock({ x: pos.x, y: pos.y - 1, z: pos.z });
@@ -126,18 +129,37 @@ class SleepController {
         const above = this.bot.getBlock({ x: pos.x, y: pos.y + 1, z: pos.z });
         if (!below || below.name === 'air' || below.name === 'water' || below.name === 'lava') continue;
         if (!at || at.name !== 'air' || !above || above.name !== 'air') continue;
-        const move = await this.bot.goTo(pos, { range: 3 });
-        if (move && move.ok === false) continue;
-        const placed = await this.bot.placeBlock(pos, item);
-        if (!placed.ok) continue;
-        this.stats.bedsPlaced++;
-        if (this.memory) {
-          this.memory.observe({ type: 'BED', position: { ...pos }, reportedBy: this.bot.name, confidence: 0.95, status: 'AVAILABLE', data: { placedBy: this.bot.name } });
-        }
-        return { ok: true, bed: pos, placed: true, item };
+        candidates.push({ pos, anchor, fromHome: anchor === homeAnchor, distance: distance(pos, this.bot.position) });
       }
     }
-    return { ok: false, error: 'no safe place for a bed' };
+    candidates.sort((a, b) => a.distance - b.distance);
+    const shortlist = [];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      const k = `${candidate.pos.x},${candidate.pos.y},${candidate.pos.z}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      shortlist.push(candidate);
+      if (shortlist.length >= 6) break;
+    }
+    let lastError = 'no safe place for a bed';
+    for (const candidate of shortlist) {
+      if (Date.now() >= deadline) return { ok: false, error: 'bed placement budget exhausted', attempted: shortlist.length };
+      if (candidate.fromHome && distance(candidate.anchor, this.bot.position) > 3) {
+        const travel = await this.bot.goTo(candidate.anchor, { range: 3, timeoutMs: 4000 });
+        if (travel && travel.ok === false) { lastError = travel.error || 'cannot reach bed area'; continue; }
+      }
+      const move = await this.bot.goTo(candidate.pos, { range: 3, timeoutMs: 2500 });
+      if (move && move.ok === false) { lastError = move.error || 'cannot reach bed position'; continue; }
+      const placed = await this.bot.placeBlock(candidate.pos, item);
+      if (!placed.ok) { lastError = placed.error || 'placement failed'; continue; }
+      this.stats.bedsPlaced++;
+      if (this.memory) {
+        this.memory.observe({ type: 'BED', position: { ...candidate.pos }, reportedBy: this.bot.name, confidence: 0.95, status: 'AVAILABLE', data: { placedBy: this.bot.name } });
+      }
+      return { ok: true, bed: candidate.pos, placed: true, item };
+    }
+    return { ok: false, error: lastError, attempted: shortlist.length };
   }
 
   async sleep() {

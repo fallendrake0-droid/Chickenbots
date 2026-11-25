@@ -283,6 +283,10 @@ const config = {
     criticalHealth: 8,
     fleeHealth: 10,
     lowFood: 6,
+    // A freshly spawned bot is fragile: the server may have placed it inside a
+    // zombie pack. During this window any hostile within 16m triggers an
+    // escape rather than a task.
+    spawnGuardMs: envInt('SPAWN_GUARD_MS', 8000),
     sleepStart: 12541,
     sleepEnd: 23459,
     bedSearchRadius: 32,
@@ -397,6 +401,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   const dashboard = candidate.dashboard || {};
   const team = candidate.team || {};
   const autonomy = candidate.autonomy || {};
+  const survival = candidate.survival || {};
   const reconnect = server.reconnect || {};
 
   text('server.host', server.host, 255);
@@ -484,6 +489,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('autonomy.pathfinderSearchRadius', autonomy.pathfinderSearchRadius, 8, 512);
   integer('autonomy.stallGuardMs', autonomy.stallGuardMs, 500, 120000);
   integer('autonomy.stallResumeMs', autonomy.stallResumeMs, 0, 30000);
+  integer('survival.spawnGuardMs', survival.spawnGuardMs, 0, 120000);
   boolean('autonomy.pve', autonomy.pve);
   boolean('autonomy.pvp', autonomy.pvp);
   boolean('autonomy.serverPvp', autonomy.serverPvp);

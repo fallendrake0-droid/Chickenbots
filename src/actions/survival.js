@@ -72,7 +72,7 @@ class SurvivalController {
     return { ok: true, bot: this.bot.name, feature: name, enabled: this.features[name], features: { ...this.features } };
   }
 
-  async tick() {
+  async tick({ emergency = false } = {}) {
     const actions = [];
     const bot = this.bot;
     if (!bot || bot.health <= 0) return { actions, status: this.status(), dead: true };
@@ -90,11 +90,14 @@ class SurvivalController {
       const heal = await this.emergencyHeal();
       if (heal) actions.push(heal);
     }
-    if (this.features.armour) {
+    // During a live threat, crafting a tool or cycling four armour slots is
+    // not worth the milliseconds that could be spent moving out of reach.
+    // Normal ticks still optimise equipment.
+    if (!emergency && this.features.armour) {
       const armour = await this.equipArmour();
       if (armour.length) actions.push(...armour);
     }
-    if (this.features.tools) {
+    if (!emergency && this.features.tools) {
       const tool = await this.ensureTool();
       if (tool) actions.push(tool);
     }
@@ -200,7 +203,7 @@ class SurvivalController {
         }
       }
       const away = { x: bot.position.x + 3, y: bot.position.y + 1, z: bot.position.z + 3 };
-      const flee = await bot.goTo(away, { range: 2 });
+      const flee = await bot.goTo(away, { range: 2, priority: 'emergency', owner: 'survival-clutch' });
       if (flee.ok) {
         this.stats.clutches++;
         this.lastAction = 'fled lava/fire';

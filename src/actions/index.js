@@ -13,6 +13,7 @@ const { InventoryManager } = require('./inventory');
 const { FishingController } = require('./fishing');
 const { HomeBaseManager } = require('./homeBase');
 const { RecoveryManager } = require('./recovery');
+const { distance } = require('../util/vec');
 
 /**
  * Per-bot action layer. Wires every controller to the same adapter and routes
@@ -41,6 +42,12 @@ class BotActions {
     this.recovery = new RecoveryManager({ botName: bot.name, logger: this.logger });
     this._deathHandled = false;
     this._lastRecoveryStepAt = 0;
+    this._spawnAssessed = false;
+    this._spawnGuardUntil = 0;
+    this.spawnGuardMs = config.survival.spawnGuardMs;
+    this._lastEmergencyAt = 0;
+    this._lastSpawnLogAt = 0;
+    this._escapeCursor = 0;
     this.survival = new SurvivalController({ bot, memory, logger: this.logger });
     this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp, pve: config.autonomy.pve });
     this.mining = new MiningController({ bot, memory, ledger, logger: this.logger });
@@ -85,39 +92,104 @@ class BotActions {
     };
   }
 
+  /**
+   * A runtime watchdog calls this when an action exceeded its budget. Setting
+   * the controllers' stop flags makes their bounded loops unwind on the next
+   * iteration instead of leaving the concurrency slot owned for minutes.
+   */
+  cancelCurrent(reason = 'action timeout') {
+    const stopped = [];
+    for (const name of ['mining', 'woodcutting', 'farming']) {
+      const controller = this[name];
+      if (controller && typeof controller.stop === 'function') {
+        try { controller.stop(); stopped.push(name); } catch (_) { /* optional */ }
+      }
+    }
+    if (stopped.length) this.logger.warn(`[${this.bot.name}] action stop requested: ${reason} (${stopped.join(', ')})`);
+    return { ok: true, cancelled: true, stopped, reason };
+  }
+
   /** Survival first, then immediate threats. Safe to call every tick. */
   async safetyTick() {
     const bot = this.bot;
+    if (!bot.ready) {
+      this._spawnAssessed = false;
+      return { ok: false, notReady: true, recovery: this.recovery.status() };
+    }
     if (bot.health <= 0) {
       this._recordDeath();
       this.combat.onDeath('health reached zero');
+      this._spawnAssessed = false;
       // A dead bot still needs recovery bookkeeping, but cannot act.
       this.recovery.update({ health: 0, food: bot.food, threats: 0 });
       return { ok: false, dead: true, recovery: this.recovery.status() };
     }
     if (this._deathHandled || this.combat.state === 'DEAD') {
       this.combat.onRespawn();
-      const threatsNow = typeof bot.entitiesNear === 'function' ? bot.entitiesNear(16) : [];
-      const hazards = this._spawnHazards();
-      this.recovery.recordSpawn({
+      this._deathHandled = false;
+      // The next pass re-scans the respawn position, inventory and threats.
+      // Nothing about the old spawn is allowed to carry over.
+      this._spawnAssessed = false;
+    }
+    const assessment = this.combat.assess(16);
+    const now = Date.now();
+    // Initial spawn, respawn and reconnect all need the same protection. The
+    // old code only assessed on a respawn, so a first join into a zombie pack
+    // stood still until something hit it.
+    if (!this._spawnAssessed) {
+      const spawn = this.recovery.recordSpawn({
         position: bot.position,
-        threats: threatsNow,
+        threats: assessment.threats,
         health: bot.health,
         food: bot.food,
-        hazards
+        hazards: this._spawnHazards()
       });
-      this._deathHandled = false;
+      this._spawnAssessed = true;
+      this._spawnGuardUntil = now + this.spawnGuardMs;
+      this._lastSpawnRecheckAt = now;
+      if (!spawn.safe) {
+        this._lastSpawnLogAt = Date.now();
+        this.logger.warn(`[${bot.name}] unsafe spawn: ${spawn.reasons.join(', ')}; emergency survival takes priority`);
+      }
     }
-    const assessment = this.combat.assess(14);
+    // The first spawn assessment can see a leaf or a tall grass block at head
+    // height and call it suffocation. Once the guard expires, re-assess the
+    // actual current position periodically instead of pinning the bot in
+    // RECOVERING forever on stale evidence.
+    if (this._spawnAssessed && now > this._spawnGuardUntil && this.recovery.state === 'RECOVERING'
+      && now - this._lastSpawnRecheckAt >= 4000) {
+      this._lastSpawnRecheckAt = now;
+      this.recovery.assessSpawn({
+        position: bot.position,
+        threats: assessment.threats,
+        health: bot.health,
+        food: bot.food,
+        hazards: this._spawnHazards()
+      });
+    }
     this.recovery.update({
       health: bot.health,
       food: bot.food,
       threats: assessment.threats.length,
       spawnSafe: this.recovery.spawnSafety ? this.recovery.spawnSafety.safe : null
     });
+    // Movement comes before equipment/crafting. A bot at 2 health does not
+    // have time to cycle armour slots while a zombie is in melee range.
+    const emergency = await this._threatResponse(assessment);
+    if (emergency) {
+      this.lastAction = emergency.action || 'emergency-threat';
+      this.lastActionAt = Date.now();
+      return {
+        ok: emergency.ok !== false,
+        emergency: true,
+        action: emergency,
+        threatCount: assessment.threats.length,
+        recovery: this.recovery.status()
+      };
+    }
     if (!this.recovery.canWork()) {
       const recovery = await this._recover(assessment);
-      return { ok: true, recovering: true, recovery, threatCount: assessment.threats.length };
+      return { ok: recovery.ok !== false, recovering: true, recovery, threatCount: assessment.threats.length };
     }
     const survival = await this.survival.tick();
     const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
@@ -131,6 +203,92 @@ class BotActions {
       this.lastActionAt = Date.now();
     }
     return result;
+  }
+
+  /**
+   * Immediate danger response. Independent of task work and home distance:
+   * a bot standing on its own chest with three zombies around it must move.
+   */
+  async _threatResponse(assessment) {
+    const threats = (assessment && Array.isArray(assessment.threats) ? assessment.threats : [])
+      .filter((threat) => threat && threat.position && Number.isFinite(Number(threat.distance)));
+    if (!threats.length) return null;
+    const nearest = threats.slice().sort((a, b) => a.distance - b.distance)[0];
+    const now = Date.now();
+    const health = Number(this.bot.health);
+    const weapon = typeof this.bot.bestToolFor === 'function'
+      ? (this.bot.bestToolFor('sword') || this.bot.bestToolFor('axe'))
+      : null;
+    const outmatched = threats.length >= 3 || health <= config.survival.fleeHealth || !weapon;
+    const guardingSpawn = now < this._spawnGuardUntil;
+    // Creepers and Warden-class entities must not be met in melee just because
+    // the bot happens to hold a sword. A creeper at 3m is an explosion, not a
+    // duel; the Warden is avoided unless an operator explicitly orders it.
+    const forceEscape = Boolean(nearest.profile && (nearest.profile.explosive || nearest.profile.avoid))
+      || /creeper/i.test(String(nearest.name || nearest.type || ''));
+    // Outside the spawn guard, a single distant hostile is not a reason to
+    // abandon work; a group or a melee threat is.
+    if (!guardingSpawn && !outmatched && nearest.distance > 6) return null;
+    if (now - this._lastEmergencyAt < 1200) return null;
+    this._lastEmergencyAt = now;
+    if (!outmatched && !forceEscape && nearest.distance <= 3.5) {
+      const hit = await this.combat.defend({ maxAttacks: 2, radius: 10 });
+      return { action: 'defend', ...hit, emergency: true, reason: `melee ${nearest.name || nearest.type} at ${nearest.distance}m` };
+    }
+    const retreat = await this._emergencyRetreat(nearest, {
+      reason: `${threats.length} threats, nearest ${nearest.distance}m, ${weapon ? 'armed' : 'no weapon'}, health ${health}`
+    });
+    return { ...retreat, emergency: true };
+  }
+
+  /**
+   * Try bounded escape vectors and verify actual displacement. "Path was
+   * stopped" is not success; if every route fails and the bot is armed it
+   * stands and fights rather than waiting to die.
+   */
+  async _emergencyRetreat(nearest, { reason = 'threat' } = {}) {
+    const bot = this.bot;
+    const start = { ...bot.position };
+    const threatPos = nearest && nearest.position ? nearest.position : null;
+    let dx = threatPos ? start.x - threatPos.x : 1;
+    let dz = threatPos ? start.z - threatPos.z : 1;
+    const length = Math.hypot(dx, dz);
+    if (!Number.isFinite(length) || length < 0.001) { dx = 1; dz = 0; }
+    else { dx /= length; dz /= length; }
+    const baseAngle = Math.atan2(dz, dx);
+    const attempts = [];
+    const offsets = [0, Math.PI / 3, -Math.PI / 3];
+    for (let i = 0; i < offsets.length; i++) {
+      if (bot.health <= 0 || !bot.ready) break;
+      const angle = baseAngle + offsets[i];
+      const distanceOut = 9 + (i * 2);
+      const candidate = {
+        x: Math.round(start.x + Math.cos(angle) * distanceOut),
+        y: Math.round(start.y),
+        z: Math.round(start.z + Math.sin(angle) * distanceOut)
+      };
+      let move;
+      try {
+        move = await bot.goTo(candidate, {
+          range: 2, timeoutMs: 2200, priority: 'emergency', owner: 'recovery'
+        });
+      } catch (err) {
+        move = { ok: false, error: err.message };
+      }
+      const moved = distance(start, bot.position);
+      const opened = threatPos && Number.isFinite(Number(nearest.distance))
+        ? distance(bot.position, threatPos) - nearest.distance
+        : moved;
+      attempts.push({ candidate, ok: move && move.ok !== false, moved: Number(moved.toFixed(1)), opened: Number(opened.toFixed(1)), error: move && move.error });
+      if (move && move.ok !== false && moved >= 1.5 && opened > 1) {
+        return { action: 'recovery-retreat', ok: true, verified: true, from: start, to: { ...bot.position }, candidate, moved: Number(moved.toFixed(1)), opened: Number(opened.toFixed(1)), reason, attempts };
+      }
+    }
+    if (this.combat.armed) {
+      const fight = await this.combat.defend({ maxAttacks: 3, radius: 8 });
+      return { action: 'last-stand', ok: fight.ok !== false, reason: `${reason}; every escape route failed`, attempts, defence: fight };
+    }
+    return { action: 'recovery-retreat', ok: false, verified: false, reason, attempts, error: 'no escape route produced real displacement' };
   }
 
   /** Block-level spawn hazards. This is intentionally small and best-effort. */
@@ -150,7 +308,11 @@ class BotActions {
     if ([feet, head, below].some((name) => name && name.includes('lava'))) hazards.push('lava at spawn');
     if ([feet, head].some((name) => name === 'fire' || name === 'soul_fire')) hazards.push('fire at spawn');
     if ([feet, head].some((name) => name && name.includes('water'))) hazards.push('water at spawn');
-    if (head && !/(air|water|grass|fern|flower|torch|sign|vine)/.test(head)) hazards.push('suffocation risk');
+    // Leaves, crops, saplings, snow and other passable decoration are not
+    // suffocating blocks. Treating every non-air head block as suffocation made
+    // bots sit in RECOVERING after a healthy spawn under a tree.
+    const passable = /(air|water|grass|fern|flower|torch|sign|vine|leaves|sapling|crop|wheat|carrots|potatoes|beetroots|sugar_cane|pumpkin|melon|mushroom|kelp|seagrass|snow|bush|azalea|ladder|rail|redstone|button|lever|door|trapdoor|bed)/;
+    if (head && !passable.test(head)) hazards.push('suffocation risk');
     if (!below || /air|cave_air|water|lava/.test(below)) hazards.push('unsupported ground');
     return hazards;
   }
@@ -186,6 +348,7 @@ class BotActions {
       onGround: last.onGround ?? null
     });
     this._deathHandled = true;
+    this._spawnAssessed = false;
     if (this.team && typeof this.team.releaseWork === 'function') {
       this.team.releaseWork(bot.name, 'bot died');
     }
@@ -202,8 +365,43 @@ class BotActions {
     this._lastRecoveryStepAt = now;
     const bot = this.bot;
     const actions = [];
+    const threats = assessment && Array.isArray(assessment.threats)
+      ? assessment.threats.filter((threat) => threat && threat.position && Number.isFinite(Number(threat.distance)))
+      : [];
+    // If there is a threat, the retreat is the recovery step. Running food,
+    // armour, crafting and a 10s home path in sequence was why a safety pass
+    // occupied 10-22 seconds while the bot was being hit.
+    if (threats.length) {
+      const nearest = threats.slice().sort((a, b) => a.distance - b.distance)[0];
+      const retreat = await this._emergencyRetreat(nearest, { reason: this.recovery.reason || 'recovery threat' });
+      this.lastAction = retreat.action;
+      this.lastActionAt = Date.now();
+      return { ...this.recovery.status(), ok: retreat.ok !== false, actions: [retreat] };
+    }
+    // A spawn inside a solid block (a tree trunk, a placed chest) is not fixed
+    // by eating or waiting. Escape to the nearest standing position first and
+    // re-assess the hazard with the block evidence from the new position.
+    const unsafeSpawn = this.recovery.spawnSafety && this.recovery.spawnSafety.safe === false;
+    if (unsafeSpawn && bot.health > 12) {
+      const target = this._findSpawnEscape();
+      if (target) {
+        try {
+          const move = await bot.goTo(target, { range: 1, timeoutMs: 4000, priority: 'recovery', owner: 'recovery-spawn-escape' });
+          actions.push({ action: 'recovery-spawn-escape', ok: move.ok !== false, target, error: move.error });
+          this.recovery.assessSpawn({
+            position: bot.position,
+            threats,
+            health: bot.health,
+            food: bot.food,
+            hazards: this._spawnHazards()
+          });
+        } catch (err) {
+          this.logger.warn(`[${bot.name}] spawn escape failed: ${err.message}`);
+        }
+      }
+    }
     try {
-      const survival = await this.survival.tick();
+      const survival = await this.survival.tick({ emergency: true });
       if (survival.actions.length) actions.push(...survival.actions);
     } catch (err) {
       this.logger.warn(`[${bot.name}] recovery survival step failed: ${err.message}`);
@@ -216,22 +414,50 @@ class BotActions {
     } catch (err) {
       this.logger.warn(`[${bot.name}] recovery heal failed: ${err.message}`);
     }
-    const threats = assessment && Array.isArray(assessment.threats) ? assessment.threats : [];
+    // No threat and a verified healthy state: walking home is useful but not
+    // worth blocking other safety work. It is bounded and lower priority.
     const farFromHome = Math.hypot(bot.position.x - this.home.x, bot.position.z - this.home.z) > 8;
-    // Retreat whenever a threat is near and the bot is away from home, even at
-    // full health: waiting for damage before moving is what fed the death loop.
-    if (threats.length && farFromHome) {
+    if (!threats.length && bot.health > 12 && farFromHome) {
       try {
-        const away = threats[0] && threats[0].position ? threats[0].position : this.home;
-        const retreat = await bot.goTo(this.home, { range: 3, timeoutMs: 10000 });
-        actions.push({ action: 'recovery-retreat', from: { ...away }, ok: retreat.ok !== false, error: retreat.error });
+        const retreat = await bot.goTo(this.home, { range: 3, timeoutMs: 5000, priority: 'recovery', owner: 'recovery-home' });
+        actions.push({ action: 'recovery-home', ok: retreat.ok !== false, error: retreat.error });
       } catch (err) {
-        this.logger.warn(`[${bot.name}] recovery retreat failed: ${err.message}`);
+        this.logger.warn(`[${bot.name}] recovery home move failed: ${err.message}`);
       }
     }
     this.lastAction = actions.length ? actions[actions.length - 1].action : 'recovery-hold';
     this.lastActionAt = Date.now();
     return { ...this.recovery.status(), actions };
+  }
+
+  /** Nearest standing position with two air blocks and a solid floor. */
+  _findSpawnEscape({ radius = 4 } = {}) {
+    const bot = this.bot;
+    if (!bot.position || typeof bot.getBlock !== 'function') return null;
+    const base = { x: Math.floor(bot.position.x), y: Math.floor(bot.position.y), z: Math.floor(bot.position.z) };
+    const candidates = [];
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        if (dx === 0 && dz === 0) continue;
+        const x = base.x + dx;
+        const z = base.z + dz;
+        // The bot may be one block above the floor after a bad spawn; check a
+        // small vertical window rather than assuming exact feet alignment.
+        for (let dy = -2; dy <= 1; dy++) {
+          const y = base.y + dy;
+          const below = bot.getBlock({ x, y: y - 1, z });
+          const feet = bot.getBlock({ x, y, z });
+          const head = bot.getBlock({ x, y: y + 1, z });
+          if (!below || /air|water|lava/.test(below.name || '')) continue;
+          if (!feet || !head || !/air|cave_air/.test(feet.name || '') || !/air|cave_air/.test(head.name || '')) continue;
+          candidates.push({ x, y, z, distance: Math.hypot(dx, dz) + Math.abs(dy) });
+          break;
+        }
+      }
+    }
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => a.distance - b.distance);
+    return { x: candidates[0].x, y: candidates[0].y, z: candidates[0].z };
   }
 
   /** Build the survival-base hut phase (shared anchor near home) with real blocks. */
@@ -626,7 +852,7 @@ class BotActions {
         if (existing.length < wanted && this.home && Math.hypot(this.bot.position.x - this.home.x, this.bot.position.z - this.home.z) > 8) {
           // Beds belong at the base, so inspect the base rather than the
           // bot's current mining shaft before deciding none exist.
-          await this.bot.goTo(this.home, { range: 3, timeoutMs: 20000 });
+          await this.bot.goTo(this.home, { range: 3, timeoutMs: 6000 });
           existing = this.sleep.findBeds({ radius: 24, limit: wanted });
         }
         if (existing.length >= wanted) {

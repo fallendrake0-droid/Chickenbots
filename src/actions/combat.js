@@ -144,8 +144,16 @@ class CombatController {
       ? this.bot.entitiesNear(radius)
       : [];
     const threats = [];
+    if (!this.bot.position || !Number.isFinite(Number(this.bot.position.x)) || !Number.isFinite(Number(this.bot.position.y)) || !Number.isFinite(Number(this.bot.position.z))) {
+      this.stats.invalidPositions = (this.stats.invalidPositions || 0) + 1;
+      return { threats: [], count: 0, nearest: null, focus: null, health: this.bot.health, food: this.bot.food, outmatched: false, totems: this.totems.count(), pvpEnabled: this.pvp.enabled, state: this.state, invalidPosition: true };
+    }
     for (const entity of raw) {
       if (!entity || entity.alive === false || !entity.position) continue;
+      if (![entity.position.x, entity.position.y, entity.position.z].every((value) => Number.isFinite(Number(value)))) {
+        this.stats.invalidEntityPositions = (this.stats.invalidEntityPositions || 0) + 1;
+        continue;
+      }
       if (isTeammate(entity, this.team)) continue;
       const profile = profileFor(entity);
       const name = String(entity.name || entity.type || '').toLowerCase();
@@ -157,7 +165,12 @@ class CombatController {
         // PvE combat disabled means no hostile mob is auto-engaged either.
         continue;
       }
-      const dist = Number(distance(entity.position, this.bot.position).toFixed(1));
+      const rawDistance = distance(entity.position, this.bot.position);
+      if (!Number.isFinite(rawDistance)) {
+        this.stats.invalidEntityPositions = (this.stats.invalidEntityPositions || 0) + 1;
+        continue;
+      }
+      const dist = Number(rawDistance.toFixed(1));
       threats.push({
         ...entity,
         distance: dist,
@@ -250,6 +263,7 @@ class CombatController {
     }
     if (!target.position) return { ok: false, reason: 'follow target has no position' };
     const dist = distance(this.bot.position, target.position);
+    if (!Number.isFinite(dist)) return { ok: false, reason: 'follow target position is not finite' };
     const wanted = this.followTarget.distance || 4;
     if (dist > wanted + 1.5) {
       const move = typeof this.bot.goNear === 'function'
@@ -673,7 +687,7 @@ class CombatController {
       : this.target && this.target.position
         ? this.target.position
         : { x: this.bot.position.x - 1, y: this.bot.position.y, z: this.bot.position.z - 1 };
-    const result = await moveAway(this.bot, origin, team ? 14 : 10);
+    const result = await moveAway(this.bot, origin, team ? 14 : 10, { priority: 'emergency', owner: 'combat-retreat', timeoutMs: 8000 });
     if (this.policy.autoShield && this.bot.useShield && this.totems.offhand() !== 'totem_of_undying') await this.bot.useShield(true);
     const away = threat && threat.position ? distance(this.bot.position, threat.position) : null;
     this.lastAction = 'retreated';

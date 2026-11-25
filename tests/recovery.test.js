@@ -3,6 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { RecoveryManager, RECOVERY_STATES } = require('../src/actions/recovery');
+const { BotActions } = require('../src/actions');
+const { MockWorld } = require('../src/bot/mockWorld');
+const { MockBot } = require('../src/bot/mockBot');
 
 function clock(start = 1000000) {
   let t = start;
@@ -165,4 +168,104 @@ test('MockBot exposes the same death and respawn evidence shape', () => {
   assert.equal(spawn.ok, true);
   assert.equal(bot.lastSpawn.respawned, true);
   assert.ok(bot.lastSpawn.at >= bot.lastDeath.at);
+});
+
+test('an unknown entity distance is reported as unknown, never NaNm', () => {
+  const recovery = new RecoveryManager({ botName: '________' });
+  const assessment = recovery.assessSpawn({
+    threats: [
+      { name: 'spider', type: 'spider', hostile: true, position: { x: 1, y: 64, z: 1 }, distance: undefined },
+      { name: 'zombie', type: 'zombie', hostile: true, position: { x: 2, y: 64, z: 2 }, distance: 2.4 }
+    ],
+    health: 20,
+    food: 20
+  });
+  assert.equal(Number.isNaN(assessment.score), false);
+  assert.equal(assessment.nearest.name, 'zombie');
+  assert.equal(assessment.nearest.distance, 2.4);
+  assert.match(assessment.reasons.join(' '), /zombie 2.4m away/);
+  assert.equal(assessment.reasons.join(' ').includes('NaN'), false);
+});
+
+test('a first spawn into a zombie pack runs a verified emergency retreat, not a task', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '________', world, speed: 0 });
+  bot.position = { x: 0, y: 64, z: 0 };
+  bot.health = 18;
+  for (const [x, z] of [[1, 0], [-1, 0], [0, 1]]) world.addMob('zombie', { x, y: 64, z });
+  const actions = new BotActions({ bot, world });
+  const assessment = actions.combat.assess(16);
+  assert.equal(assessment.threats.length, 3);
+  const before = { ...bot.position };
+  const result = await actions._threatResponse(assessment);
+  assert.equal(result.emergency, true);
+  assert.equal(result.action, 'recovery-retreat');
+  assert.equal(result.ok, true);
+  assert.equal(result.verified, true);
+  assert.notDeepEqual(bot.position, before, 'the bot must actually leave the threat cluster');
+});
+
+test('safetyTick assesses the first spawn immediately and flags it unsafe', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '10101000', world, speed: 0 });
+  bot.position = { x: 0, y: 64, z: 0 };
+  world.addMob('zombie', { x: 1, y: 64, z: 0 });
+  const actions = new BotActions({ bot, world });
+  const result = await actions.safetyTick();
+  assert.equal(result.emergency, true);
+  assert.equal(actions.recovery.spawnSafety.safe, false);
+  assert.match(actions.recovery.spawnSafety.reasons.join(' '), /zombie 1\.0m away/);
+});
+
+test('a creeper at melee range forces escape even when the bot is armed', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '11001100', world, speed: 0, inventory: { iron_sword: 1, shield: 1 } });
+  bot.position = { x: 0, y: 64, z: 0 };
+  world.addMob('creeper', { x: 3, y: 64, z: 0 });
+  const actions = new BotActions({ bot, world });
+  const result = await actions._threatResponse(actions.combat.assess(16));
+  assert.equal(result.emergency, true);
+  assert.equal(result.action, 'recovery-retreat');
+  assert.equal(result.ok, true);
+});
+
+test('the action watchdog can stop long controller loops', () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '10101000', world, speed: 0 });
+  const actions = new BotActions({ bot, world });
+  const result = actions.cancelCurrent('test budget');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.stopped.sort(), ['farming', 'mining', 'woodcutting']);
+  assert.equal(actions.woodcutting.stopRequested, true);
+  assert.equal(actions.mining.stopRequested, true);
+  assert.equal(actions.farming.stopRequested, true);
+});
+
+test('an unsafe spawn that turns out safe does not pin the bot in recovery for 90s', () => {
+  const c = clock();
+  const recovery = new RecoveryManager({ botName: '11001100', now: c.now });
+  recovery.recordSpawn({
+    position: { x: 0, y: 64, z: 0 }, health: 20, food: 20, threats: [], hazards: ['suffocation risk']
+  });
+  assert.equal(recovery.state, RECOVERY_STATES.RECOVERING);
+  assert.equal(recovery.deathLoop, false);
+  // The hazard was a leaf at head height; once it is re-assessed as clear the
+  // bot only serves the short suspect hold, not the death-loop hold.
+  const recheck = recovery.assessSpawn({ position: { x: 0, y: 64, z: 0 }, health: 20, food: 20, threats: [], hazards: [] });
+  assert.equal(recheck.safe, true);
+  c.advance(31000);
+  recovery.update({ health: 20, food: 20, threats: 0, spawnSafe: true });
+  assert.equal(recovery.state, RECOVERY_STATES.TASK_REPLAN);
+});
+
+test('a bot spawned inside a solid block has a real escape target', () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '01010100', world, speed: 0 });
+  bot.position = { x: 0, y: 64, z: 0 };
+  world.setBlock({ x: 0, y: 65, z: 0 }, 'oak_log');
+  const actions = new BotActions({ bot, world });
+  const target = actions._findSpawnEscape();
+  assert.ok(target, 'a neighbouring standing position exists');
+  assert.equal(world.getBlock(target).name, 'air');
+  assert.equal(world.getBlock({ x: target.x, y: target.y + 1, z: target.z }).name, 'air');
 });
