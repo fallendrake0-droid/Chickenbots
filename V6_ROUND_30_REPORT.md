@@ -1,7 +1,7 @@
 # Chickenbots V6 — round 30 report (dashboard event-loop starvation)
 
 **Branch:** `arena/de11bd2d-chickenbots`
-**Starting head:** `48bab31` (round 29, local only — GitHub authentication is unavailable)
+**Starting head:** `48bab31` (round 29)
 **Server target:** `EmpiSMP.aternos.me:32990`
 **Live evidence:** one operator-supplied runtime log, 2026-11-25 16:32:53 → 16:41:22 UTC
 
@@ -133,5 +133,5 @@ Three multipliers made it continuous rather than occasional:
   accounting remains a candidate hardening item.
 - All live-only items remain unverified live; the sandbox cannot reach the
   server.
-- The round-29 commit (`48bab31`) and this round's commit are local only until
-  GitHub authentication is restored.
+- GitHub authentication recovered during this round: `48bab31` and this
+  round's commit are now on `origin/arena/de11bd2d-chickenbots`.
