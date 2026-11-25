@@ -71,7 +71,7 @@ class ExcavationVerifier {
       stride,
       sampled,
       complete: remaining === 0,
-      removedRatio: checked ? Number((1 - remaining / Math.max(1, checked - air + remaining)).toFixed(3)) : 0,
+      removedRatio: checked && checked > air ? Number((1 - remaining / Math.max(1, checked - air)).toFixed(3)) : 0,
       sample
     };
   }
@@ -113,15 +113,23 @@ class ExcavationVerifier {
     const dimensionsOk = dims.max.x >= dims.min.x && dims.max.y >= dims.min.y && dims.max.z >= dims.min.z
       && (expectedBox === null || expectedBox === boxVolume(dims.min, dims.max));
 
-    const complete = remaining === 0 && forbiddenRemoved.length === 0 && dimensionsOk;
+    const preserveOres = this.options.preserveOres !== false;
+    const clean = remaining === 0 && forbiddenRemoved.length === 0 && dimensionsOk && accessOk
+      && (!preserveOres || oreMissing.length === 0);
+    // Sampled scans can miss a leftover block, so they may report a provisional
+    // pass but never a proven completion. Completion is only claimed after an
+    // exhaustive stride-1 pass of every region.
+    const complete = clean && !sampled;
+    const provisionalComplete = clean && sampled;
     const notes = [];
-    if (sampled) notes.push('Verification used stratified sampling; remaining count is an estimate.');
+    if (sampled) notes.push('Verification used stratified sampling; remaining count is an estimate and completion is provisional.');
     if (forbiddenRemoved.length) notes.push(`${forbiddenRemoved.length} protected blocks were removed and must be restored.`);
     if (!accessOk) notes.push('Access route is blocked; the pit needs safe entry/exit.');
     if (remaining > 0) notes.push(`${remaining} excavatable blocks remain.`);
 
     return {
       complete,
+      provisionalComplete,
       checked,
       remaining,
       sampled,

@@ -180,11 +180,11 @@ class ConstructionManager {
     return {
       id: project.id, name: project.name, schematicId: project.schematicId, schematicName: project.schematicName,
       tier: project.tier, category: project.category, status: project.status, active: project.id === this.activeId,
-      origin: { ...project.origin }, rotation: project.rotation, dimensions: { ...project.dimensions },
+      origin: { ...(project.origin || {}) }, rotation: project.rotation || 0, dimensions: { ...(project.dimensions || {}) },
       priority: project.priority, progress: project.progress, createdAt: project.createdAt,
       updatedAt: project.updatedAt, completedAt: project.completedAt,
       phases: project.buildPhases.map((entry) => ({ id: entry.id, name: entry.name, status: entry.status })),
-      assignments: clone(project.teamAssignments), materialsReady: project.materialPlan ? project.materialPlan.ready : false,
+      assignments: clone(project.teamAssignments || {}), materialsReady: project.materialPlan ? project.materialPlan.ready : false,
       phase: phase ? phase.id : 'COMPLETE', blockedReason: project.blockedReason || null
     };
   }
@@ -192,6 +192,7 @@ class ConstructionManager {
   pause({ reason = 'paused by operator' } = {}) {
     const project = this.activeProject();
     if (!project) return { ok: false, error: 'no active project' };
+    if ([STATUS.CANCELLED, STATUS.COMPLETE].includes(project.status)) return { ok: false, error: `project is ${project.status}` };
     project.paused = true;
     project.status = STATUS.PAUSED;
     for (const builder of this._projectBuilders(project)) builder.pause();
@@ -223,6 +224,7 @@ class ConstructionManager {
   cancel({ reason = 'cancelled by operator' } = {}) {
     const project = this.activeProject();
     if (!project) return { ok: false, error: 'no active project' };
+    if ([STATUS.CANCELLED, STATUS.COMPLETE].includes(project.status)) return { ok: false, error: `project is ${project.status}` };
     project.status = STATUS.CANCELLED;
     project.paused = true;
     project.completedAt = nowIso();
@@ -527,7 +529,7 @@ class ConstructionManager {
 
   _recomputeProgress(project) {
     const done = project.buildPhases.filter((phase) => phase.status === PHASE_STATUS.COMPLETE || phase.status === PHASE_STATUS.SKIPPED).length;
-    project.progress = Math.round((done / project.buildPhases.length) * 1000) / 10;
+    project.progress = project.buildPhases.length ? Math.round((done / project.buildPhases.length) * 1000) / 10 : 100;
     project.buildMilestones.forEach((milestone) => {
       const phase = project.buildPhases.find((entry) => entry.id === milestone.name || (milestone.name === 'FINAL_QA' && entry.id === 'QUALITY_VERIFICATION'));
       if (phase) {
@@ -540,6 +542,8 @@ class ConstructionManager {
   async runPhase(id, options = {}) {
     const project = this.activeProject();
     if (!project) return { ok: false, error: 'no active project' };
+    if (project.status === STATUS.CANCELLED) return { ok: false, error: 'project is CANCELLED' };
+    if (project.status === STATUS.COMPLETE) return { ok: false, error: 'project is COMPLETE' };
     const phase = this._phase(project, String(id).toUpperCase());
     if (phase.status === PHASE_STATUS.COMPLETE && !options.force) return { ok: true, already: true, phase: phase.id, detail: phase.detail };
     return this._execute(project, phase, options);

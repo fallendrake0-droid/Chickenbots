@@ -43,9 +43,20 @@ function pickBot(services, name = null) {
   return bot;
 }
 
+const UNSAFE_PARAM_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function mergeTaskParams(target, source) {
+  for (const [key, value] of Object.entries(source || {})) {
+    if (UNSAFE_PARAM_KEYS.has(key)) throw new CommandError(`unsafe task parameter '${key}'`);
+    target[key] = value;
+  }
+}
+
 /** Parse `key=value` / `--params <json>` task parameters without eval. */
 function parseTaskParams(args) {
-  const params = {};
+  // Null prototype: a JSON `__proto__` key must never mutate the parameter
+  // object's prototype and make validation read an inherited value.
+  const params = Object.create(null);
   const labelParts = [];
   for (let i = 0; i < args.length; i++) {
     const token = String(args[i]);
@@ -55,7 +66,7 @@ function parseTaskParams(args) {
       let parsed;
       try { parsed = JSON.parse(raw); } catch (_) { throw new CommandError('--params must be valid JSON'); }
       if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new CommandError('--params must be a JSON object');
-      Object.assign(params, parsed);
+      mergeTaskParams(params, parsed);
       continue;
     }
     if (token.startsWith('{')) {
@@ -63,7 +74,7 @@ function parseTaskParams(args) {
       let parsed;
       try { parsed = JSON.parse(raw); } catch (_) { throw new CommandError('task parameters must be valid JSON'); }
       if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new CommandError('task parameters must be a JSON object');
-      Object.assign(params, parsed);
+      mergeTaskParams(params, parsed);
       break;
     }
     const match = token.match(/^([a-zA-Z][a-zA-Z0-9_]*)=(.*)$/);
@@ -1358,6 +1369,7 @@ function registerBuild(registry, services) {
         const pos = parseOrigin(args, 1);
         if (!services.runtime) return { ok: false, error: 'no runtime' };
         const changed = services.runtime.setHome(pos);
+        if (changed.ok === false) return changed;
         return { ok: true, home: changed.home };
       }
       if (sub === 'status') return { ok: true, home: services.runtime ? services.runtime.home : null, actions: [...(services.actions ? services.actions.list() : [])].map((a) => a.homeBase.status()) };
@@ -1961,4 +1973,4 @@ function createCommandHandler(services = {}) {
   };
 }
 
-module.exports = { createCommandHandler, CommandRegistry, CommandError, TASK_TYPES, resolveDesign };
+module.exports = { createCommandHandler, CommandRegistry, CommandError, TASK_TYPES, resolveDesign, parseTaskParams, mergeTaskParams, UNSAFE_PARAM_KEYS };

@@ -82,7 +82,9 @@ class WoodcuttingController {
   }
 
   async chopTree(base, { maxHeight = 24 } = {}) {
-    const type = this.bot.getBlock(base).name;
+    const baseBlock = this.bot.getBlock(base);
+    if (!baseBlock) return { ok: false, error: `world returned no block at ${base.x},${base.y},${base.z}` };
+    const type = baseBlock.name;
     if (!LOG_PATTERN.test(type)) return { ok: false, error: `not a tree at ${base.x},${base.y},${base.z} (${type})` };
     const logs = [];
     let y = base.y;
@@ -94,12 +96,14 @@ class WoodcuttingController {
     }
     if (!logs.length) return { ok: false, error: 'no trunk found' };
     let chopped = 0;
+    let failure = null;
     for (const log of logs.slice().reverse()) {
       if (this.stopRequested) break;
       const move = await this.bot.goTo(log, { range: 4 });
-      if (move && move.ok === false) break;
+      if (move && move.ok === false) { failure = `cannot reach ${log.x},${log.y},${log.z}: ${move.error}`; break; }
       const dig = await this.bot.digBlock(log);
       if (dig.ok) chopped++;
+      else { failure = dig.error || `dig failed at ${log.x},${log.y},${log.z}`; }
     }
     // Clear leaves that are still attached to the top of the stump.
     let leaves = 0;
@@ -117,11 +121,13 @@ class WoodcuttingController {
       }
     }
     if (typeof this.bot.collectDrops === 'function') await this.bot.collectDrops(8);
-    this.stats.treesChopped++;
     const harvested = Object.entries(this.bot.inventory).filter(([n]) => LOG_PATTERN.test(n)).reduce((s, [, c]) => s + c, 0);
     this.stats.logsCollected = harvested;
     this.stats.saplingsCollected = [...SAPLINGS].reduce((s, n) => s + (this.bot.countItem(n) || 0), 0);
-    if (this.memory) {
+    // A failed chop must not be recorded as a harvested tree: that made the
+    // dashboard claim wood production while the trunk was still standing.
+    if (chopped > 0) this.stats.treesChopped++;
+    if (this.memory && chopped > 0) {
       this.memory.observe({
         type: 'TREE', resource: 'wood', position: { x: base.x, y: base.y, z: base.z }, reportedBy: this.bot.name,
         confidence: 0.9, status: 'HARVESTED', data: { type, logs: chopped, leaves, at: Date.now() }
@@ -129,7 +135,11 @@ class WoodcuttingController {
     }
     const replant = await this.replant(base, type);
     if (this.ledger) this.ledger.updateBotInventory(this.bot.name, this.bot.inventory);
-    return { ok: chopped > 0, type, chopped, leaves, replanted: replant.ok, replant, base };
+    return {
+      ok: chopped > 0, type, chopped, leaves, replanted: replant.ok, replant, base,
+      partial: chopped < logs.length,
+      error: chopped < logs.length ? (failure || 'trunk not fully chopped') : undefined
+    };
   }
 
   async replant(base, logType = null) {

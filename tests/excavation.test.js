@@ -168,6 +168,16 @@ test('regions cover the bounds exactly, never overlap, and stay balanced', () =>
   assert.equal(five.reduce((s, r) => s + r.volume, 0), boxVolume(bounds.min, bounds.max));
 });
 
+test('splitting a tiny box never creates duplicate overlapping regions', () => {
+  const tiny = { min: { x: 0, y: 10, z: 0 }, max: { x: 0, y: 10, z: 0 } };
+  const regions = splitRegions(tiny, 4);
+  assert.equal(regions.length, 1);
+  assert.equal(regions[0].volume, 1);
+  const names = assignRegions(regions, []);
+  assert.equal(names.assignments.length, 0);
+  assert.match(names.error, /no bots/);
+});
+
 test('mask-aware region volumes exclude preserved terrace/circle blocks', () => {
   const quarry = quarryPlan({ origin: { x: 0, y: 64, z: 0 }, width: 16, length: 16, depth: 8 });
   const mask = maskForPlan({ mode: 'QUARRY', bounds: quarry.bounds, terraces: quarry.tiers, tierHeight: quarry.tierHeight });
@@ -309,4 +319,53 @@ test('radius excavation plan volume matches mask and verification target', () =>
   assert.equal(res.plan.volume, res.plan._mask.volume);
   assert.ok(res.plan.regions.every((r) => res.plan._mask.measure(r.box) === r.volume));
   assert.equal(res.plan.regions.reduce((s, r) => s + r.volume, 0), res.plan.volume);
+});
+
+test('a huge radius is rejected before enumerating circle cells', () => {
+  const started = Date.now();
+  const res = createExcavationPlan({ mode: 'RADIUS', origin: { x: 0, y: 64, z: 0 }, radius: 1e9, depth: 8 });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /exceeds|limit|finite/);
+  assert.ok(Date.now() - started < 1000, 'radius validation must not enumerate billions of cells');
+});
+
+test('flatten rejects terrain sampling that yields no finite heights', () => {
+  const res = createExcavationPlan({
+    mode: 'FLATTEN', origin: { x: 0, y: 64, z: 0 }, width: 4, length: 4,
+    surfaceAt: () => Number.NaN
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /no finite terrain heights/);
+});
+
+test('sampled verification is provisional and never claims complete', () => {
+  const bounds = { min: { x: 0, y: 0, z: 0 }, max: { x: 20, y: 20, z: 20 } };
+  const verifier = new ExcavationVerifier(
+    { bounds, volume: 21 ** 3, options: { preserveOres: false }, regions: [] },
+    { getBlock: () => ({ name: 'air' }), budget: 100 }
+  );
+  const result = verifier.verify();
+  assert.equal(result.sampled, true);
+  assert.equal(result.remaining, 0);
+  assert.equal(result.provisionalComplete, true);
+  assert.equal(result.complete, false);
+  assert.ok(result.notes.some((note) => /provisional/.test(note)));
+});
+
+test('a blocked access route prevents a clean verification', () => {
+  const bounds = { min: { x: 0, y: 0, z: 0 }, max: { x: 2, y: 2, z: 2 } };
+  const plan = {
+    bounds,
+    volume: 27,
+    options: { preserveOres: false },
+    regions: [],
+    accessRoute: { bottom: { x: 1, y: 0, z: 1 } }
+  };
+  const verifier = new ExcavationVerifier(plan, {
+    getBlock: (pos) => ({ name: pos.x === 1 && pos.y === 0 && pos.z === 1 ? 'stone' : 'air' })
+  });
+  const result = verifier.verify();
+  assert.equal(result.complete, false);
+  assert.equal(result.accessOk, false);
+  assert.ok(result.notes.some((note) => /Access route/.test(note)));
 });

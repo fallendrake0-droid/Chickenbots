@@ -176,3 +176,17 @@ test('the rejoin hold-down is recorded only after a real authenticated session e
   await failed.disconnect('test');
   assert.equal(failed.lastSessionEndedAt, 0);
 });
+
+test('a throwing builder status degrades to an error row instead of blanking the snapshot', () => {
+  const builder = {
+    id: 'broken-build',
+    schematic: { name: 'Broken design' },
+    engine: null,
+    status() { throw new Error('builder exploded'); }
+  };
+  const snapshot = statusSnapshot({ bots: new Map(), builders: new Map([['broken-build', builder]]) });
+  assert.equal(snapshot.builder.builds.length, 1);
+  assert.equal(snapshot.builder.builds[0].state, 'ERROR');
+  assert.match(snapshot.builder.builds[0].error, /builder exploded/);
+  assert.equal(snapshot.building.builds[0].state, 'ERROR');
+});

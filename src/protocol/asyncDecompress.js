@@ -14,6 +14,10 @@
 
 let installed = false;
 
+// A server frame may claim any uncompressed size. Refuse an allocation larger
+// than any legitimate 26.x chunk packet before handing it to zlib.
+const MAX_INFLATED_BYTES = 16 * 1024 * 1024;
+
 function installAsyncDecompression() {
   if (installed) return true;
   let compression;
@@ -41,11 +45,17 @@ function installAsyncDecompression() {
         this.push(chunk.slice(size));
         return cb();
       }
-      zlib.unzip(chunk.slice(size), { finishFlush: 2 }, (err, inflated) => {
+      if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_INFLATED_BYTES) {
+        return cb(new Error(`compressed packet claims an invalid uncompressed size: ${value}`));
+      }
+      zlib.unzip(chunk.slice(size), { finishFlush: 2, maxOutputLength: value }, (err, inflated) => {
         if (err) {
           // The original code logged and then silently continued, leaving the
           // stream desynchronised. Surface it so the connection fails cleanly.
           return cb(err);
+        }
+        if (inflated.length !== value) {
+          return cb(new Error(`compressed packet length mismatch: declared ${value}, inflated ${inflated.length}`));
         }
         this.push(inflated);
         return cb();
@@ -60,4 +70,4 @@ function installAsyncDecompression() {
   return true;
 }
 
-module.exports = { installAsyncDecompression };
+module.exports = { installAsyncDecompression, MAX_INFLATED_BYTES };

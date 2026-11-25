@@ -161,6 +161,24 @@ function createExcavationPlan(opts = {}) {
     scanLimit: options.scanLimit || 120000
   };
 
+  // Validate geometry before building it. radiusPlan used to enumerate
+  // (2r+1)^2 circle cells first and only then compare the volume with the
+  // limit, so a single huge radius command could hang the whole runtime.
+  const MAX_PLAN_DIMENSION = 4096;
+  for (const [name, value] of Object.entries({ width, length, depth, radius })) {
+    if (!Number.isFinite(Number(value))) return { ok: false, error: `${name} must be a finite number` };
+    if (Number(value) > MAX_PLAN_DIMENSION) return { ok: false, error: `${name} ${value} exceeds the supported maximum ${MAX_PLAN_DIMENSION}` };
+  }
+  if (mode === 'RADIUS' && Math.PI * radius * radius * depth > limits.maxBlocks) {
+    return { ok: false, error: `radius ${radius} at depth ${depth} exceeds the volume limit ${limits.maxBlocks}; split the excavation into phases` };
+  }
+  if ((mode === 'BOX' || mode === 'AT') && width * length * depth > limits.maxBlocks) {
+    return { ok: false, error: `volume ${width * length * depth} exceeds limit ${limits.maxBlocks}; split the excavation into phases` };
+  }
+  if ((mode === 'TRENCH' || mode === 'QUARRY') && width * length * depth > limits.maxBlocks * 16) {
+    return { ok: false, error: `requested ${width}x${length}x${depth} footprint is too large; split the excavation into phases` };
+  }
+
   let footprint;
   try {
     switch (mode) {

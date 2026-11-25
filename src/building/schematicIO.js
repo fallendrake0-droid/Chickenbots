@@ -6,6 +6,7 @@ const { geometryHash, exactHash } = require('../schematics/designHash');
 const { parseBlock, formatBlock, placementItem } = require('./blockStates');
 const { BlockRegistry } = require('./blockRegistry');
 const { toSpongeSchematic } = require('../schematics/format');
+const { LIMITS, validateDimensions, assertInputSize, safeGunzip } = require('../schematics/limits');
 
 const FORMATS = Object.freeze({
   SPONGE: 'sponge-schem',
@@ -19,8 +20,9 @@ const FORMATS = Object.freeze({
 function isGzip(buffer) { return buffer && buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b; }
 function maybeGunzip(buffer) {
   if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer);
+  assertInputSize(buffer);
   if (!isGzip(buffer)) return { buffer, compressed: false };
-  return { buffer: zlib.gunzipSync(buffer), compressed: true };
+  return { buffer: safeGunzip(buffer), compressed: true };
 }
 function maybeGzip(buffer) { return zlib.gzipSync(buffer); }
 
@@ -55,12 +57,16 @@ function detectFormat(buffer, filename = '') {
 function finishSchematic({ id, name, palette, blocks, width, height, length, format, warnings = [], blockEntities = {}, metadata = {} }) {
   // Remove air, normalise to the occupied bounding box and deduplicate the
   // palette. Coordinates remain exact.
+  if (!Array.isArray(blocks) || !Array.isArray(palette)) throw new Error('schematic needs palette and block arrays');
+  if (blocks.length > LIMITS.MAX_BLOCKS) throw new Error(`schematic has too many blocks (${blocks.length})`);
+  if (palette.length > LIMITS.MAX_PALETTE) throw new Error(`schematic palette has too many entries (${palette.length})`);
   const used = [];
   const map = new Map();
   const remapped = [];
   let minX = Infinity; let minY = Infinity; let minZ = Infinity;
   let maxX = -Infinity; let maxY = -Infinity; let maxZ = -Infinity;
   for (const [x, y, z, p] of blocks) {
+    if (![x, y, z].every(Number.isFinite)) continue;
     const entry = palette[p];
     if (!entry) continue;
     const block = parseBlock(entry);
@@ -74,6 +80,7 @@ function finishSchematic({ id, name, palette, blocks, width, height, length, for
     if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
     if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
   }
+  if (!remapped.length) throw new Error('schematic contains no non-air blocks');
   const normalized = remapped.map(([x, y, z, p, ph]) => [x - minX, y - minY, z - minZ, p, ph]);
   const dims = {
     width: maxX >= minX ? maxX - minX + 1 : width,
@@ -180,12 +187,15 @@ function fromLitematic(buffer, { id = null, name = null } = {}) {
     const sizeRaw = Array.isArray(region.Size) ? region.Size.map(Number) : [0, 0, 0];
     const size = sizeRaw.map((value) => Math.abs(value));
     if (!size[0] || !size[1] || !size[2]) { warnings.push({ kind: 'EMPTY_REGION', region: regionName }); continue; }
+    if (!position.every(Number.isFinite) || !size.every(Number.isFinite)) throw new Error(`litematic region ${regionName} has non-finite position or size`);
     const [sx, sy, sz] = size;
+    validateDimensions(sx, sy, sz, { label: `litematic region ${regionName}` });
     const regionPalette = region.Palette || {};
     const paletteList = Object.entries(regionPalette)
       .sort((a, b) => Number(a[0]) - Number(b[0]))
       .map(([key, value]) => ({ key: Number(key), value }));
     if (!paletteList.length) { warnings.push({ kind: 'REGION_WITHOUT_PALETTE', region: regionName }); continue; }
+    if (paletteList.length > LIMITS.MAX_PALETTE) throw new Error(`litematic region ${regionName} palette is too large`);
     const byKey = new Map(paletteList.map((entry) => [entry.key, entry.value]));
     const bits = Math.max(1, Math.ceil(Math.log2(paletteList.length)));
     const states = readPackedLongs(region.BlockStates || [], bits, sx * sy * sz);
@@ -232,6 +242,7 @@ function fromLitematic(buffer, { id = null, name = null } = {}) {
 
 function toLitematic(schematic, { author = 'Chickenbots', name = null } = {}) {
   const { width, height, length } = schematic.dimensions;
+  validateDimensions(width, height, length, { label: 'litematic export' });
   const paletteNames = schematic.palette.map(formatBlock);
   const bits = Math.max(1, Math.ceil(Math.log2(paletteNames.length + 1)));
   const indices = new Array(width * height * length).fill(0);
@@ -291,9 +302,12 @@ function fromStructureNbt(buffer, { id = null, name = null } = {}) {
   const { root } = parseNbt(buffer);
   const size = root.size || root.Size;
   if (!Array.isArray(size) || size.length !== 3) throw new Error('structure NBT has no size');
+  validateDimensions(Number(size[0]), Number(size[1]), Number(size[2]), { label: 'structure NBT' });
   const sourcePalette = root.palette || root.Palette;
   const sourceBlocks = root.blocks || root.Blocks;
   if (!Array.isArray(sourcePalette) || !Array.isArray(sourceBlocks)) throw new Error('structure NBT has no palette/blocks');
+  if (sourcePalette.length > LIMITS.MAX_PALETTE) throw new Error(`structure palette has too many entries (${sourcePalette.length})`);
+  if (sourceBlocks.length > LIMITS.MAX_BLOCKS) throw new Error(`structure has too many blocks (${sourceBlocks.length})`);
   const palette = [];
   const map = new Map();
   for (const entry of sourcePalette) {
@@ -363,6 +377,7 @@ function toStructureNbt(schematic) {
 function importSchematic(buffer, { filename = '', format = null, id = null, name = null, registry = null } = {}) {
   if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer || []);
   if (!buffer.length) return { ok: false, error: 'empty file', format: null };
+  if (buffer.length > LIMITS.MAX_INPUT_BYTES) return { ok: false, error: `file is ${buffer.length} bytes; the import limit is ${LIMITS.MAX_INPUT_BYTES}`, format: null };
   const detected = format || detectFormat(buffer, filename);
   if (!detected) return { ok: false, error: 'unrecognised schematic format (supported: .schem v1-v3, .litematic, .schematic, vanilla .nbt)', format: null };
   if (detected === FORMATS.BEDROCK) {
@@ -372,12 +387,26 @@ function importSchematic(buffer, { filename = '', format = null, id = null, name
     let json;
     try { json = JSON.parse(buffer.toString('utf8')); } catch (err) { return { ok: false, error: `invalid JSON: ${err.message}`, format: detected }; }
     if (!json || !Array.isArray(json.palette) || !Array.isArray(json.blocks)) return { ok: false, error: 'native schematic needs palette and blocks arrays', format: detected };
+    if (json.blocks.length > LIMITS.MAX_BLOCKS) return { ok: false, error: `native schematic has too many blocks (${json.blocks.length})`, format: detected };
+    if (json.palette.length > LIMITS.MAX_PALETTE) return { ok: false, error: `native schematic palette has too many entries (${json.palette.length})`, format: detected };
+    if (json.dimensions) {
+      try { validateDimensions(json.dimensions.width, json.dimensions.height, json.dimensions.length, { label: 'native schematic' }); }
+      catch (err) { return { ok: false, error: err.message, format: detected }; }
+    }
+    const malformed = json.blocks.find((block) => !Array.isArray(block) || block.length < 4 || !block.slice(0, 4).every((value) => Number.isFinite(Number(value))));
+    if (malformed) return { ok: false, error: 'native schematic contains a malformed block entry', format: detected };
+    const paletteIndexesValid = json.blocks.every((block) => Number.isInteger(Number(block[3])) && Number(block[3]) >= 0 && Number(block[3]) < json.palette.length);
+    if (!paletteIndexesValid) return { ok: false, error: 'native schematic block palette index is out of range', format: detected };
     const schematic = { ...json };
     schematic.id = id || json.id || `imported_${Date.now().toString(36)}`;
     schematic.name = name || json.name || 'Imported schematic';
     schematic.format = FORMATS.NATIVE;
-    schematic.geometryHash = geometryHash(schematic.blocks, schematic.palette);
-    schematic.exactHash = exactHash(schematic.blocks, schematic.palette);
+    try {
+      schematic.geometryHash = geometryHash(schematic.blocks, schematic.palette);
+      schematic.exactHash = exactHash(schematic.blocks, schematic.palette);
+    } catch (err) {
+      return { ok: false, error: `native schematic cannot be hashed: ${err.message}`, format: detected };
+    }
     return { ok: true, schematic, format: detected, warnings: [] };
   }
   let schematic;

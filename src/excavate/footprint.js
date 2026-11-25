@@ -144,6 +144,7 @@ function flattenPlan({ origin, width, length, surfaceAt, maxSearch = 320 }) {
     }
     if (budgetExceeded) break;
   }
+  if (!heights.length) throw new Error('surfaceAt returned no finite terrain heights');
   const targetY = median(heights);
   const removals = columns.filter((c) => c.h > targetY).reduce((s, c) => s + (c.h - targetY), 0);
   const fills = columns.filter((c) => c.h < targetY).reduce((s, c) => s + (targetY - c.h), 0);

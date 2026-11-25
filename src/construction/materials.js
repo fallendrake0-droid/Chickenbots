@@ -194,7 +194,13 @@ function reserveProjectMaterials({ ledger, bom, owner = 'project', ratio = 1 } =
     if (result.ok) reservations.push(result.reservation);
     else failures.push({ item, ...result.shortage });
   }
-  return { ok: failures.length === 0, reservations, failures };
+  if (failures.length) {
+    // All-or-nothing: a partial construction reservation would hold real
+    // materials hostage forever when one missing item blocks the project.
+    for (const reservation of reservations) ledger.release(reservation.id);
+    return { ok: false, reservations: [], failures, released: reservations.length };
+  }
+  return { ok: true, reservations, failures };
 }
 
 module.exports = {

@@ -40,7 +40,13 @@ function cachedClass(name) {
  * quadratic in allocation cost and dominated the whole run.
  */
 function supportAnalysis(schematic, { maxUnsupportedRatio = 0.05 } = {}) {
-  const { width: w, length: l } = schematic.dimensions;
+  if (!schematic || !Array.isArray(schematic.blocks) || !Array.isArray(schematic.palette)) {
+    return { checked: 0, unsupported: 0, ratio: 0, ok: false, examples: [], error: 'schematic needs blocks and palette' };
+  }
+  const { width: w, length: l } = schematic.dimensions || {};
+  if (!(w > 0 && l > 0) || !schematic.dimensions.width || !schematic.dimensions.length) {
+    return { checked: 0, unsupported: 0, ratio: 0, ok: false, examples: [], error: 'schematic needs positive width and length' };
+  }
   const key = (x, y, z) => (y * w + x) * l + z;
   const occupied = new Set(schematic.blocks.map(([x, y, z]) => key(x, y, z)));
   const paletteNames = schematic.palette.map((entry) => parseBlock(entry).name);
@@ -49,6 +55,7 @@ function supportAnalysis(schematic, { maxUnsupportedRatio = 0.05 } = {}) {
   const examples = [];
   for (const [x, y, z, p] of schematic.blocks) {
     const name = paletteNames[p];
+    if (!name) continue;
     const cls = cachedClass(name);
     if (cls === 'light' || cls === 'vegetation' || cls === 'glass' || cls === 'interior' || cls === 'decoration') continue;
     if (y === 0) continue;
@@ -68,7 +75,7 @@ function supportAnalysis(schematic, { maxUnsupportedRatio = 0.05 } = {}) {
   return { checked, unsupported, ratio: Number(ratio.toFixed(4)), ok: ratio <= maxUnsupportedRatio, examples };
 }
 
-function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlocks = 10 } = {}) {
+function validateSchematic(schematic, { knownBlocks = null, expected = null, minimumBlocks = 10 } = {}) {
   const issues = {
     invalid: [],
     unsupportedBlocks: [],
@@ -80,11 +87,16 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
     issues.invalid.push('no blocks');
     return { ok: false, issues };
   }
-  const dims = schematic.dimensions;
-  if (!dims || !(dims.width > 0 && dims.height > 0 && dims.length > 0)) issues.invalid.push('invalid dimensions');
+  if (!Array.isArray(schematic.palette) || !schematic.palette.length) {
+    issues.invalid.push('no palette');
+    return { ok: false, issues };
+  }
+  const dims = schematic.dimensions || {};
+  const dimsValid = dims.width > 0 && dims.height > 0 && dims.length > 0;
+  if (!dimsValid) issues.invalid.push('invalid dimensions');
   if (schematic.blocks.length < minimumBlocks) issues.invalid.push(`only ${schematic.blocks.length} blocks`);
   if (expected) {
-    if (expected.dimensions && (expected.dimensions.width !== dims.width || expected.dimensions.height !== dims.height || expected.dimensions.length !== dims.length)) {
+    if (dimsValid && expected.dimensions && (expected.dimensions.width !== dims.width || expected.dimensions.height !== dims.height || expected.dimensions.length !== dims.length)) {
       issues.invalid.push(`dimensions differ from manifest (${JSON.stringify(dims)} vs ${JSON.stringify(expected.dimensions)})`);
     }
     if (expected.geometryHash && expected.geometryHash !== schematic.geometryHash) issues.invalid.push('geometry hash differs from manifest');
@@ -98,7 +110,7 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
   let outOfBounds = 0;
   for (const [x, y, z, p, phase] of schematic.blocks) {
     if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)) issues.invalid.push('non-integer coordinates');
-    if (x < 0 || y < 0 || z < 0 || x >= dims.width || y >= dims.height || z >= dims.length) outOfBounds++;
+    if (!dimsValid || x < 0 || y < 0 || z < 0 || x >= dims.width || y >= dims.height || z >= dims.length) outOfBounds++;
     if (p < 0 || p >= schematic.palette.length) issues.invalid.push(`palette index out of range: ${p}`);
     phaseSet.add(phase);
     const name = placementNames[p];
@@ -121,13 +133,13 @@ function validateSchematic(schematic, { knownBlocks, expected = null, minimumBlo
   }
   for (const [name, count] of Object.entries(materials)) {
     if (!schematic.materials || schematic.materials[name] !== count) issues.missingMaterials.push(`${name}: actual ${count} not in material totals`);
-    if (!knownBlocks.has(name)) issues.unsupportedBlocks.push(name);
+    if (knownBlocks && !knownBlocks.has(name)) issues.unsupportedBlocks.push(name);
   }
   if (!schematic.foundation || !(schematic.foundation.depth > 0)) issues.structuralProblems.push('missing foundation depth');
   if (!schematic.supports || !schematic.supports.length) issues.structuralProblems.push('no foundation supports');
   if (schematic.palette.some((entry) => /^(air|unknown|custom)/.test(parseBlock(entry).name))) issues.unsupportedBlocks.push('placeholder block name');
-  const support = supportAnalysis(schematic);
-  if (!support.ok) issues.structuralProblems.push(`unsupported structural blocks: ${support.unsupported}/${support.checked} (${support.ratio})`);
+  const support = dimsValid ? supportAnalysis(schematic) : { checked: 0, unsupported: 0, ratio: 0, ok: false, examples: [] };
+  if (!support.ok && support.checked > 0) issues.structuralProblems.push(`unsupported structural blocks: ${support.unsupported}/${support.checked} (${support.ratio})`);
   if (!Array.isArray(schematic.versionCompatibility) || !schematic.versionCompatibility.length) issues.compatibility.push('no version compatibility declared');
   if (!schematic.tags || !schematic.tags.length) issues.compatibility.push('no tags');
   const entries = Object.values(issues).reduce((s, arr) => s + arr.length, 0);

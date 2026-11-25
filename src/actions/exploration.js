@@ -129,8 +129,11 @@ class ExplorationController {
 
   async explore({ steps = 4, scanRadius = 12 } = {}) {
     this.stopRequested = false;
+    // A caller-supplied Infinity/negative step count must not create an
+    // unbounded navigation loop.
+    const maxSteps = Math.max(1, Math.min(64, Math.floor(Number(steps) || 4)));
     const results = [];
-    for (let i = 0; i < steps && !this.stopRequested; i++) {
+    for (let i = 0; i < maxSteps && !this.stopRequested; i++) {
       const waypoint = this.nextWaypoint();
       const clamped = {
         x: Math.max(this.home.x - this.radius, Math.min(this.home.x + this.radius, waypoint.x)),

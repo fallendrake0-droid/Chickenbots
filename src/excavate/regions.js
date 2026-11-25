@@ -21,7 +21,9 @@ function splitRegions(bounds, parts, { prefix = 'R', measure = null } = {}) {
     // Split the longer axis; ties go to X for determinism.
     const axis = w >= l ? 'x' : 'z';
     const size = axis === 'x' ? w : l;
-    if (size < 2) { regions.push({ id: `${prefix}${++idx}`, box: { min: clone(target.box.min), max: clone(target.box.max) } }); break; }
+    // Cannot split a one-block-wide region. Returning a duplicate box here
+    // made two bots claim the same blocks and made region volumes double-count.
+    if (size < 2) break;
     const half = Math.floor(size / 2);
     const a = { min: clone(target.box.min), max: clone(target.box.max) };
     const b = { min: clone(target.box.min), max: clone(target.box.max) };
@@ -51,8 +53,12 @@ function quadrantNames(regions) {
 
 function assignRegions(regions, botNames, { supervisor = null, includeSupervisor = false } = {}) {
   const assign = [];
-  const workers = includeSupervisor ? botNames.slice() : botNames.filter((n) => n !== supervisor);
-  const pool = workers.length ? workers : botNames.slice();
+  const names = Array.isArray(botNames) ? botNames : [];
+  const workers = includeSupervisor ? names.slice() : names.filter((n) => n !== supervisor);
+  const pool = workers.length ? workers : names.slice();
+  if (!pool.length) {
+    return { assignments: [], supervisor: includeSupervisor ? null : supervisor, balanced: false, error: 'no bots available for excavation regions' };
+  }
   regions.forEach((region, i) => {
     const name = pool[i % pool.length];
     assign.push({ regionId: region.id, bot: name, box: region.box, volume: region.volume });

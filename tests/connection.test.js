@@ -158,6 +158,7 @@ test('status scans are skipped until a live bot is ready', () => {
     getBlock() { throw new Error('world not loaded'); }
   };
   assert.deepEqual(findBlocks(fake, ['stone']), []);
+  assert.deepEqual(findBlocks(null, ['stone']), []);
   const real = new RealBot({ name: '________' });
   real.bot = {};
   real.connected = true;

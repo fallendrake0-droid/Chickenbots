@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { config } = require('../config');
 const { importSchematic, exportSchematic, FORMATS, detectFormat } = require('./schematicIO');
+const { LIMITS } = require('../schematics/limits');
 const { BlockRegistry } = require('./blockRegistry');
 
 const SUPPORTED = new Set(['.schem', '.litematic', '.schematic', '.nbt', '.json', '.cbschem']);
@@ -105,6 +106,12 @@ class CustomSchematicStore extends EventEmitter {
       this.stats.discovered++;
       const existing = byPath.get(file.name);
       if (existing && !force && existing.fileMtimeMs === file.mtimeMs) continue;
+      if (file.size > LIMITS.MAX_INPUT_BYTES) {
+        this.stats.rejected++;
+        rejected++;
+        if (this.logger) this.logger.warn(`custom schematic ${file.name} is ${file.size} bytes; skipping the ${LIMITS.MAX_INPUT_BYTES}-byte import limit`);
+        continue;
+      }
       const result = this.importFile(file.full, { filename: file.name, source: existing?.source || 'folder', licence: existing?.licence || 'UNKNOWN', persist: false, scan: true });
       if (result.ok) imported++;
       else rejected++;
@@ -134,7 +141,11 @@ class CustomSchematicStore extends EventEmitter {
     if (typeof fileOrBuffer === 'string') {
       filePath = fileOrBuffer;
       filename = filename || path.basename(fileOrBuffer);
-      try { buffer = fs.readFileSync(fileOrBuffer); } catch (err) { return { ok: false, error: `cannot read ${filename}: ${err.message}` }; }
+      try {
+        const stat = fs.statSync(fileOrBuffer);
+        if (stat.size > LIMITS.MAX_INPUT_BYTES) return { ok: false, error: `${filename} is ${stat.size} bytes; the import limit is ${LIMITS.MAX_INPUT_BYTES}` };
+        buffer = fs.readFileSync(fileOrBuffer);
+      } catch (err) { return { ok: false, error: `cannot read ${filename}: ${err.message}` }; }
     }
     if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer || []);
     const contentHash = sha256(buffer);

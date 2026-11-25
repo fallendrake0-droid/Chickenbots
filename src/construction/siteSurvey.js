@@ -75,6 +75,10 @@ class SiteSurveyor {
   /** Survey a rectangular footprint, bounded by sampleLimit. */
   survey({ origin, width, length, margin = 4, sampleLimit = 2500, caveDepth = 10 } = {}) {
     if (!origin || !Number.isFinite(origin.x) || !Number.isFinite(origin.z)) return { ok: false, error: 'survey requires a finite origin' };
+    if (!Number.isFinite(width) || !Number.isFinite(length) || width < 1 || length < 1) {
+      return { ok: false, error: 'survey requires positive finite width and length' };
+    }
+    if (!Number.isFinite(sampleLimit) || sampleLimit < 1) return { ok: false, error: 'survey requires a positive sample limit' };
     const w = Math.max(1, Math.floor(width));
     const l = Math.max(1, Math.floor(length));
     const area = w * l;
@@ -194,6 +198,7 @@ class SiteSurveyor {
 
   /** Deterministic ring of candidate origins around home. */
   candidateOrigins(home, { radius = 48, count = 6, spacing = 24 } = {}) {
+    if (!home || !Number.isFinite(home.x) || !Number.isFinite(home.z)) return [];
     const base = { x: Math.floor(home.x), y: Math.floor(home.y), z: Math.floor(home.z) };
     const out = [];
     const rings = [spacing, spacing * 2, spacing * 3];

@@ -93,6 +93,15 @@ test('every archetype produces a valid, non-empty structure', () => {
   }
 });
 
+test('validation reports malformed schematics instead of throwing', () => {
+  const noDims = validateSchematic({ palette: ['minecraft:stone'], blocks: [[0, 0, 0, 0]] });
+  assert.equal(noDims.ok, false);
+  assert.ok(noDims.issues.invalid.some((issue) => /dimensions/.test(issue)));
+  const noPalette = validateSchematic({ dimensions: { width: 1, height: 1, length: 1 }, blocks: [[0, 0, 0, 0]] });
+  assert.equal(noPalette.ok, false);
+  assert.ok(noPalette.issues.invalid.includes('no palette'));
+});
+
 test('palette-only changes are detected as the same design', () => {
   const base = build(2, 'cottage', 0);
   const first = base.palette[0];
@@ -215,4 +224,14 @@ test('enumerated specs map one-to-one onto the manifest', () => {
     assert.equal(entry.id, spec.id);
   }
   assert.ok(fs.existsSync(MANIFEST_PATH));
+});
+
+test('library statistics stay finite for an empty manifest', () => {
+  const library = new SchematicLibrary({ manifest: { designs: [] }, custom: null, enableCustom: false });
+  const stats = library.stats();
+  assert.equal(stats.count, 0);
+  assert.equal(stats.blocks.min, 0);
+  assert.equal(stats.blocks.max, 0);
+  assert.equal(stats.blocks.average, 0);
+  assert.deepEqual(stats.dimensions, { maxWidth: 0, maxHeight: 0, maxLength: 0 });
 });

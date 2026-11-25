@@ -180,7 +180,7 @@ class TaskBoard {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'unknown task' };
     if (!botId) return { ok: false, error: 'botId required' };
-    if (task.status === TASK_STATUS.COMPLETED || task.status === TASK_STATUS.CANCELLED) return { ok: false, error: `task ${task.status}` };
+    if ([TASK_STATUS.COMPLETED, TASK_STATUS.CANCELLED, TASK_STATUS.FAILED].includes(task.status)) return { ok: false, error: `task ${task.status}` };
     // Repeated claims by the same owner are idempotent: re-acquiring the
     // resource locks would inflate their reentrancy count and leak them.
     if (task.claimedBy === botId) return { ok: true, task, already: true };
@@ -200,7 +200,7 @@ class TaskBoard {
     }
     const acquired = [];
     for (const key of task.lockKeys) {
-      const lock = this.acquireLock(key, botId, { label: task.type });
+      const lock = this.acquireLock(key, botId, { label: task.type, taskId: task.id });
       if (!lock.ok) {
         // All-or-nothing: release the locks this claim already took so a
         // partial failure cannot block another bot until the TTL expires.
@@ -252,6 +252,7 @@ class TaskBoard {
   start(taskId, botId) {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'unknown task' };
+    if ([TASK_STATUS.COMPLETED, TASK_STATUS.CANCELLED, TASK_STATUS.FAILED].includes(task.status)) return { ok: false, error: `task is already ${task.status.toLowerCase()}` };
     if (task.claimedBy !== botId) return { ok: false, error: 'not claimed by this bot' };
     task.status = TASK_STATUS.ACTIVE;
     task.startedAt = this.now();
@@ -263,9 +264,16 @@ class TaskBoard {
   heartbeat(taskId, botId) {
     const task = this.tasks.get(taskId);
     if (!task || task.claimedBy !== botId) return false;
+    if ([TASK_STATUS.COMPLETED, TASK_STATUS.CANCELLED, TASK_STATUS.FAILED].includes(task.status)) return false;
     task.claimExpiresAt = this.now() + (task.claimTtlMs || this.claimTtlMs);
     for (const [key, lock] of this.locks) {
-      if (lock.owner === botId && key.startsWith('task:')) lock.expiresAt = this.now() + this.lockTtlMs;
+      // Resource locks acquired by this task (not just the synthetic task lock)
+      // must live as long as the task keeps heartbeating. Otherwise a long
+      // mine/chop can silently lose its reservation after 30s while the bot
+      // still believes it owns the work.
+      if (lock.owner === botId && (key.startsWith('task:') || lock.taskId === taskId)) {
+        lock.expiresAt = this.now() + this.lockTtlMs;
+      }
     }
     for (const region of this.regions.values()) {
       if (region.owner === botId && region.taskId === taskId) region.expiresAt = this.now() + this.lockTtlMs;
@@ -277,8 +285,10 @@ class TaskBoard {
     const task = this.tasks.get(taskId);
     if (!task) return null;
     if (current !== undefined) {
+      const next = Number(current);
+      if (!Number.isFinite(next)) return null;
       const previous = task.units.current || 0;
-      task.units.current = Math.max(0, current);
+      task.units.current = Math.max(0, next);
       task.lastUpdateAt = this.now();
       if (task.units.current > previous) {
         task.noProgressSince = this.now();
@@ -286,7 +296,11 @@ class TaskBoard {
         task.stallCycles = 0;
       }
     }
-    if (target !== undefined) task.units.target = Math.max(0, target);
+    if (target !== undefined) {
+      const nextTarget = Number(target);
+      if (!Number.isFinite(nextTarget)) return null;
+      task.units.target = Math.max(0, nextTarget);
+    }
     if (note) task.progressNote = note;
     if (task.objectiveId) this.refreshObjectiveProgress(task.objectiveId);
     return task;
@@ -296,6 +310,9 @@ class TaskBoard {
   complete(taskId, { by = null, verified = false, notes = '' } = {}) {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'unknown task' };
+    if (task.status === TASK_STATUS.COMPLETED) return { ok: true, already: true, task };
+    if (task.status === TASK_STATUS.CANCELLED) return { ok: false, error: 'task was cancelled' };
+    if (task.status === TASK_STATUS.FAILED) return { ok: false, error: 'task already failed' };
     // A completion without an owner identity is never trustworthy when the
     // task is claimed; verified work must identify the bot that did it.
     if (task.claimedBy && task.claimedBy !== by) return { ok: false, error: 'completed by non-owner' };
@@ -314,6 +331,9 @@ class TaskBoard {
   fail(taskId, reason, { by = null, retry = true } = {}) {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'unknown task' };
+    if ([TASK_STATUS.COMPLETED, TASK_STATUS.CANCELLED, TASK_STATUS.FAILED].includes(task.status)) {
+      return { ok: false, error: `task is already ${task.status.toLowerCase()}`, task };
+    }
     if (task.claimedBy && task.claimedBy !== by) return { ok: false, error: 'not owner' };
     task.lastError = reason || 'unknown failure';
     task.lastUpdateAt = this.now();
@@ -363,6 +383,9 @@ class TaskBoard {
   cancel(taskId, reason = 'cancelled') {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'unknown task' };
+    if ([TASK_STATUS.COMPLETED, TASK_STATUS.CANCELLED, TASK_STATUS.FAILED].includes(task.status)) {
+      return { ok: false, error: `task is already ${task.status.toLowerCase()}`, task };
+    }
     this._releaseTaskResources(task);
     task.status = TASK_STATUS.CANCELLED;
     task.claimedBy = null;
@@ -393,7 +416,10 @@ class TaskBoard {
       }
     }
     for (const [key, lock] of [...this.locks]) {
-      if (lock.expiresAt <= at && lock.reentrant <= 1) this.locks.delete(key);
+      // Expiry is authoritative. Keeping a reentrant lock forever because its
+      // count is >1 was a real leak: a crashed bot that had re-acquired a lock
+      // left every other bot blocked until a full restart.
+      if (lock.expiresAt <= at) this.locks.delete(key);
     }
     for (const [id, region] of [...this.regions]) {
       if (region.expiresAt <= at) this.regions.delete(id);
@@ -407,19 +433,20 @@ class TaskBoard {
   // ------------------------------------------------------------------
   // Resource locks
   // ------------------------------------------------------------------
-  acquireLock(key, owner, { ttlMs = this.lockTtlMs, label = '' } = {}) {
+  acquireLock(key, owner, { ttlMs = this.lockTtlMs, label = '', taskId = null } = {}) {
     const existing = this.locks.get(key);
     const now = this.now();
     if (existing && existing.owner === owner) {
       existing.reentrant += 1;
       existing.expiresAt = now + ttlMs;
+      if (taskId && !existing.taskId) existing.taskId = taskId;
       return { ok: true, lock: existing, reentrant: true };
     }
     if (existing && existing.expiresAt > now && existing.owner !== owner) {
       this._noteWait(owner, key);
       return { ok: false, error: 'lock held', heldBy: existing.owner };
     }
-    const lock = { key, owner, acquiredAt: now, expiresAt: now + ttlMs, label, reentrant: 1 };
+    const lock = { key, owner, acquiredAt: now, expiresAt: now + ttlMs, label, taskId, reentrant: 1 };
     this.locks.set(key, lock);
     this._clearWait(owner);
     return { ok: true, lock };

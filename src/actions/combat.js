@@ -138,8 +138,8 @@ class CombatController {
   unprotect(name) { return this.pvp.unprotect(name); }
 
   /** Hostile/authorised entities only. Teammates and neutrals are filtered out. */
-  assess(radius = 16) {
-    this.stats.threatAssessments++;
+  assess(radius = 16, { commitFocus = true, record = true } = {}) {
+    if (record) this.stats.threatAssessments++;
     const raw = typeof this.bot.entitiesNear === 'function'
       ? this.bot.entitiesNear(radius)
       : [];
@@ -181,7 +181,9 @@ class CombatController {
     }
     threats.sort((a, b) => b.danger - a.danger);
     const nearest = [...threats].sort((a, b) => a.distance - b.distance)[0] || null;
-    const focus = this.combatTeam && this.combatTeam.enabled ? this.combatTeam.chooseFocus(threats) : null;
+    const focus = this.combatTeam && this.combatTeam.enabled
+      ? this.combatTeam.chooseFocus(threats, { commit: commitFocus })
+      : null;
     return {
       threats, count: threats.length, nearest, focus,
       health: this.bot.health, food: this.bot.food,
@@ -193,7 +195,9 @@ class CombatController {
   }
 
   status() {
-    const assessment = this.assess();
+    // Status is polled by the dashboard every second. It must not commit a
+    // focus target, reset the focus hysteresis or inflate threat statistics.
+    const assessment = this.assess(16, { commitFocus: false, record: false });
     const gear = gearStatus({ inventory: this.bot.inventory, meta: this.meta, target: this.target });
     return {
       bot: this.bot.name,

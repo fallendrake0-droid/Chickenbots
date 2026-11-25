@@ -59,11 +59,39 @@ function statusSnapshot(services) {
     try { return a.status(); } catch (err) { return { bot: a.bot ? a.bot.name : 'unknown', error: err.message }; }
   });
   const leader = services.coordinator ? services.coordinator.leader : null;
-  const library = services.library && services.library.loaded ? services.library.stats() : null;
+  let library = null;
+  try { library = services.library && services.library.loaded ? services.library.stats() : null; }
+  catch (err) { library = { error: `library stats failed: ${err.message}` }; }
   const buildValues = [...(services.builders ? services.builders.values() : [])];
-  const builds = buildValues.map((b) => b.status());
+  const builds = buildValues.map((b) => {
+    try { return b.status(); }
+    catch (err) {
+      return { buildId: b.id, name: b.schematic && b.schematic.name ? b.schematic.name : b.id, state: 'ERROR', error: `status failed: ${err.message}`, percentComplete: 0, tasks: [] };
+    }
+  });
   const firstEngine = buildValues.find((b) => b.engine)?.engine || null;
-  const excavationStatus = services.excavation ? services.excavation.status() : null;
+  let excavationStatus = null;
+  try { excavationStatus = services.excavation ? services.excavation.status() : null; }
+  catch (err) { excavationStatus = { ok: false, error: `excavation status failed: ${err.message}`, active: [], counts: null }; }
+  let combatTeamStatus = null;
+  let combatOverview = null;
+  try {
+    combatTeamStatus = services.combatTeam ? services.combatTeam.status() : null;
+    combatOverview = services.combatTeam ? {
+      enabled: services.combatTeam.enabled,
+      mode: services.combatTeam.mode,
+      focus: services.combatTeam.focus ? { id: services.combatTeam.focus.id, name: services.combatTeam.focus.name || services.combatTeam.focus.type } : null,
+      roles: services.combatTeam.roles,
+      totems: services.combatTeam.list().reduce((sum, controller) => sum + controller.totems.count(), 0),
+      engaged: services.combatTeam.list().filter((controller) => ['ENGAGING', 'APPROACHING', 'RETREATING', 'TOTEM_EMERGENCY'].includes(controller.state)).length
+    } : null;
+  } catch (err) {
+    combatTeamStatus = { error: `combat team status failed: ${err.message}` };
+    combatOverview = { error: `combat team status failed: ${err.message}` };
+  }
+  let constructionState = null;
+  try { constructionState = services.construction ? services.construction.state() : null; }
+  catch (err) { constructionState = { error: `construction state failed: ${err.message}` }; }
   const board = services.taskBoard;
   const runtime = services.runtime ? services.runtime.state() : null;
   const safetyByName = new Map((runtime && runtime.bots ? runtime.bots : []).map((bot) => [bot.name, bot.safety || null]));
@@ -88,14 +116,7 @@ function statusSnapshot(services) {
         counts: excavationStatus.counts || null
       } : null,
       builds: builds.map((b) => ({ id: b.buildId, name: b.name, state: b.state, percent: b.percentComplete, tasks: b.tasks })),
-      combat: services.combatTeam ? {
-        enabled: services.combatTeam.enabled,
-        mode: services.combatTeam.mode,
-        focus: services.combatTeam.focus ? { id: services.combatTeam.focus.id, name: services.combatTeam.focus.name || services.combatTeam.focus.type } : null,
-        roles: services.combatTeam.roles,
-        totems: services.combatTeam.list().reduce((sum, controller) => sum + controller.totems.count(), 0),
-        engaged: services.combatTeam.list().filter((controller) => ['ENGAGING', 'APPROACHING', 'RETREATING', 'TOTEM_EMERGENCY'].includes(controller.state)).length
-      } : null,
+      combat: combatOverview,
       construction: services.construction ? {
         activeId: services.construction.activeId,
         projects: services.construction.projects.size,
@@ -117,7 +138,7 @@ function statusSnapshot(services) {
     survival: actionStatus.map((a) => a.survival),
     combat: actionStatus.map((a) => a.combat),
     recovery: actionStatus.map((a) => a.recovery).filter(Boolean),
-    combatTeam: services.combatTeam ? services.combatTeam.status() : null,
+    combatTeam: combatTeamStatus,
     inventory: {
       ledger: services.ledger ? services.ledger.snapshot() : null,
       bots: actionStatus.map((a) => a.inventory)
@@ -133,7 +154,7 @@ function statusSnapshot(services) {
     sleep: actionStatus.map((a) => a.sleep),
     fishing: actionStatus.map((a) => a.fishing),
     exploration: actionStatus.map((a) => a.exploration),
-    construction: services.construction ? services.construction.state() : null,
+    construction: constructionState,
     builder: {
       builds,
       atHome: byBot[leader] ? byBot[leader].homeBase : null,
@@ -148,16 +169,23 @@ function statusSnapshot(services) {
     building: {
       config: config.building,
       registry: firstEngine ? firstEngine.registry.describe() : null,
-      builds: buildValues.map((builder) => ({
-        id: builder.id,
-        name: builder.schematic.name,
-        state: builder.status().state,
-        percent: builder.status().percentComplete,
-        statuses: builder.engine ? builder.engine.statusCounts() : null,
-        verification: builder.engine ? builder.engine.auditSummary() : null
-      })),
+      builds: buildValues.map((builder, index) => {
+        const status = builds[index] || { state: 'ERROR', percentComplete: 0 };
+        let statuses = null;
+        let verification = null;
+        try { statuses = builder.engine ? builder.engine.statusCounts() : null; } catch (_) { statuses = null; }
+        try { verification = builder.engine ? builder.engine.auditSummary() : null; } catch (_) { verification = null; }
+        return {
+          id: builder.id,
+          name: builder.schematic && builder.schematic.name ? builder.schematic.name : builder.id,
+          state: status.state,
+          percent: status.percentComplete,
+          statuses,
+          verification
+        };
+      }),
       custom: services.library && services.library.customStore ? services.library.customStore.statsSummary() : null,
-      projects: services.construction ? services.construction.list() : []
+      projects: (() => { try { return services.construction ? services.construction.list() : []; } catch (_) { return []; } })()
     },
     homeBase: {
       home: services.runtime ? services.runtime.home : null,

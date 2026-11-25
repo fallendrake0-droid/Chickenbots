@@ -59,6 +59,19 @@ test('weapon evaluation understands target-specific enchantments, axes and durab
   assert.ok(ACTION_PRIORITY.TOTEM_EMERGENCY > ACTION_PRIORITY.ATTACK);
 });
 
+test('a low-durability weapon recommends a healthy replacement, never another broken one', () => {
+  const inventory = { diamond_sword: 1, iron_sword: 1, stone_sword: 1 };
+  const meta = {
+    diamond_sword: { durability: 200, maxDurability: 1561 },
+    iron_sword: { durability: 50, maxDurability: 250 },
+    stone_sword: { durability: 120, maxDurability: 131 }
+  };
+  const result = selectWeapon({ inventory, meta, target: { username: 'Enemy', type: 'player' } });
+  assert.equal(result.weapon.name, 'diamond_sword');
+  assert.equal(result.switchTo, 'stone_sword');
+  assert.notEqual(result.switchTo, 'iron_sword');
+});
+
 test('armour optimisation selects the best whole set for the expected threat', () => {
   const inventory = {
     diamond_helmet: 1, diamond_chestplate: 1, diamond_leggings: 1, diamond_boots: 1,
@@ -531,4 +544,21 @@ test('live adapter maps equipped armour, offhand, potions and nearby entities in
   assert.equal(near.length, 2);
   assert.equal(near.find((entity) => entity.username === 'EnemyOne').name, 'EnemyOne');
   assert.equal(near.find((entity) => entity.name === 'zombie').hostile, true);
+});
+
+test('dashboard status does not commit team focus or inflate threat statistics', () => {
+  const world = new MockWorld({ flat: true, seed: 103 });
+  const bot = new MockBot({ name: NAMES[0], world, inventory: { iron_sword: 1 }, position: { x: 0, y: 64, z: 0 } });
+  const controller = new CombatController({ bot });
+  const coordinator = new TeamCombatCoordinator({ controllers: [controller] });
+  controller.attachTeam(coordinator);
+  world.addMob('zombie', { x: 4, y: 64, z: 0 });
+  const status = controller.status();
+  assert.equal(status.threats, 1);
+  assert.equal(coordinator.focus, null, 'status polling must not commit a focus target');
+  assert.equal(controller.stats.threatAssessments, 0, 'status polling must not count as a threat assessment');
+  const assessment = controller.assess(16);
+  assert.equal(assessment.focus.id !== undefined, true);
+  assert.equal(controller.stats.threatAssessments, 1);
+  assert.notEqual(coordinator.focus, null);
 });

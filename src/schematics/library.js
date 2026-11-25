@@ -410,16 +410,18 @@ class SchematicLibrary {
         categories: this.categories(),
         blocks: {
           total: blockCounts.reduce((s, n) => s + n, 0),
-          min: Math.min(...blockCounts),
-          max: Math.max(...blockCounts),
-          average: Math.round(blockCounts.reduce((s, n) => s + n, 0) / blockCounts.length)
+          // Math.min(...[]) is Infinity and 0/0 is NaN; an empty manifest must
+          // report zeros rather than poison the dashboard JSON.
+          min: blockCounts.length ? Math.min(...blockCounts) : 0,
+          max: blockCounts.length ? Math.max(...blockCounts) : 0,
+          average: blockCounts.length ? Math.round(blockCounts.reduce((s, n) => s + n, 0) / blockCounts.length) : 0
         },
         topMaterials,
-        dimensions: {
+        dimensions: designs.length ? {
           maxWidth: Math.max(...designs.map((d) => d.dimensions.width)),
           maxHeight: Math.max(...designs.map((d) => d.dimensions.height)),
           maxLength: Math.max(...designs.map((d) => d.dimensions.length))
-        },
+        } : { maxWidth: 0, maxHeight: 0, maxLength: 0 },
         generatedAt: this.manifest.generatedAt,
         generationMs: this.manifest.generationMs,
         rejected: (this.manifest.rejected || []).length

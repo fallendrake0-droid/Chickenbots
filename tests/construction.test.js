@@ -14,7 +14,7 @@ const { SchematicLibrary } = require('../src/schematics/library');
 const { ConstructionManager, PIPELINE_PHASES, BUILD_PHASES, STATUS } = require('../src/construction/manager');
 const { SiteSurveyor } = require('../src/construction/siteSurvey');
 const { planLighting, executeLighting, auditLighting, findSpawnableSurfaces, LIGHT_SOURCES } = require('../src/construction/lighting');
-const { billOfMaterials, materialStatus, validateSubstitution, categoryForItem } = require('../src/construction/materials');
+const { billOfMaterials, materialStatus, validateSubstitution, categoryForItem, reserveProjectMaterials } = require('../src/construction/materials');
 const { Warehouse } = require('../src/construction/storage');
 const { createCommandHandler } = require('../src/commands');
 
@@ -68,6 +68,43 @@ test('site survey uses observed terrain, detects hazards and never treats missin
   const missing = unloaded.survey({ origin: { x: 100, y: 64, z: 100 }, width: 6, length: 6 });
   assert.ok(missing.stats.unknown > 0);
   assert.equal(missing.hazards.unloaded, true);
+});
+
+test('a completed construction project cannot be paused, cancelled or restarted', async () => {
+  const manager = new ConstructionManager({
+    library: {}, persistPath: tmpState('construction-terminal'), now: () => 1000
+  });
+  manager.projects.set('project-terminal', {
+    id: 'project-terminal', status: STATUS.COMPLETE, paused: false, history: [],
+    buildPhases: [], completedAt: new Date(1000).toISOString()
+  });
+  manager.activeId = 'project-terminal';
+  assert.equal(manager.pause().ok, false);
+  assert.equal(manager.cancel().ok, false);
+  const rerun = await manager.runPhase('ANALYSIS', { force: true });
+  assert.equal(rerun.ok, false);
+  assert.match(rerun.error, /COMPLETE/);
+  assert.equal(manager.getProject('project-terminal').status, STATUS.COMPLETE);
+  assert.equal(manager.getProject('project-terminal').history.length, 0);
+  const summary = manager.summary(manager.getProject('project-terminal'));
+  assert.equal(summary.status, STATUS.COMPLETE);
+  assert.deepEqual(summary.assignments, {});
+  assert.deepEqual(summary.origin, {});
+});
+
+test('site survey rejects non-finite footprints instead of returning Infinity statistics', () => {
+  const surveyor = new SiteSurveyor({ blockAt: () => ({ name: 'stone' }), surfaceAt: () => 64 });
+  for (const bad of [
+    { origin: { x: 0, y: 64, z: 0 }, width: Number.NaN, length: 8 },
+    { origin: { x: 0, y: 64, z: 0 }, width: 8, length: Infinity },
+    { origin: { x: 0, y: 64, z: 0 }, width: -4, length: 8 },
+    { origin: { x: 0, y: 64, z: 0 }, width: 8, length: 8, sampleLimit: 0 }
+  ]) {
+    const result = surveyor.survey(bad);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /positive/);
+  }
+  assert.deepEqual(surveyor.candidateOrigins({ x: Number.NaN, z: 0 }), []);
 });
 
 test('lighting planner uses real emission values, respects reserved BOM blocks and verifies placement', async () => {
@@ -318,4 +355,19 @@ test('a project survives a restart mid-preparation and a complete phase is never
   assert.equal(restored.activeProject().status, STATUS.COMPLETE, restored.activeProject().blockedReason || '');
   assert.equal(restored.activeProject().quality.verification.placed, schematic.blocks.length);
   fs.rmSync(statePath, { force: true });
+});
+
+
+test('a failed material reservation rolls back every partial reservation', () => {
+  const ledger = new ResourceLedger();
+  ledger.updateBotInventory('________', { oak_log: 10 });
+  const result = reserveProjectMaterials({
+    ledger,
+    owner: 'project-rollback',
+    bom: { materials: { oak_log: 5, stone: 5 } }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.released, 1);
+  assert.equal(ledger.available('oak_log'), 10);
+  assert.equal(ledger.reservations.filter((reservation) => reservation.active).length, 0);
 });

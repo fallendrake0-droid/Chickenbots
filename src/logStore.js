@@ -27,8 +27,10 @@ function recent({ limit = 100, level = null, scope = null, q = null, since = 0 }
   const wanted = level ? String(level).toLowerCase() : null;
   const scopeFilter = scope ? String(scope).toLowerCase() : null;
   const query = q ? String(q).toLowerCase() : null;
+  const sinceNumber = Number(since);
+  const sinceSeq = Number.isFinite(sinceNumber) && sinceNumber >= 0 ? Math.floor(sinceNumber) : 0;
   return entries
-    .filter((e) => e.seq > Number(since || 0))
+    .filter((e) => e.seq > sinceSeq)
     .filter((e) => !wanted || e.level === wanted)
     .filter((e) => !scopeFilter || e.scope.toLowerCase().includes(scopeFilter))
     .filter((e) => !query || e.msg.toLowerCase().includes(query) || e.scope.toLowerCase().includes(query))

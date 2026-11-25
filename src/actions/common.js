@@ -19,10 +19,17 @@ function timeOfDay(bot) {
 const SURFACE_BLOCKS = /(_log|_leaves|_sapling|_propagule|wheat|carrots|potatoes|beetroots|melon|pumpkin|torchflower|pitcher|farmland|chest|barrel|_bed|oak_door|torch)$/;
 
 /** Find blocks by name through the world when supported, else bounded scan. */
-function findBlocks(bot, names, { near = bot.position, radius = 24, limit = 50, yFrom = null, yTo = null } = {}) {
+function findBlocks(bot, names, { near = null, radius = 24, limit = 50, yFrom = null, yTo = null } = {}) {
   // Before the first spawn the live adapter has no world object yet; scanning
   // would call bot.blockAt() and crash the status snapshot.
   if (!bot || bot.ready === false || !bot.position) return [];
+  // A missing/non-finite centre or an unbounded radius used to turn this scan
+  // into a multi-billion-iteration synchronous loop.
+  const origin = near || bot.position;
+  if (!origin || ![origin.x, origin.y, origin.z].every((value) => Number.isFinite(Number(value)))) return [];
+  near = { x: Number(origin.x), y: Number(origin.y), z: Number(origin.z) };
+  radius = Math.max(0, Math.min(128, Math.floor(Number(radius) || 24)));
+  limit = Math.max(1, Math.min(2000, Math.floor(Number(limit) || 50)));
   const wanted = new Set(Array.isArray(names) ? names : [names]);
   const out = [];
   const world = bot.world;

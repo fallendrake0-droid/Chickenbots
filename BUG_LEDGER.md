@@ -27,6 +27,64 @@ a live server accepted it.
 | BUG-27-13 | P0 | Native Bedrock | A Java Mineflayer client cannot join a Bedrock UDP endpoint | No Bedrock transport exists | Reported as `NOT_SUPPORTED` in capabilities; no fake adapter | capability test asserts NOT_SUPPORTED | NOT IMPLEMENTED |
 | BUG-27-14 | P1 | AuthMe/SimpleAuth integration | No live AuthMe or SimpleAuth server was available | Sandbox/network limitation | Adapters are configuration profiles with unit tests only | `plugin-compat.test.js` | UNVERIFIED LIVE |
 
+## Round 29 — large hardening pass
+
+**Starting head:** `62f1650`
+**Evidence:** unit tests only. No live server was reached.
+**Gate:** 370/370 tests, lint 158 files, consistency 10/10, deploy 12/12,
+secret check 190 files.
+
+| ID | Sev | Component | Symptom / reproduction | Root cause | Fix | Regression test | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-29-01 | P0 | Schematic import | A huge import could exhaust memory | No input/inflated/block caps | `src/schematics/limits.js`; 64 MB input and inflated, 2 M blocks, 4 M volume, 4096 dimension, 65 536 palette | `schematic-safety.test.js` | FIXED (unit) |
+| BUG-29-02 | P0 | Gzip import | A gzip bomb inflated without a bound | `gunzipSync` had no output cap | `safeGunzip` with `maxOutputLength` | `schematic-safety.test.js` | FIXED (unit) |
+| BUG-29-03 | P0 | Sponge import | `BlockData` length/stride was trusted | Out-of-bounds decoding | Validate length before decode | `schematic-safety.test.js` | FIXED (unit) |
+| BUG-29-04 | P0 | Async decompression | The async path dropped the length check | Two decompressors diverged | Shared cap; oversized output rejected | `protocol-compression.test.js` | FIXED (unit) |
+| BUG-29-05 | P1 | Task board locks | Expired reentrant locks leaked; heartbeat renewed only the task lock | Expiry skipped when `reentrant > 1` | Expiry authoritative; heartbeat renews owned locks/regions | `team.test.js` | FIXED (unit) |
+| BUG-29-06 | P1 | World viewer | Malformed entity coordinates crashed the snapshot | `NaN`/`Infinity` trusted | Validate and skip malformed entities | `world-view.test.js` | FIXED (unit) |
+| BUG-29-07 | P2 | Command history | `logStore.recent` with a bad `since` | Invalid timestamp comparison | Parse/validate; invalid falls back | `log-store.test.js` | FIXED (unit) |
+| BUG-29-08 | P1 | Command params | `--params` could set prototype keys | No key filtering | Reject `__proto__`/prototype keys | `command-params.test.js` | FIXED (unit) |
+| BUG-29-09 | P1 | Home command | `setHome` accepted `NaN`/out-of-world positions | No coordinate validation | Finite in-world coordinates required | `runtime-home.test.js` | FIXED (unit) |
+| BUG-29-10 | P1 | Dashboard download | Crafted filename injected `Content-Disposition` | Unsanitised filename | Sanitise and quote filename | `dashboard-filenames.test.js` | FIXED (unit) |
+| BUG-29-11 | P1 | Custom library | Custom schematic reads had no size bound | Missing cap | Same input cap as importer | `schematic-safety.test.js` | FIXED (unit) |
+| BUG-29-12 | P1 | Resource ledger | `commit` could exceed a reservation and release it | No `remaining` clamp | Clamp to remaining, report excess | `team.test.js` | FIXED (unit) |
+| BUG-29-13 | P1 | Plan quotas | `splitQuota` crashed on 0/NaN/negative parts | Unclamped array length | Parts 1…1000; quota non-negative integer | `team.test.js` | FIXED (unit) |
+| BUG-29-14 | P1 | Site survey | Invalid footprint produced `Infinity`/`NaN` stats | No dimension validation | Finite positive dimensions required | `construction.test.js` | FIXED (unit) |
+| BUG-29-15 | P1 | Woodcutting | Null block threw; failed digs counted as harvested | Unchecked block read/result | Clean error; only verified digs count | `woodcutting-safety.test.js` | FIXED (unit) |
+| BUG-29-16 | P1 | Schematic validation | Malformed/missing `knownBlocks` threw | No defaults | Defensive defaults and dimension checks | `schematic-safety.test.js` | FIXED (unit) |
+| BUG-29-17 | P1 | Imported geometry | Non-finite coordinates entered the schematic | No finite filter | Filter/validate coordinates | `schematic-safety.test.js` | FIXED (unit) |
+| BUG-29-18 | P1 | Sponge import | Truncated `BlockData` gave a silent 0-block design | Truncation treated as empty | Explicit truncation error | `schematic-safety.test.js` | FIXED (unit) |
+| BUG-29-19 | P1 | Excavation regions | A 1×1 region was split into two identical boxes, double-counting volume | `size < 2` branch pushed a duplicate | Stop splitting when the longer axis is 1 | `excavation.test.js` | FIXED (unit) |
+| BUG-29-20 | P1 | Excavation regions | Empty roster produced `bot: undefined` | Pool indexed with `NaN` | Structured empty-pool error | `excavation.test.js` | FIXED (unit) |
+| BUG-29-21 | P2 | Excavation executor | `progressEvery` 0/NaN disabled progress | `% NaN` comparison | Positive integer at construction | `excavation-exec.test.js` | FIXED (unit) |
+| BUG-29-22 | P1 | Excavation executor | Stopped executor could be relabelled running | `resume()` ignored token state | Terminal token state respected | `excavation-exec.test.js` | FIXED (unit) |
+| BUG-29-23 | P1 | Excavation manager | Terminal excavation accepted pause/resume/stop | No status preconditions | Terminal calls return `ok:false` + summary | `excavation-exec.test.js` | FIXED (unit) |
+| BUG-29-24 | P1 | Builder/construction lifecycle | `pause()` left `state='RUNNING'`; resume impossible; cancel reversible; completed projects accepted pause/cancel | Boolean-only pause and no terminal guards | Real `PAUSED` state, start/resume guards, terminal project guards | `v4-features.test.js`, `construction.test.js` | FIXED (unit) |
+| BUG-29-25 | P1 | Task board transitions | Late `fail`/`cancel` resurrected terminal tasks | No terminal check | Terminal transitions rejected; repeated complete idempotent | `team.test.js` | FIXED (unit) |
+| BUG-29-26 | P1 | Task board claims | `claim/start/heartbeat` restarted terminal tasks | No terminal check | All three reject terminal status | `team.test.js` | FIXED (unit) |
+| BUG-29-27 | P2 | Task progress | `NaN`/`Infinity` progress poisoned objective totals | No finite validation | Return `null`, leave task unchanged | `team.test.js` | FIXED (unit) |
+| BUG-29-28 | P2 | Builder chunking | 0/NaN chunk size created one giant task and a spread RangeError | `Math.max(8, NaN)` is `NaN` | Finite default 96, minimum 8 | `v4-features.test.js` | FIXED (unit) |
+| BUG-29-29 | P1 | Dashboard snapshot | One throwing subsystem blanked the snapshot | Unguarded `status()` calls | Per-subsystem error rows | `dashboard-status.test.js` | FIXED (unit) |
+| BUG-29-30 | P2 | Library statistics | Empty manifest gave `Infinity`/`NaN` stats | `Math.min(...[])` and divide by zero | Zeroed empty statistics | `schematics.test.js` | FIXED (unit) |
+| BUG-29-31 | P1 | Construction materials | Partial reservation stayed held after a shortage | No rollback | All-or-nothing reservation release | `construction.test.js` | FIXED (unit) |
+| BUG-29-32 | P0 | Excavation verification | Sampled scans could claim complete; blocked access/missing ores ignored | Completion derived from an estimate and partial checks | `provisionalComplete`; access/ore/dimension gate | `excavation.test.js` | FIXED (unit) |
+| BUG-29-33 | P0 | Excavation planner | Huge radius enumerated billions of cells before limit check | Geometry generated before validation | Validate finite/≤4096 and pre-check volume | `excavation.test.js` | FIXED (unit) |
+| BUG-29-34 | P2 | Flatten planning | No finite heights produced a null target | Empty sample accepted | Explicit error | `excavation.test.js` | FIXED (unit) |
+| BUG-29-35 | P1 | Weapon selection | `switchTo` recommended another low-durability weapon | Wrong variable semantics | Healthy replacement only when chosen weapon is at risk | `combat.test.js` | FIXED (unit) |
+| BUG-29-36 | P1 | Combat status | Dashboard polling committed focus, reset hysteresis, inflated stats; positionless focus crashed planning | `status()` called mutating `assess()` | Read-only status path; positionless focus returns no offset | `combat.test.js` | FIXED (unit) |
+| BUG-29-37 | P1 | Construction phases | `runPhase()` restarted COMPLETE/CANCELLED projects | No terminal guard | Terminal projects refuse phase execution | `construction.test.js` | FIXED (unit) |
+| BUG-29-38 | P2 | Construction summary | Missing optional fields crashed `summary()`; zero phases divided by zero | Unguarded access | Safe defaults; 100% for zero phases | `construction.test.js` | FIXED (unit) |
+| BUG-29-39 | P1 | Excavation lighting | Torches placed above the cleared cell with no support | Wrong torch cell | Place in cleared cell only with solid floor | `excavation-exec.test.js` | FIXED (unit) |
+| BUG-29-40 | P2 | Woodcutting | Navigation failure silently truncated a tree | No error field | `partial` + concrete error | `woodcutting-safety.test.js` | FIXED (unit) |
+| BUG-29-41 | P2 | Plan labels | Degraded parts produced `(1/0)` labels | Label used raw `parts` | Use real quota count | `team.test.js` | FIXED (unit) |
+| BUG-29-42 | P1 | Block scanning | `findBlocks(null)` threw; unbounded radius hung a sync scan | Default evaluated `bot.position`; no clamp | Null/non-finite returns `[]`; radius ≤128, limit ≤2000 | `connection.test.js` | FIXED (unit) |
+| BUG-29-43 | P2 | Exploration | `Infinity` steps created an unbounded navigation loop | No step clamp | Steps clamped to 1…64 | `v4-features.test.js` | FIXED (unit) |
+
+Open from previous rounds: **BUG-27-09** (fleet chop exhausts nearby trees),
+**BUG-27-10** (maximum event-loop block, previously 1,433.4 ms at `MINE_ORE`),
+and all live-only items. Full detail: `V6_ROUND_29_REPORT.md`.
+
+
 ## Preserved fixes
 
 The round-26 movement arbiter, tick scheduler, spawn safety, bed-quota fix,

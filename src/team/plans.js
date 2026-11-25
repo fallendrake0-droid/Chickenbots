@@ -7,9 +7,14 @@
 let planSeq = 0;
 
 function splitQuota(total, parts) {
-  const base = Math.floor(total / parts);
-  const extra = total % parts;
-  return Array.from({ length: parts }, (_, i) => base + (i < extra ? 1 : 0));
+  // A zero/NaN part count used to make Array.from({length: Infinity}) throw and
+  // take the whole planner down. Clamp to a real number of tasks and a
+  // non-negative integer quota.
+  const count = Math.max(1, Math.min(1000, Math.floor(Number(parts) || 1)));
+  const units = Math.max(0, Math.floor(Number(total) || 0));
+  const base = Math.floor(units / count);
+  const extra = units % count;
+  return Array.from({ length: count }, (_, i) => base + (i < extra ? 1 : 0));
 }
 
 function objectiveExists(board, template) {
@@ -193,7 +198,7 @@ function createCollectPlan(board, { resource, count, method, parts = 4, priority
     const spec = {
       objectiveId: objective.id,
       type,
-      label: `${label || 'Collect'} ${q} ${resource} (${i + 1}/${parts})`,
+      label: `${label || 'Collect'} ${q} ${resource} (${i + 1}/${quotas.length})`,
       priority,
       params: method === 'chop' ? { logType: resource.replace('_log', ''), quota: q, replant: true }
         : method === 'farm' ? { crop: resource, count: q }

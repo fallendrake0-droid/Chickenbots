@@ -261,7 +261,13 @@ class TeamRuntime {
   }
 
   setHome(position, { source = 'operator', snapToSurface = true } = {}) {
-    this.home = { x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) };
+    const x = Number(position && position.x);
+    const y = Number(position && position.y);
+    const z = Number(position && position.z);
+    if (![x, y, z].every(Number.isFinite) || Math.abs(x) > 30_000_000 || Math.abs(z) > 30_000_000 || y < -2048 || y > 2048) {
+      return { ok: false, error: 'home coordinates must be finite world coordinates', home: this.home };
+    }
+    this.home = { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) };
     if (snapToSurface && this.world && typeof this.world.getBlock === 'function') {
       const ground = this.bots.values().next().value;
       if (ground && typeof ground.surfaceAt === 'function') this.home.y = ground.surfaceAt(this.home.x, this.home.z) + 1;

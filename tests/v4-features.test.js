@@ -124,6 +124,12 @@ test('a running build can be paused, resumed and cancelled with visible state', 
   assert.equal(builder.status().state, 'RUNNING');
   const cancelled = builder.cancel('test cancel');
   assert.equal(cancelled.state, 'CANCELLED');
+  assert.equal(builder.resume().ok, false);
+  assert.equal(builder.start({ confirm: true }).ok, false);
+  assert.equal(new SchematicBuilder({ schematic, origin: { x: 0, y: 70, z: 0 }, world, bots, chunkSize: Number.NaN }).chunkSize, 96);
+  assert.equal(new SchematicBuilder({ schematic, origin: { x: 0, y: 70, z: 0 }, world, bots, chunkSize: 0 }).chunkSize, 8);
+  builder.state = 'COMPLETE';
+  assert.equal(builder.resume().ok, false, 'a completed build cannot be resumed');
 });
 
 test('TRANSFER_ITEMS moves real items between bots and verifies the recipient inventory', async () => {
@@ -226,4 +232,18 @@ test('the command surface drives fishing, home, sleep automation, formations and
   } finally {
     await runtime.shutdown('test');
   }
+});
+
+test('exploration clamps an unbounded step request instead of walking forever', async () => {
+  let moves = 0;
+  const bot = {
+    name: '________', ready: true, position: { x: 0, y: 64, z: 0 }, inventory: {}, health: 20,
+    time: { timeOfDay: 1000 },
+    getBlock: () => null,
+    goTo: async () => { moves++; return { ok: true }; }
+  };
+  const exploration = new ExplorationController({ bot, home: { x: 0, y: 64, z: 0 }, radius: 8 });
+  const result = await exploration.explore({ steps: Number.POSITIVE_INFINITY });
+  assert.equal(moves, 64);
+  assert.equal(result.ok, true);
 });

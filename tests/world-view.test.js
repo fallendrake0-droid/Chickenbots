@@ -73,6 +73,20 @@ test('missing or unknown bots return an honest error instead of fake terrain', (
   assert.equal(empty.code, 'NO_BOT');
 });
 
+test('malformed entity and teammate coordinates are skipped, not crashed on', () => {
+  const { services, bot } = fixture();
+  const other = services.bots.get('10101000');
+  other.position = { x: 4, y: null, z: 0 };
+  bot.entitiesNear = () => ([
+    { id: 1, name: 'bad', position: { x: 0, y: null, z: 0 } },
+    { id: 2, name: 'good', position: { x: 1, y: 2, z: 3 }, health: 20 }
+  ]);
+  const snap = worldSnapshot(services, { bot: bot.name, radius: 8, height: 24 });
+  assert.equal(snap.ok, true);
+  assert.deepEqual(snap.entities.map((entry) => entry.name), ['good']);
+  assert.deepEqual(snap.bots.map((entry) => entry.name), ['________']);
+});
+
 test('control plane bind guard refuses an unauthenticated public bind unless explicitly opted in', () => {
   assert.equal(dashboardBindProblem({ host: '127.0.0.1', token: '' }), null);
   assert.equal(dashboardBindProblem({ host: 'localhost', token: '' }), null);

@@ -274,6 +274,7 @@ class ExcavationManager {
   pause(id = null) {
     const exc = this.get(id);
     if (!exc) return { ok: false, error: 'no active excavation' };
+    if (exc.status !== 'ACTIVE') return { ok: false, error: `cannot pause a ${exc.status} excavation` };
     exc.paused = true;
     exc.status = 'PAUSED';
     for (const executor of this.executors.values()) executor.pause('excavation paused');
@@ -284,6 +285,7 @@ class ExcavationManager {
   resume(id = null) {
     const exc = this.get(id);
     if (!exc) return { ok: false, error: 'no active excavation' };
+    if (exc.status !== 'PAUSED') return { ok: false, error: `cannot resume a ${exc.status} excavation` };
     exc.paused = false;
     exc.status = 'ACTIVE';
     for (const executor of this.executors.values()) executor.resume();
@@ -294,6 +296,9 @@ class ExcavationManager {
   stop(id = null, reason = 'stopped by operator') {
     const exc = this.get(id);
     if (!exc) return { ok: false, error: 'no active excavation' };
+    if (['STOPPED', 'COMPLETED', 'CANCELLED'].includes(exc.status)) {
+      return { ok: false, error: `excavation is already ${exc.status.toLowerCase()}`, excavation: this._summary(exc) };
+    }
     exc.status = 'STOPPED';
     exc.stoppedAt = this.now();
     exc.stopReason = reason;

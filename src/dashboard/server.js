@@ -14,6 +14,20 @@ const { worldSnapshot } = require('./worldView');
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
 /**
+ * Download names come from route parameters or custom-catalogue ids. Strip
+ * quotes, controls and separators so a crafted id cannot break the header
+ * (Node rejects it, turning a download into a 500) or suggest a second file.
+ */
+function attachmentFilename(value, extension = '') {
+  const base = String(value || '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^[._-]+/, '')
+    .slice(0, 120);
+  const ext = String(extension || '').replace(/[^A-Za-z0-9._-]/g, '');
+  return `${base || 'schematic'}${ext}`;
+}
+
+/**
  * The dashboard can issue commands, so a non-loopback bind without a token is
  * only allowed when the operator explicitly accepts the risk. Returning a
  * message instead of hiding the decision keeps startup errors actionable.
@@ -392,7 +406,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     const schematic = services.library.build(design.id);
     const buffer = toSpongeSchematic(schematic);
     res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${design.id}.schem"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${attachmentFilename(design.id, '.schem')}"`);
     res.send(buffer);
   });
 
@@ -511,7 +525,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       return res.status(422).json({ ok: false, error: err.message });
     }
     res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${req.params.id}${extension}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${attachmentFilename(req.params.id, extension)}"`);
     if (warnings.length) res.setHeader('X-Export-Warnings', String(warnings.length));
     res.send(buffer);
   });
@@ -683,4 +697,4 @@ function topDownPreview(schematic) {
   return { width, length, height: schematic.dimensions.height, stride, cells: sampled };
 }
 
-module.exports = { createDashboard, dashboardBindProblem, worldSnapshot };
+module.exports = { createDashboard, dashboardBindProblem, worldSnapshot, attachmentFilename };

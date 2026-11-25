@@ -103,9 +103,12 @@ class TeamCombatCoordinator {
   roleFor(controller) { return this.roles[controller.bot.name] || 'FRONTLINE'; }
 
   /** Choose one focus target; focus changes are rate-limited to avoid flip-flopping. */
-  chooseFocus(threats = []) {
+  chooseFocus(threats = [], { commit = true } = {}) {
     const viable = threats.filter((threat) => threat.player || (isHostile(threat) && !profileFor(threat).neutral));
-    if (!viable.length) { this.focus = null; this.focusSince = 0; return null; }
+    if (!viable.length) {
+      if (!commit) return null;
+      this.focus = null; this.focusSince = 0; return null;
+    }
     const scored = viable.map((threat) => {
       const profile = profileFor(threat);
       const health = threat.health === undefined ? 20 : threat.health;
@@ -119,6 +122,9 @@ class TeamCombatCoordinator {
       const previous = viable.find((threat) => threat.id === this.focus.id);
       if (previous) return previous;
     }
+    // Read-only callers (dashboard status) may inspect the focus without
+    // resetting its hysteresis window or inflating focus-change statistics.
+    if (!commit) return best.threat;
     if (!this.focus || this.focus.id !== best.threat.id) this.stats.focusChanges++;
     this.focus = best.threat;
     this.focusSince = this.now();
@@ -132,6 +138,7 @@ class TeamCombatCoordinator {
     this.lastPlanAt = this.now();
     this.stats.plans++;
     if (!focus) return { focus: null, role: this.roleFor(controller), offset: null };
+    if (!focus.position) return { focus, role: this.roleFor(controller), offset: null, reason: 'focus has no position' };
     this.locks.set(focus.id, (this.locks.get(focus.id) || []).length ? this.locks.get(focus.id) : []);
     const role = this.roleFor(controller);
     if (!this.flankBearing[controller.bot.name]) {

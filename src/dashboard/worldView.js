@@ -125,6 +125,7 @@ const COLORS = {
 };
 
 function clampInt(value, min, max, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
@@ -185,7 +186,8 @@ function resolveCenter(services, query, bot) {
   const x = Number(query.x);
   const y = Number(query.y);
   const z = Number(query.z);
-  if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+  if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)
+    && Math.abs(x) <= 32_000_000 && Math.abs(z) <= 32_000_000 && y >= -2048 && y <= 2048) {
     return { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z), source: 'explicit' };
   }
   if (bot && bot.position) {
@@ -271,8 +273,11 @@ function worldSnapshot(services, query = {}) {
       if (!entity || !entity.position) continue;
       // Teammates have their own richer entry in `bots`; do not draw them twice.
       if (services.bots instanceof Map && (services.bots.has(entity.username) || services.bots.has(entity.name))) continue;
-      const dx = entity.position.x - center.x;
-      const dz = entity.position.z - center.z;
+      const { x: ex, y: ey, z: ez } = entity.position;
+      if (![ex, ey, ez].every(Number.isFinite)) continue;
+      const dx = ex - center.x;
+      const dy = ey;
+      const dz = ez - center.z;
       if (Math.abs(dx) > radius + 10 || Math.abs(dz) > radius + 10) continue;
       entities.push({
         id: entity.id,
@@ -281,7 +286,7 @@ function worldSnapshot(services, query = {}) {
         username: entity.username || null,
         hostile: Boolean(entity.hostile),
         health: entity.health ?? null,
-        position: [Number(dx.toFixed(2)), Number(entity.position.y.toFixed(2)), Number(dz.toFixed(2))]
+        position: [Number(dx.toFixed(2)), Number(dy.toFixed(2)), Number(dz.toFixed(2))]
       });
       if (entities.length >= MAX_ENTITIES) break;
     }
@@ -291,15 +296,18 @@ function worldSnapshot(services, query = {}) {
   if (services.bots instanceof Map) {
     for (const other of services.bots.values()) {
       if (!other || !other.position) continue;
-      const dx = other.position.x - center.x;
-      const dz = other.position.z - center.z;
+      const { x: ox, y: oy, z: oz } = other.position;
+      if (![ox, oy, oz].every(Number.isFinite)) continue;
+      const dx = ox - center.x;
+      const dy = oy;
+      const dz = oz - center.z;
       if (Math.abs(dx) > radius + 16 || Math.abs(dz) > radius + 16) continue;
       const assignment = services.coordinator && typeof services.coordinator.getAssignment === 'function'
         ? services.coordinator.getAssignment(other.name)
         : null;
       bots.push({
         name: other.name,
-        position: [Number(dx.toFixed(2)), Number(other.position.y.toFixed(2)), Number(dz.toFixed(2))],
+        position: [Number(dx.toFixed(2)), Number(dy.toFixed(2)), Number(dz.toFixed(2))],
         health: other.health,
         food: other.food,
         online: other.ready === true && other.connected !== false && other.spawned !== false && Number(other.health) > 0,

@@ -139,14 +139,18 @@ function selectWeapon(options = {}) {
   const reaching = profile && (profile.ranged || profile.keepDistance) && !inReach;
   const choice = (reaching && ranged.length ? ranged[0] : null) || (melee[0] || ranged[0] || null);
   if (!choice) return { ok: false, error: 'no usable weapon', weapons };
-  const lowDurability = melee.find((weapon) => weapon.durability.ratio > 0.05 && weapon.durability.ratio < 0.25);
+  // `switchTo` means "replace the current weapon before it breaks", so only
+  // populate it when the chosen weapon is the one at risk. Returning another
+  // low-durability weapon here sent bots to equip almost-broken gear.
+  const choiceAtRisk = choice.durability.ratio > 0.05 && choice.durability.ratio < 0.25;
+  const healthyAlternative = melee.find((weapon) => weapon.name !== choice.name && weapon.durability.ratio >= 0.25) || null;
   return {
     ok: true,
     weapon: choice,
     weapons,
     reason: choice.ranged ? `ranged ${choice.cls} at distance` : `${choice.cls} for ${profile ? profile.name : 'general combat'}`,
-    switchTo: lowDurability && lowDurability.name !== choice.name ? lowDurability.name : null,
-    backup: melee.find((weapon) => weapon.name !== choice.name) || null,
+    switchTo: choiceAtRisk && healthyAlternative ? healthyAlternative.name : null,
+    backup: healthyAlternative || melee.find((weapon) => weapon.name !== choice.name) || null,
     smiteForUndead: Boolean(profile && profile.undead && choice.enchantments.smite)
   };
 }

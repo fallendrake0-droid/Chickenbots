@@ -5,6 +5,7 @@ const nbt = require('prismarine-nbt');
 const { geometryHash, exactHash } = require('./designHash');
 const { rotateBlock, mirrorBlock, parseBlock, formatBlock, placementItem } = require('../building/blockStates');
 const { PHASES } = require('./blockGrid');
+const { safeGunzip, validateDimensions, LIMITS } = require('./limits');
 
 /** Legacy numeric ids used by MCEdit .schematic files. Only these blocks can be
  * exported losslessly; anything else is reported as substituted. */
@@ -174,14 +175,14 @@ function toSpongeSchematic(schematic, { author = 'Chickenbots', dataVersion = 41
 
 /** Parse Sponge schematic v2/v3 data into a Chickenbots schematic object. */
 function fromSpongeSchematic(buffer, { id = null, name = null } = {}) {
-  const raw = zlib.gunzipSync(buffer);
+  const raw = safeGunzip(buffer, { label: 'sponge schematic' });
   const parsed = nbt.parseUncompressed(raw, 'big');
   const simplified = nbt.simplify(parsed);
   const root = simplified.Schematic || simplified;
   const width = root.Width;
   const height = root.Height;
   const length = root.Length;
-  if (!(width > 0 && height > 0 && length > 0)) throw new Error('invalid schematic dimensions');
+  const volume = validateDimensions(width, height, length, { label: 'sponge schematic' });
   let paletteArray;
   let indices;
   if (root.Blocks && root.Blocks.Palette) {
@@ -195,6 +196,12 @@ function fromSpongeSchematic(buffer, { id = null, name = null } = {}) {
   paletteArray = paletteArray.map((name) => name.replace(/^minecraft:/, ''));
   if (!Array.isArray(indices)) throw new Error('missing block data');
   const decoded = varintDecode(indices);
+  if (decoded.length < volume) {
+    throw new Error(`sponge block data is truncated: ${decoded.length} entries for a ${volume}-block volume`);
+  }
+  if (decoded.length > LIMITS.MAX_BLOCKS || decoded.length > volume * 4) {
+    throw new Error(`sponge block data has ${decoded.length} entries for a ${volume}-block volume`);
+  }
   const blocks = [];
   const materials = {};
   for (let y = 0; y < height; y++) {
@@ -209,6 +216,7 @@ function fromSpongeSchematic(buffer, { id = null, name = null } = {}) {
       }
     }
   }
+  if (!blocks.length) throw new Error('sponge schematic contains no non-air blocks');
   // Re-index palette to only used entries, preserving the full state string.
   const used = [...new Set(blocks.map((b) => paletteArray[b[3]]))].sort();
   const mapIndex = new Map(used.map((n, i) => [n, i]));
@@ -246,6 +254,7 @@ function fromSpongeSchematic(buffer, { id = null, name = null } = {}) {
  * stone and reported; this format is intentionally best-effort. */
 function toLegacySchematic(schematic) {
   const { width, height, length } = schematic.dimensions;
+  validateDimensions(width, height, length, { label: 'legacy export' });
   const blocks = new Array(width * height * length).fill(0);
   const data = new Array(width * height * length).fill(0);
   const substituted = {};
@@ -274,11 +283,13 @@ function toLegacySchematic(schematic) {
 }
 
 function fromLegacySchematic(buffer, { id = null } = {}) {
-  const raw = zlib.gunzipSync(buffer);
+  const raw = safeGunzip(buffer, { label: 'legacy schematic' });
   const simplified = nbt.simplify(nbt.parseUncompressed(raw, 'big'));
   const root = simplified.Schematic || simplified;
   const { Width: width, Height: height, Length: length } = root;
+  const volume = validateDimensions(width, height, length, { label: 'legacy schematic' });
   const ids = root.Blocks;
+  if (!Array.isArray(ids) || ids.length < volume) throw new Error(`legacy schematic has ${Array.isArray(ids) ? ids.length : 0} block ids for a ${volume}-block volume`);
   const blocks = [];
   const materials = {};
   for (let y = 0; y < height; y++) {
@@ -358,6 +369,9 @@ function toJSON(schematic) {
 }
 
 function fromJSON(json) {
+  if (!json || !Array.isArray(json.blocks) || !Array.isArray(json.palette)) throw new Error('native schematic needs palette and blocks arrays');
+  if (json.blocks.length > LIMITS.MAX_BLOCKS) throw new Error(`native schematic has too many blocks (${json.blocks.length})`);
+  if (json.dimensions) validateDimensions(json.dimensions.width, json.dimensions.height, json.dimensions.length, { label: 'native schematic' });
   const schematic = { ...json };
   schematic.geometryHash = geometryHash(schematic.blocks, schematic.palette);
   schematic.exactHash = exactHash(schematic.blocks, schematic.palette);

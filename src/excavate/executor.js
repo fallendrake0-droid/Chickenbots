@@ -49,6 +49,7 @@ class ExcavationExecutor {
       ...(plan.options || {}),
       ...options
     };
+    this.options.progressEvery = Math.max(1, Math.floor(Number(this.options.progressEvery) || 8));
     this.stats = {
       attempted: 0,
       dug: 0,
@@ -85,9 +86,10 @@ class ExcavationExecutor {
 
   resume() {
     if (!this.paused) return;
+    const wasCancelled = this.token.cancelled;
     this.paused = false;
     this.pauseReasons = [];
-    this.status = 'running';
+    if (!wasCancelled) this.status = 'running';
     const waiters = this._resumeWaiters;
     this._resumeWaiters = [];
     for (const fn of waiters) fn();
@@ -95,8 +97,13 @@ class ExcavationExecutor {
 
   stop(reason = 'stopped') {
     this.token.cancel(reason);
+    // A stopped executor must never be relabelled "running" by resume().
     this.status = 'stopped';
-    this.resume();
+    this.paused = false;
+    this.pauseReasons = [];
+    const waiters = this._resumeWaiters;
+    this._resumeWaiters = [];
+    for (const fn of waiters) fn();
   }
 
   async _waitIfPaused() {
@@ -306,9 +313,13 @@ class ExcavationExecutor {
           consecutiveFailures = 0;
           sinceTorch++;
           if (this.options.placeTorches && sinceTorch >= this.options.torchInterval && this.bot.hasItem('torch') > 0) {
-            const torchPos = { x: pos.x, y: pos.y + 1, z: pos.z };
-            const above = this.bot.getBlock(torchPos);
-            if ((!above || isAir(above.name)) && this.bot.placeBlock) {
+            // A torch needs a floor. The block we just dug is now air and the
+            // block above it has nothing underneath, so place the torch in the
+            // newly cleared cell when the cell below is still solid.
+            const floor = this.bot.getBlock({ x: pos.x, y: pos.y - 1, z: pos.z });
+            const torchPos = { x: pos.x, y: pos.y, z: pos.z };
+            const torchCell = this.bot.getBlock(torchPos);
+            if (floor && !isAir(floor.name) && !isLiquid(floor.name) && torchCell && isAir(torchCell.name) && this.bot.placeBlock) {
               const placed = await this.bot.placeBlock(torchPos, 'torch', { token: this.token });
               if (placed && placed.ok) { this.stats.torchesPlaced++; sinceTorch = 0; }
             }

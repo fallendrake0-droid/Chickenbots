@@ -73,6 +73,32 @@ test('task claims prevent duplicate work and honour locks/regions', () => {
   assert.equal(board.locksHeldBy('10101000').length, 0);
 });
 
+test('heartbeat renews a task-held resource lock, not only the synthetic task lock', () => {
+  const c = clock();
+  const board = new TaskBoard({ now: c.now, lockTtlMs: 100, claimTtlMs: 1000 });
+  const { task } = board.addTask({ type: 'MINE_ORE', lockKeys: ['ore:10,20,30'] });
+  assert.equal(board.claim(task.id, '10101000').ok, true);
+  const resource = board.locks.get('ore:10,20,30');
+  assert.equal(resource.taskId, task.id);
+  const firstExpiry = resource.expiresAt;
+  c.advance(80);
+  assert.equal(board.heartbeat(task.id, '10101000'), true);
+  assert.ok(resource.expiresAt > firstExpiry, 'heartbeat must extend the resource lock');
+  c.advance(50);
+  assert.equal(board.isLocked('ore:10,20,30'), true);
+});
+
+test('an expired reentrant lock is released instead of leaking forever', () => {
+  const c = clock();
+  const board = new TaskBoard({ now: c.now, lockTtlMs: 10 });
+  assert.equal(board.acquireLock('resource:wood', '10101000', { taskId: 't1' }).ok, true);
+  assert.equal(board.acquireLock('resource:wood', '10101000', { taskId: 't1' }).reentrant, true);
+  assert.equal(board.locks.get('resource:wood').reentrant, 2);
+  c.advance(11);
+  board.expire();
+  assert.equal(board.isLocked('resource:wood'), false);
+});
+
 test('task claims expire and become claimable again', () => {
   const c = clock();
   const board = new TaskBoard({ now: c.now, claimTtlMs: 1000 });
@@ -101,6 +127,30 @@ test('dependencies gate task claims and objective progress follows real units', 
   assert.equal(board.complete(b.id, { by: '10101000', verified: false }).ok, false);
   assert.equal(board.complete(b.id, { by: '10101000', verified: true }).ok, true);
   assert.equal(board.getObjective(obj.id).status, 'COMPLETED');
+});
+
+test('terminal tasks cannot be resurrected by a late fail or cancel', () => {
+  const board = new TaskBoard();
+  const { task } = board.addTask({ type: 'MINE_ORE' });
+  assert.equal(board.claim(task.id, '10101000').ok, true);
+  assert.equal(board.complete(task.id, { by: '10101000', verified: true }).ok, true);
+  assert.equal(board.complete(task.id, { by: '10101000', verified: true }).already, true);
+  assert.equal(board.fail(task.id, 'late failure', { by: '10101000' }).ok, false);
+  assert.equal(board.cancel(task.id, 'late cancel').ok, false);
+  assert.equal(board.getTask(task.id).status, 'COMPLETED');
+});
+
+test('completed tasks reject restart/heartbeat and non-finite progress', () => {
+  const board = new TaskBoard();
+  const { task } = board.addTask({ type: 'MINE_ORE', units: { target: 5 } });
+  board.claim(task.id, '10101000');
+  board.start(task.id, '10101000');
+  assert.equal(board.updateProgress(task.id, { current: Number.NaN }), null);
+  assert.equal(board.updateProgress(task.id, { target: Infinity }), null);
+  assert.equal(board.complete(task.id, { by: '10101000', verified: true }).ok, true);
+  assert.equal(board.start(task.id, '10101000').ok, false);
+  assert.equal(board.heartbeat(task.id, '10101000'), false);
+  assert.equal(board.claim(task.id, '10101000').ok, false);
 });
 
 test('spatial reservations stop overlapping excavation regions', () => {
@@ -188,6 +238,19 @@ test('resource ledger tracks real inventories, reserves and shortages', () => {
   assert.ok(shortages.find((s) => s.item === 'food'));
   const rows = ledger.summary();
   assert.equal(rows.find((r) => r.item === 'oak_log').status, 'DEFICIT');
+});
+
+test('resource commits are capped at the reservation and cannot run after release', () => {
+  const ledger = new ResourceLedger({ reserves: {} });
+  ledger.updateBotInventory('10101000', { oak_log: 10 });
+  const { reservation } = ledger.reserve('oak_log', 4, { purpose: 'walls', owner: 'builder' });
+  const over = ledger.commit(reservation.id, 10);
+  assert.equal(over.ok, true);
+  assert.equal(over.committed, 4);
+  assert.equal(over.excess, 6);
+  assert.equal(over.reservation.remaining, 0);
+  assert.equal(ledger.commit(reservation.id, 1).ok, false);
+  assert.equal(ledger.available('oak_log'), 10);
 });
 
 test('transfer plans move real items from donor bots only', () => {
@@ -295,6 +358,10 @@ test('survival base plan has real dependencies and quotas', () => {
   assert.equal(again.created, false);
   assert.deepEqual(splitQuota(256, 4), [64, 64, 64, 64]);
   assert.deepEqual(splitQuota(10, 4), [3, 3, 2, 2]);
+  assert.deepEqual(splitQuota(10, 0), [10]);
+  assert.deepEqual(splitQuota(10, -2), [10]);
+  assert.deepEqual(splitQuota(-5, 2), [0, 0]);
+  assert.equal(splitQuota(10, 99999).reduce((sum, n) => sum + n, 0), 10);
 });
 
 test('collect plan splits work between four bots', () => {
@@ -348,4 +415,15 @@ test('coordinator detects a bot in danger and dispatches one rescuer', () => {
   assert.ok(summary.rescues.length >= 1);
   assert.ok(summary.rescues.length <= 2);
   assert.ok(summary.rescues.every((r) => r.victim === '10101000'));
+});
+
+
+test('a degraded collect plan labels its real quota count, never a zero denominator', () => {
+  const board = new TaskBoard();
+  const plan = createCollectPlan(board, { resource: 'oak_log', count: 4, method: 'chop', parts: 0 });
+  assert.equal(plan.ok, true);
+  const tasks = board.listTasks({ objectiveId: plan.objective.id });
+  assert.equal(tasks.length, 1);
+  assert.match(tasks[0].label, /1\/1/);
+  assert.doesNotMatch(tasks[0].label, /\/0/);
 });

@@ -54,7 +54,11 @@ class SchematicBuilder {
     this.logger = logger || new Logger({ level: 'warn' });
     this.authorized = Boolean(authorized);
     this.preserveOres = preserveOres !== false;
-    this.chunkSize = Math.max(8, chunkSize);
+    // A NaN/zero chunk size used to disable chunking entirely, producing one
+    // task with hundreds of thousands of blocks and a RangeError in
+    // Math.min(...chunk.map(...)).
+    const requestedChunk = Number(chunkSize);
+    this.chunkSize = Number.isFinite(requestedChunk) ? Math.max(8, Math.floor(requestedChunk)) : DEFAULT_CHUNK_SIZE;
     this.maxUndergroundRatio = maxUndergroundRatio;
     this.id = buildId || `build-${schematic.id || 'schematic'}-${Date.now().toString(36)}`;
     this.objectiveId = null;
@@ -269,7 +273,9 @@ class SchematicBuilder {
   // Execution
   // ------------------------------------------------------------------
   start({ confirm = false } = {}) {
+    if (this.cancelled) return { ok: false, error: 'build was cancelled' };
     if (this.state === 'RUNNING') return { ok: false, error: 'build already running' };
+    if (this.state === 'PAUSED') return { ok: false, error: 'build is paused; resume or cancel it first' };
     const validation = this.engine.validateBlueprint();
     if (!validation.ok) {
       this.state = 'FAILED';
@@ -633,13 +639,16 @@ class SchematicBuilder {
   pause(reason = 'paused by operator') {
     if (this.state !== 'RUNNING') return { ok: false, error: `cannot pause a ${this.state} build` };
     this.paused = true;
+    // The state machine (pipeline/construction manager) inspects `state`, so a
+    // pause that only toggled a boolean left resume() unreachable.
+    this.state = 'PAUSED';
     this._event('build.paused', { reason });
     return { ok: true, status: this.status() };
   }
 
   resume() {
     if (this.cancelled) return { ok: false, error: 'build was cancelled' };
-    if (!this.paused && this.state === 'RUNNING') return { ok: false, error: 'build is not paused' };
+    if (this.state !== 'PAUSED') return { ok: false, error: `cannot resume a ${this.state} build` };
     this.paused = false;
     this.state = 'RUNNING';
     this._event('build.resumed', {});

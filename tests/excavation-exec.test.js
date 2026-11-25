@@ -7,6 +7,7 @@ const { MockWorld } = require('../src/bot/mockWorld');
 const { MockBot } = require('../src/bot/mockBot');
 const { TeamCoordinator } = require('../src/team/teamCoordinator');
 const { ExcavationManager } = require('../src/excavate/manager');
+const { ExcavationExecutor } = require('../src/excavate/executor');
 const { BOT_NAMES } = require('../src/config');
 
 function setup({ flat = true } = {}) {
@@ -125,6 +126,10 @@ test('excavation pause, resume, status and stop control real executors', async (
   const stopped = manager.stop();
   assert.equal(stopped.ok, true);
   assert.equal(manager.get(res.excavation.id).status, 'STOPPED');
+  assert.equal(manager.resume(res.excavation.id).ok, false);
+  assert.equal(manager.pause(res.excavation.id).ok, false);
+  assert.equal(manager.stop(res.excavation.id).ok, false);
+  assert.equal(manager.get(res.excavation.id).status, 'STOPPED');
 });
 
 test('disconnected excavator regions are reassigned to healthy teammates', () => {
@@ -187,4 +192,41 @@ test('quarry excavation verifies terraces rather than demanding the full boundin
   // corridor at z=0 is carved, so check a neighbouring preserved column).
   assert.notEqual(world.getBlock({ x: 0, y: 58, z: 1 }).name, 'air');
   assert.equal(world.getBlock({ x: 5, y: 58, z: 5 }).name, 'air');
+});
+
+test('stopping a paused executor keeps the stopped status', () => {
+  const executor = new ExcavationExecutor({
+    botName: '________',
+    bot: { position: { x: 0, y: 64, z: 0 }, getBlock: () => ({ name: 'air' }) },
+    plan: { id: 'plan-test', options: {} },
+    region: { id: 'R1', volume: 8, box: { min: { x: 0, y: 60, z: 0 }, max: { x: 1, y: 63, z: 1 } } },
+    options: { progressEvery: 0 }
+  });
+  assert.equal(executor.options.progressEvery, 8);
+  executor.pause('test');
+  assert.equal(executor.status, 'paused');
+  executor.stop('test stop');
+  assert.equal(executor.status, 'stopped');
+  assert.equal(executor.paused, false);
+});
+
+test('excavation torches are placed on the floor of a cleared cell, not floating above it', async () => {
+  const world = new MockWorld({ flat: true, guaranteedOres: false });
+  world.setBlock({ x: 0, y: 62, z: 0 }, 'stone');
+  const bot = new MockBot({
+    name: '________', world, inventory: { iron_pickaxe: 1, torch: 4 },
+    position: { x: 0, y: 65, z: 0 }
+  });
+  const executor = new ExcavationExecutor({
+    botName: '________', bot,
+    plan: { id: 'torch-plan', options: {} },
+    region: { id: 'R1', box: { min: { x: 0, y: 62, z: 0 }, max: { x: 0, y: 62, z: 0 } }, volume: 1 },
+    options: { torchInterval: 1, progressEvery: 1 }
+  });
+  const result = await executor.run();
+  assert.equal(result.status, 'completed');
+  assert.equal(result.stats.dug, 1);
+  assert.equal(result.stats.torchesPlaced, 1);
+  assert.equal(world.getBlock({ x: 0, y: 62, z: 0 }).name, 'torch');
+  assert.notEqual(world.getBlock({ x: 0, y: 63, z: 0 }).name, 'torch');
 });

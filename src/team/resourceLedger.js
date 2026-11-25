@@ -118,14 +118,19 @@ class ResourceLedger {
   commit(reservationId, count) {
     const res = this.reservations.find((r) => r.id === reservationId);
     if (!res) return { ok: false, error: 'unknown reservation' };
+    if (!res.active) return { ok: false, error: 'reservation is not active' };
     const amount = Number(count);
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'commit count must be positive' };
-    res.remaining = Math.max(0, res.remaining - amount);
+    // Never let a late/duplicated commit consume more than was reserved: that
+    // would make the ledger under-report stock and hand the same items to a
+    // second task. Report the unused excess instead of silently discarding it.
+    const applied = Math.min(amount, res.remaining);
+    res.remaining -= applied;
     if (res.remaining === 0) res.active = false;
-    this.history.push({ at: this.now(), type: 'commit', id: reservationId, count: amount, remaining: res.remaining });
+    this.history.push({ at: this.now(), type: 'commit', id: reservationId, count: applied, requested: amount, remaining: res.remaining });
     this._trimHistory();
     this._trimReservations();
-    return { ok: true, reservation: res };
+    return { ok: true, reservation: res, committed: applied, excess: amount - applied };
   }
 
   release(reservationId) {
