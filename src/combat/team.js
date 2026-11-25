@@ -295,7 +295,19 @@ class TeamCombatCoordinator {
     return { ok: true, results };
   }
 
-  status() {
+  /**
+   * `controllerStatus` lets a dashboard snapshot reuse the per-controller
+   * status objects it already built. Recomputing them here (and again inside
+   * runtime.state) tripled the entity/equipment work on every poll.
+   */
+  status({ controllerStatus = null } = {}) {
+    const statusOf = (controller) => {
+      if (controllerStatus instanceof Map) {
+        const cached = controllerStatus.get(controller.bot.name);
+        if (cached) return cached;
+      }
+      return this._statusOf(controller);
+    };
     return {
       enabled: this.enabled,
       mode: this.mode,
@@ -305,7 +317,7 @@ class TeamCombatCoordinator {
       locks: [...this.locks.entries()].map(([id, bots]) => ({ targetId: id, bots })),
       engaged: this.list().filter((controller) => ['APPROACHING', 'REPOSITIONING', 'ENGAGING', 'DODGING', 'DEFENDING', 'HEALING', 'RETREATING', 'TOTEM_EMERGENCY'].includes(controller.state)).length,
       bots: this.list().map((controller) => {
-        const status = this._statusOf(controller);
+        const status = statusOf(controller);
         return {
           bot: controller.bot.name,
           role: this.roleFor(controller),

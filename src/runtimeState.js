@@ -9,6 +9,15 @@ const { connectionStatus } = require('./bot/status');
  * come from live objects; nothing is synthesised to look healthy.
  */
 function statusSnapshot(services) {
+  const startedAt = Date.now();
+  const sections = {};
+  let cursor = startedAt;
+  const lap = (name) => {
+    const at = Date.now();
+    sections[name] = at - cursor;
+    cursor = at;
+    return at;
+  };
   const bots = [...(services.bots ? services.bots.values() : [])];
   const summaries = bots.map((bot) => {
     const status = connectionStatus(bot);
@@ -54,10 +63,12 @@ function statusSnapshot(services) {
       };
     }
   });
+  lap('bots');
   const actionList = services.actions ? services.actions.list() : [];
   const actionStatus = actionList.map((a) => {
     try { return a.status(); } catch (err) { return { bot: a.bot ? a.bot.name : 'unknown', error: err.message }; }
   });
+  lap('actions');
   const leader = services.coordinator ? services.coordinator.leader : null;
   let library = null;
   try { library = services.library && services.library.loaded ? services.library.stats() : null; }
@@ -69,14 +80,23 @@ function statusSnapshot(services) {
       return { buildId: b.id, name: b.schematic && b.schematic.name ? b.schematic.name : b.id, state: 'ERROR', error: `status failed: ${err.message}`, percentComplete: 0, tasks: [] };
     }
   });
+  lap('builds');
   const firstEngine = buildValues.find((b) => b.engine)?.engine || null;
   let excavationStatus = null;
   try { excavationStatus = services.excavation ? services.excavation.status() : null; }
   catch (err) { excavationStatus = { ok: false, error: `excavation status failed: ${err.message}`, active: [], counts: null }; }
+  lap('excavation');
   let combatTeamStatus = null;
   let combatOverview = null;
   try {
-    combatTeamStatus = services.combatTeam ? services.combatTeam.status() : null;
+    // Reuse the per-controller combat objects from the action snapshot instead
+    // of asking every controller to reassess entities and equipment again.
+    const combatStatusByBot = new Map();
+    for (const status of actionStatus) {
+      if (status && status.bot && status.combat) combatStatusByBot.set(status.bot, status.combat);
+    }
+    combatTeamStatus = services.combatTeam ? services.combatTeam.status({ controllerStatus: combatStatusByBot }) : null;
+    lap('combat-team');
     combatOverview = services.combatTeam ? {
       enabled: services.combatTeam.enabled,
       mode: services.combatTeam.mode,
@@ -92,14 +112,20 @@ function statusSnapshot(services) {
   let constructionState = null;
   try { constructionState = services.construction ? services.construction.state() : null; }
   catch (err) { constructionState = { error: `construction state failed: ${err.message}` }; }
+  lap('construction');
   const board = services.taskBoard;
-  const runtime = services.runtime ? services.runtime.state() : null;
+  const deadlocks = board ? board.detectDeadlocks() : [];
+  const boardStats = board ? board.stats({ deadlocks }) : null;
+  const runtime = services.runtime ? services.runtime.state({ combatTeamStatus }) : null;
+  lap('runtime');
   const safetyByName = new Map((runtime && runtime.bots ? runtime.bots : []).map((bot) => [bot.name, bot.safety || null]));
   const byBot = {};
   for (const status of actionStatus) byBot[status.bot] = status;
   const online = summaries.filter((s) => s.online === true).length;
   const ready = summaries.filter((s) => s.gameplayReady === true).length;
-  return {
+  const alerts = buildAlerts(summaries, board, services, { excavationStatus, boardStats, deadlocks });
+  lap('alerts');
+  const snapshot = {
     generatedAt: new Date().toISOString(),
     mode: services.mode || (config.sim.enabled ? 'simulation' : 'live'),
     uptimeMs: runtime ? runtime.uptimeMs : 0,
@@ -110,7 +136,7 @@ function statusSnapshot(services) {
       total: summaries.length,
       leader,
       autonomy: runtime,
-      tasks: board ? board.stats() : null,
+      tasks: boardStats,
       excavation: excavationStatus ? {
         active: excavationStatus.active ? excavationStatus.active.map((e) => ({ id: e.id, state: e.state, mode: e.mode, percent: e.percent })) : [],
         counts: excavationStatus.counts || null
@@ -125,14 +151,14 @@ function statusSnapshot(services) {
         phase: services.construction.activeProject()?.buildPhases.find((phase) => phase.status !== 'COMPLETE')?.id || null
       } : null,
       library: library ? { count: library.count, unique: library.uniqueGeometry, minimum: library.minimumRequired } : null,
-      alerts: buildAlerts(summaries, board, services)
+      alerts,
     },
     team: {
       state: services.coordinator ? services.coordinator.getState() : null,
       memory: services.memory ? { stats: services.memory.stats, observations: services.memory.observations.slice(-25).map(publicObservation), facts: [...services.memory.facts.entries()].map(([key, value]) => ({ key, value })) } : null,
       locks: board ? [...board.locks.values()] : [],
       regions: board ? [...board.regions.values()] : [],
-      deadlocks: board ? board.detectDeadlocks() : [],
+      deadlocks,
       comms: services.comms ? services.comms.recent(25) : []
     },
     survival: actionStatus.map((a) => a.survival),
@@ -194,7 +220,7 @@ function statusSnapshot(services) {
       perBot: actionStatus.map((a) => ({ bot: a.bot, ...a.homeBase }))
     },
     taskManager: {
-      stats: board ? board.stats() : null,
+      stats: boardStats,
       tasks: board ? board.listTasks().slice(-100).map(publicTask) : [],
       objectives: board ? board.listObjectives().map((o) => {
         const linked = (o.tasks || []).map((id) => board.getTask(id)).filter(Boolean);
@@ -272,6 +298,10 @@ function statusSnapshot(services) {
       }))
     }
   };
+  // Measure after the whole tree (including task objectives and builder
+  // projections) has been materialised, not just the early sections.
+  snapshot.performance = { snapshotMs: Date.now() - startedAt, sections };
+  return snapshot;
 }
 
 function publicObservation(obs) {
@@ -294,7 +324,7 @@ function publicTask(task) {
   };
 }
 
-function buildAlerts(summaries, board, services) {
+function buildAlerts(summaries, board, services, { excavationStatus = null, boardStats = null, deadlocks = null } = {}) {
   const alerts = [];
   for (const bot of summaries) {
     if (bot.online !== true) {
@@ -310,14 +340,15 @@ function buildAlerts(summaries, board, services) {
     alerts.push({ level: 'error', message: `server version: ${services.runtime.serverVersionError}` });
   }
   if (board) {
-    const failed = board.listTasks({ status: 'FAILED' });
-    if (failed.length) alerts.push({ level: 'warn', message: `${failed.length} failed task(s)` });
-    const deadlocks = board.detectDeadlocks();
-    if (deadlocks.length) alerts.push({ level: 'error', message: `${deadlocks.length} deadlock(s)` });
+    const failed = boardStats && boardStats.byStatus && Number.isFinite(boardStats.byStatus.FAILED)
+      ? boardStats.byStatus.FAILED
+      : board.listTasks({ status: 'FAILED' }).length;
+    if (failed) alerts.push({ level: 'warn', message: `${failed} failed task(s)` });
+    const stalled = deadlocks === null ? board.detectDeadlocks() : deadlocks;
+    if (stalled.length) alerts.push({ level: 'error', message: `${stalled.length} deadlock(s)` });
   }
-  if (services.excavation) {
-    const status = services.excavation.status();
-    if (status && status.counts && status.counts.INCOMPLETE) alerts.push({ level: 'warn', message: `${status.counts.INCOMPLETE} incomplete excavation(s)` });
+  if (excavationStatus && excavationStatus.counts && excavationStatus.counts.INCOMPLETE) {
+    alerts.push({ level: 'warn', message: `${excavationStatus.counts.INCOMPLETE} incomplete excavation(s)` });
   }
   if (services.construction) {
     const project = services.construction.activeProject();

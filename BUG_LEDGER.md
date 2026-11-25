@@ -85,6 +85,33 @@ Open from previous rounds: **BUG-27-09** (fleet chop exhausts nearby trees),
 and all live-only items. Full detail: `V6_ROUND_29_REPORT.md`.
 
 
+## Round 30 — dashboard event-loop starvation
+
+**Starting head:** `48bab31`
+**Evidence:** operator log 2026-11-25 16:32:53–16:41:22 UTC; unit tests and
+deterministic simulation only. No live server was reached.
+**Gate:** 376/376 tests, lint 159 files, consistency 10/10, deploy 12/12,
+secret check 192 files.
+**Symptom:** dashboard snapshots blocked the event loop for 1.7–38.3 s;
+client ticks ran 3.5–38.9 s late, packet gaps reached 27–65 s, eight bots were
+dropped at once and join stages hit 30 s/45 s timeouts.
+
+| ID | Sev | Component | Symptom / reproduction | Root cause | Fix | Regression test | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-30-01 | P0 | Dashboard snapshot | `dashboard state snapshot took` 8–38 s; watchdog reported a 38.8 s block and every client tick was late | Mining/farming/fishing/sleep `status()` synchronously scanned ~300 k world positions per fleet snapshot with no deadline | Roster/controller-staggered TTLs, long-displacement thresholds, 8 ms per-scan budget (`STATUS_SCAN_BUDGET_MS`) | `dashboard-performance.test.js` | FIXED (unit) |
+| BUG-30-02 | P0 | Block scanning | Surface scans bypassed the indexed world search and built a block object per position; fallback could not be interrupted | `world.findBlocks` was skipped when `yFrom`/`yTo` was set; no `blockNameAt` on the real world view | Indexed `RealBot.findBlocks`, name-only `blockNameAt`, y-outward bounded fallback | `dashboard-performance.test.js` | FIXED (unit) |
+| BUG-30-03 | P1 | Status caches | All ten bots rescanned in the same snapshot; farming re-counted animals on every poll | Jitter used `charCodeAt(0)` (only `0`/`1`); animals outside the cache | Whole-name hash, 11 slots, controller offsets; animals cached with crops | `dashboard-performance.test.js` | FIXED (unit) |
+| BUG-30-04 | P1 | Dashboard transport | Every SSE tick/request rebuilt the full snapshot | `snapshot(true)` on all readers defeated the 500 ms cache | Coalesced snapshot for readers; explicit invalidation after commands | `dashboard-status.test.js` | FIXED (unit) |
+| BUG-30-05 | P1 | Snapshot assembly | Team combat status built 2–3× per snapshot; excavation, board stats and deadlocks twice; each pass rescanned entities/equipment | No reuse between `combatTeam.status()`, `runtime.state()` and per-controller statuses | Reuse action combat objects and pass team status to `runtime.state`; single excavation/board computation | `dashboard-performance.test.js` | FIXED (unit) |
+| BUG-30-06 | P2 | Diagnostics | Slow snapshots named no subsystem; watchdog blamed `state-sync` for a timer block | No section timings; `_lastPhase` only tracks the tick | Per-section timings in the snapshot; warning breakdown; `recordExternalWork('dashboard-snapshot')` | `dashboard-performance.test.js`, `dashboard-status.test.js` | FIXED (unit) |
+| BUG-30-07 | P2 | Status scan ordering | A bounded scan could spend its budget on deep buried layers | `findBlocks` iterated y bottom-up | Walk y outward from the bot | `dashboard-performance.test.js` | FIXED (unit) |
+
+Open from previous rounds remain unchanged: **BUG-27-09** (fleet chop exhausts
+nearby trees), **BUG-27-10** (1,433.4 ms long-simulation maximum at `MINE_ORE`),
+and all live-only items. Stall-aware grace for join-stage timeouts is listed as
+a candidate in `V6_ROUND_30_REPORT.md` but was not implemented.
+
+
 ## Preserved fixes
 
 The round-26 movement arbiter, tick scheduler, spawn safety, bed-quota fix,

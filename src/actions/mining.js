@@ -3,6 +3,7 @@
 const { config } = require('../config');
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
+const { statusTtl, STATUS_SCAN_BUDGET_MS } = require('./common');
 
 const ORE_TIERS = {
   coal_ore: 1, deepslate_coal_ore: 1, copper_ore: 1, deepslate_copper_ore: 1,
@@ -32,26 +33,38 @@ const NEIGHBOUR_OFFSETS = [
  * limit fills with one buried layer. Mining needs reachable faces, so scan the
  * local cube and test air neighbours as we go.
  */
-function findExposed(bot, names, { radius = 16, minY = -59, limit = 8 } = {}) {
+function findExposed(bot, names, { radius = 16, minY = -59, limit = 8, budgetMs = 0 } = {}) {
   const wanted = new Set(Array.isArray(names) ? names : [names]);
   const world = bot.world;
   const origin = bot.position;
+  if (!origin || !wanted.size) return [];
   const r = Math.max(1, Math.min(radius, 20));
+  const startedAt = budgetMs > 0 ? Date.now() : 0;
+  const expired = budgetMs > 0 ? () => Date.now() - startedAt >= budgetMs : () => false;
+  const nameAt = world && typeof world.blockNameAt === 'function'
+    ? (x, y, z) => world.blockNameAt(x, y, z)
+    : (x, y, z) => {
+      const block = bot.getBlock({ x, y, z });
+      return block ? block.name : null;
+    };
   const found = [];
+  let visited = 0;
   for (let dy = -r; dy <= r; dy++) {
     const y = Math.floor(origin.y) + dy;
     if (y < minY) continue;
     for (let dz = -r; dz <= r; dz++) {
       for (let dx = -r; dx <= r; dx++) {
+        if (budgetMs > 0 && (++visited & 31) === 0 && expired()) {
+          found.sort((a, b) => a.distance - b.distance);
+          return found.slice(0, limit);
+        }
         const x = Math.floor(origin.x) + dx;
         const z = Math.floor(origin.z) + dz;
-        const name = world && typeof world.blockNameAt === 'function' ? world.blockNameAt(x, y, z) : null;
+        const name = nameAt(x, y, z);
         if (!name || !wanted.has(name)) continue;
         let exposed = false;
         for (const [ox, oy, oz] of NEIGHBOUR_OFFSETS) {
-          const other = world && typeof world.blockNameAt === 'function'
-            ? world.blockNameAt(x + ox, y + oy, z + oz)
-            : (bot.getBlock({ x: x + ox, y: y + oy, z: z + oz }) || {}).name;
+          const other = nameAt(x + ox, y + oy, z + oz);
           if (other === 'air' || other === 'cave_air' || other === 'water') { exposed = true; break; }
         }
         if (exposed) found.push({ x, y, z, name, distance: distance(origin, { x, y, z }) });
@@ -84,15 +97,18 @@ class MiningController {
     const now = Date.now();
     const moved = this._statusCache ? Math.hypot(position.x - this._statusCache.center.x, position.z - this._statusCache.center.z) : Infinity;
     // `findOres` is a synchronous 3-D world scan. Doing it for every bot on
-    // every dashboard snapshot blocked the event loop long enough to miss
-    // server keepalives (EPIPE/ECONNRESET), so cache it like the farming,
-    // fishing and sleep panels already do.
-    // Five blocks is enough for the panel and cuts the cube (and its six
-    // neighbour probes per hit) by a factor of eight. A per-bot jitter stops
-    // ten caches expiring in the same snapshot after a fleet-wide join.
-    const ttl = 12000 + (String(this.bot.name).charCodeAt(0) % 7) * 900;
-    if (!this._statusCache || moved > 6 || now - this._statusCache.at > ttl) {
-      this._statusCache = { center: { x: position.x, z: position.z }, at: now, ores: this.findOres({ radius: 5, limit: 5 }) };
+    // every dashboard snapshot blocked the live event loop for 8-38 s, which
+    // starved keepalives (EPIPE/ECONNRESET) and every bot's client tick.
+    // Status scans are now cached with a roster-staggered TTL, only invalidated
+    // by a long displacement, and hard-bounded by a small time budget. Five
+    // blocks is enough for the panel.
+    const ttl = statusTtl(this.bot.name, 0);
+    if (!this._statusCache || moved > 16 || now - this._statusCache.at > ttl) {
+      this._statusCache = {
+        center: { x: position.x, z: position.z },
+        at: now,
+        ores: this.findOres({ radius: 5, limit: 5, budgetMs: STATUS_SCAN_BUDGET_MS })
+      };
     }
     return {
       bot: this.bot.name,
@@ -115,13 +131,13 @@ class MiningController {
     return true;
   }
 
-  findOres({ radius = config.mining.maxSearchRadius, limit = 32, only = null } = {}) {
+  findOres({ radius = config.mining.maxSearchRadius, limit = 32, only = null, budgetMs = 0 } = {}) {
     // Exposed ore only: a flat findBlocks limit returns one deep buried layer,
     // which mineOre() can neither walk to nor reach with its pickaxe.
     const names = only
       ? [only, only.startsWith('deepslate_') ? only.slice('deepslate_'.length) : `deepslate_${only}`].filter((name) => ORE_TIERS[name])
       : ORE_NAMES;
-    return findExposed(this.bot, names, { radius: Math.min(radius, 20), minY: -59, limit });
+    return findExposed(this.bot, names, { radius: Math.min(radius, 20), minY: -59, limit, budgetMs });
   }
 
   /** Hazards are checked before every dig: adjacent lava/water and a liquid ceiling. */

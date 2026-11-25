@@ -2,7 +2,7 @@
 
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { findBlocks } = require('./common');
+const { findBlocks, statusTtl, STATUS_SCAN_BUDGET_MS } = require('./common');
 const {
   CROPS, CROP_ALIASES, TILLABLE, SOIL, REPLACEABLE,
   cropDefinition, normalizeCrop, cropAge, isMatureCrop
@@ -50,9 +50,17 @@ class FarmingController {
     const position = this.bot.position || { x: 0, y: 0, z: 0 };
     const now = Date.now();
     const moved = this._statusCache ? Math.hypot(position.x - this._statusCache.center.x, position.z - this._statusCache.center.z) : Infinity;
-    const ttl = 12000 + (String(this.bot.name).charCodeAt(0) % 7) * 900;
-    if (!this._statusCache || moved > 12 || now - this._statusCache.at > ttl) {
-      this._statusCache = { center: { x: position.x, z: position.z }, at: now, crops: this.scanCrops({ radius: 8 }) };
+    // A dashboard poll used to scan a 25x17x17 volume per bot synchronously,
+    // which on the live server froze the loop for tens of seconds. The cache is
+    // now staggered across the roster and the scan itself is time-bounded.
+    const ttl = statusTtl(this.bot.name, 3);
+    if (!this._statusCache || moved > 24 || now - this._statusCache.at > ttl) {
+      this._statusCache = {
+        center: { x: position.x, z: position.z },
+        at: now,
+        crops: this.scanCrops({ radius: 6, budgetMs: STATUS_SCAN_BUDGET_MS }),
+        animals: this.countAnimals()
+      };
     }
     const crops = this._statusCache.crops;
     return {
@@ -62,7 +70,7 @@ class FarmingController {
       matureCount: crops.filter((crop) => crop.mature).length,
       immatureCount: crops.filter((crop) => !crop.mature).length,
       seeds: Object.entries(CROPS).map(([crop, def]) => ({ crop, seed: def.seed, count: this.bot.countItem(def.seed) })).filter((s) => s.count > 0),
-      animals: this.countAnimals(),
+      animals: this._statusCache.animals,
       farms: this.farmPlots.slice(-5),
       plot: this.lastPlot,
       stopped: Boolean(this.stopRequested),
@@ -84,7 +92,7 @@ class FarmingController {
 
   _inventory() { return { ...(this.bot.inventory || {}) }; }
 
-  scanCrops({ radius = this.farmRadius, crop = null } = {}) {
+  scanCrops({ radius = this.farmRadius, crop = null, budgetMs = 0 } = {}) {
     this.stats.farmsScanned++;
     let wanted;
     const raw = crop ? String(crop).toLowerCase() : null;
@@ -95,7 +103,7 @@ class FarmingController {
     } else {
       wanted = Object.keys(CROPS);
     }
-    return findBlocks(this.bot, wanted, { radius, limit: 200 })
+    return findBlocks(this.bot, wanted, { radius, limit: 200, budgetMs })
       .map((found) => {
         const block = this._block(found) || found;
         const def = cropDefinition(found.name);

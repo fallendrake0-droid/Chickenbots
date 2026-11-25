@@ -600,7 +600,7 @@ class TaskBoard {
     return resolutions;
   }
 
-  stats() {
+  stats({ deadlocks = null } = {}) {
     const byStatus = {};
     for (const t of this.tasks.values()) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
     return {
@@ -611,7 +611,7 @@ class TaskBoard {
       locks: this.locks.size,
       regions: this.regions.size,
       claims: [...this.tasks.values()].filter((t) => t.claimedBy).length,
-      deadlocks: this.detectDeadlocks().length
+      deadlocks: deadlocks === null ? this.detectDeadlocks().length : deadlocks.length
     };
   }
 

@@ -18,8 +18,37 @@ function timeOfDay(bot) {
 
 const SURFACE_BLOCKS = /(_log|_leaves|_sapling|_propagule|wheat|carrots|potatoes|beetroots|melon|pumpkin|torchflower|pitcher|farmland|chest|barrel|_bed|oak_door|torch)$/;
 
+/**
+ * A dashboard status panel must never own the event loop. The live log showed
+ * single snapshots blocking for 8-38 s because ten bots each rescanned the
+ * world for beds, crops, water and ores inside the same synchronous snapshot.
+ * Status scans now share one small time budget per controller, so a broken or
+ * enormous world can only delay a tick by a few milliseconds.
+ */
+const STATUS_SCAN_BUDGET_MS = 8;
+const STATUS_TTL_BASE_MS = 15000;
+const STATUS_TTL_STEP_MS = 1100;
+const STATUS_TTL_SLOTS = 11;
+
+/**
+ * Deterministic per-bot offset for status caches. The previous jitter used the
+ * first character of the bot name; every roster name starts with `0` or `1`,
+ * so all ten caches expired in the same snapshot. Hash the whole name instead.
+ */
+function statusJitter(name, offset = 0) {
+  const text = String(name || '');
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  return ((hash + offset) % STATUS_TTL_SLOTS) * STATUS_TTL_STEP_MS;
+}
+
+/** TTL for a status cache, staggered across the roster and controller. */
+function statusTtl(name, offset = 0, base = STATUS_TTL_BASE_MS) {
+  return base + statusJitter(name, offset);
+}
+
 /** Find blocks by name through the world when supported, else bounded scan. */
-function findBlocks(bot, names, { near = null, radius = 24, limit = 50, yFrom = null, yTo = null } = {}) {
+function findBlocks(bot, names, { near = null, radius = 24, limit = 50, yFrom = null, yTo = null, budgetMs = 0 } = {}) {
   // Before the first spawn the live adapter has no world object yet; scanning
   // would call bot.blockAt() and crash the status snapshot.
   if (!bot || bot.ready === false || !bot.position) return [];
@@ -31,6 +60,9 @@ function findBlocks(bot, names, { near = null, radius = 24, limit = 50, yFrom = 
   radius = Math.max(0, Math.min(128, Math.floor(Number(radius) || 24)));
   limit = Math.max(1, Math.min(2000, Math.floor(Number(limit) || 50)));
   const wanted = new Set(Array.isArray(names) ? names : [names]);
+  // An empty wanted list would make every block match the surface test below
+  // and scan the whole cube for nothing.
+  if (!wanted.size) return [];
   const out = [];
   const world = bot.world;
   // Surface decoration never lives far from the surface; constraining the
@@ -39,29 +71,52 @@ function findBlocks(bot, names, { near = null, radius = 24, limit = 50, yFrom = 
     yFrom = Math.max(-64, Math.floor(near.y) - 12);
     yTo = Math.min(200, Math.floor(near.y) + 12);
   }
-  if (world && typeof world.blockNameAt === 'function' && yFrom !== null && yTo !== null) {
-    for (let y = yFrom; y <= yTo; y++) {
-      for (let z = Math.floor(near.z) - radius; z <= Math.floor(near.z) + radius; z++) {
-        for (let x = Math.floor(near.x) - radius; x <= Math.floor(near.x) + radius; x++) {
-          const name = world.blockNameAt(x, y, z);
+  const minY = yFrom !== null ? yFrom : Math.max(-64, Math.floor(near.y) - radius);
+  const maxY = yTo !== null ? yTo : Math.min(200, Math.floor(near.y) + radius);
+  const withinY = (y) => y >= minY && y <= maxY;
+
+  // Mineflayer's indexed search lives on the world view. It skips sections
+  // whose palette cannot contain a target, which is dramatically cheaper than
+  // constructing one block object per position. Status scans pass a budget and
+  // deliberately use the bounded fallback instead: it can be interrupted.
+  if (!budgetMs && world && typeof world.findBlocks === 'function') {
+    const found = world.findBlocks([...wanted], near, radius, Math.max(limit, 1), yFrom, yTo);
+    if (Array.isArray(found)) {
+      return found
+        .filter((block) => block && wanted.has(block.name) && withinY(block.y))
+        .slice(0, limit);
+    }
+  }
+
+  const startedAt = budgetMs > 0 ? Date.now() : 0;
+  const expired = budgetMs > 0 ? () => Date.now() - startedAt >= budgetMs : () => false;
+  const nameAt = world && typeof world.blockNameAt === 'function'
+    ? (x, y, z) => world.blockNameAt(x, y, z)
+    : null;
+  // Walk y outward from the bot instead of bottom-up. A time-bounded status
+  // scan must spend its budget on the blocks the panel actually describes;
+  // bottom-up filled the limit with buried layers far below the player.
+  const yStart = Math.max(minY, Math.min(maxY, Math.floor(near.y)));
+  const ys = [];
+  for (let d = 0; yStart - d >= minY || yStart + d <= maxY; d++) {
+    if (yStart - d >= minY) ys.push(yStart - d);
+    if (d > 0 && yStart + d <= maxY) ys.push(yStart + d);
+  }
+  let visited = 0;
+  for (const y of ys) {
+    for (let z = Math.floor(near.z) - radius; z <= Math.floor(near.z) + radius; z++) {
+      for (let x = Math.floor(near.x) - radius; x <= Math.floor(near.x) + radius; x++) {
+        // Check the deadline in batches. Date.now() is not free and the inner
+        // body is only a map lookup on a live adapter.
+        if (budgetMs > 0 && (++visited & 31) === 0 && expired()) return out;
+        const name = nameAt ? nameAt(x, y, z) : null;
+        if (name !== null) {
           if (name && wanted.has(name)) {
             out.push({ x, y, z, name });
             if (out.length >= limit) return out;
           }
+          continue;
         }
-      }
-    }
-    return out;
-  }
-  if (world && typeof world.findBlocks === 'function' && yFrom === null && yTo === null) {
-    const found = world.findBlocks([...wanted], near, radius, limit);
-    return found.slice(0, limit);
-  }
-  const minY = yFrom !== null ? yFrom : Math.max(-64, Math.floor(near.y) - radius);
-  const maxY = yTo !== null ? yTo : Math.min(200, Math.floor(near.y) + radius);
-  for (let y = minY; y <= maxY; y++) {
-    for (let z = Math.floor(near.z) - radius; z <= Math.floor(near.z) + radius; z++) {
-      for (let x = Math.floor(near.x) - radius; x <= Math.floor(near.x) + radius; x++) {
         const block = bot.getBlock({ x, y, z });
         if (block && wanted.has(block.name)) {
           out.push({ x, y, z, name: block.name });
@@ -143,5 +198,5 @@ function isBed(name) { return BED_NAMES.has(name); }
 module.exports = {
   NIGHT_START, NIGHT_END, isNight, timeOfDay, findBlocks, nearestBlock,
   foodItems, needsFood, hasFood, teamNames, isTeammate, isHostile, describeFood,
-  moveAway, isBed
+  moveAway, isBed, statusJitter, statusTtl, STATUS_SCAN_BUDGET_MS
 };

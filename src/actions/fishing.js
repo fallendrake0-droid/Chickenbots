@@ -2,7 +2,7 @@
 
 const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
-const { findBlocks } = require('./common');
+const { findBlocks, statusTtl, STATUS_SCAN_BUDGET_MS } = require('./common');
 
 const WATER_BLOCKS = ['water', 'flowing_water'];
 const FISH = new Set(['cod', 'salmon', 'tropical_fish', 'pufferfish']);
@@ -31,9 +31,13 @@ class FishingController {
     const position = this.bot.position || { x: 0, y: 0, z: 0 };
     const now = Date.now();
     const moved = this._statusCache ? Math.hypot(position.x - this._statusCache.center.x, position.z - this._statusCache.center.z) : Infinity;
-    const ttl = 10000 + (String(this.bot.name).charCodeAt(0) % 7) * 900;
-    if (!this._statusCache || moved > 8 || now - this._statusCache.at > ttl) {
-      this._statusCache = { center: { x: position.x, z: position.z }, at: now, water: findBlocks(this.bot, WATER_BLOCKS, { radius: 8, limit: 8 }) };
+    const ttl = statusTtl(this.bot.name, 9, 12000);
+    if (!this._statusCache || moved > 16 || now - this._statusCache.at > ttl) {
+      this._statusCache = {
+        center: { x: position.x, z: position.z },
+        at: now,
+        water: findBlocks(this.bot, WATER_BLOCKS, { radius: 6, limit: 8, budgetMs: STATUS_SCAN_BUDGET_MS })
+      };
     }
     const water = this._statusCache.water;
     return {

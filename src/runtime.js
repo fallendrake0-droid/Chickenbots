@@ -798,6 +798,17 @@ class TeamRuntime {
     };
   }
 
+  /**
+   * Attribute a long synchronous block that happened outside the tick loop
+   * (dashboard snapshots, command handlers). Without this the watchdog blamed
+   * the last tick phase (`state-sync`) for a block that occurred in a timer.
+   */
+  recordExternalWork(label, ms) {
+    this._lastExternalWork = { label: String(label), ms: Number(ms) || 0, at: Date.now() };
+    if (this._lastExternalWork.ms >= 250) this._lastPhase = this._lastExternalWork.label;
+    return this._lastExternalWork;
+  }
+
   _checkEventLoopDelay() {
     const stats = this.eventLoopStats();
     if (!stats || stats.maxMs === null) return;
@@ -1168,7 +1179,7 @@ class TeamRuntime {
     return { ok: true, paused: false, tick: this.ticks };
   }
 
-  state() {
+  state({ combatTeamStatus = undefined } = {}) {
     const started = process.hrtime.bigint();
     const cpu = process.cpuUsage();
     const at = Date.now();
@@ -1229,7 +1240,11 @@ class TeamRuntime {
       },
       dashboard: this.dashboard ? this.dashboard.url : null,
       construction: this.construction ? { activeId: this.construction.activeId, projects: this.construction.projects.size } : null,
-      combat: this.combatTeam ? this.combatTeam.status() : null,
+      // A dashboard snapshot already computed the team status from its own
+      // per-controller objects. Recomputing it here repeated every entity scan.
+      combat: combatTeamStatus !== undefined
+        ? combatTeamStatus
+        : (this.combatTeam ? this.combatTeam.status() : null),
       pausedAt: this.paused ? Date.now() : null,
       performance: {
         stateSnapshotMs: 0,

@@ -137,7 +137,20 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     const started = Date.now();
     const value = statusSnapshot(services);
     const elapsed = Date.now() - started;
-    if (elapsed >= 1000) services.logger?.warn(`dashboard state snapshot took ${elapsed}ms; it blocked the event loop`);
+    if (elapsed >= 1000) {
+      // Name the section that spent the time. The old message only said the
+      // snapshot was slow, which sent this investigation into _syncBots even
+      // though the block happened here.
+      const sections = value && value.performance && value.performance.sections ? value.performance.sections : {};
+      const breakdown = Object.entries(sections)
+        .filter(([, ms]) => Number(ms) >= 50)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, ms]) => `${name}=${ms}ms`)
+        .join(', ');
+      services.logger?.warn(`dashboard state snapshot took ${elapsed}ms; it blocked the event loop${breakdown ? ` (${breakdown})` : ''}`);
+    }
+    // Make the event-loop watchdog blame this timer, not the last tick phase.
+    services.runtime?.recordExternalWork?.('dashboard-snapshot', elapsed);
     snapshotCache = { at: Date.now(), value };
     return snapshotCache.value;
   };
@@ -152,7 +165,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       if (!eventClients.size) return;
       let payload;
       try {
-        payload = `event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`;
+        payload = `event: state\ndata: ${JSON.stringify(snapshot())}\n\n`;
       } catch (err) {
         // A status-assembly bug must not take down the process or leave the
         // browser showing the previous (possibly all-online) frame.
@@ -216,7 +229,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
 
   app.get('/api/state', (req, res) => {
     try {
-      res.json({ ok: true, state: snapshot(true) });
+      res.json({ ok: true, state: snapshot() });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -227,7 +240,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       const payload = {
         exportedAt: new Date().toISOString(),
         note: 'Credentials are redacted by the logger and the dashboard state builder.',
-        state: snapshot(true),
+        state: snapshot(),
         logs: logStore.recent({ limit: 500 })
       };
       res.setHeader('Content-Disposition', 'attachment; filename="chickenbots-diagnostics.json"');
@@ -601,7 +614,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     });
     res.write('retry: 3000\n\n');
     try {
-      res.write(`event: state\ndata: ${JSON.stringify(snapshot(true))}\n\n`);
+      res.write(`event: state\ndata: ${JSON.stringify(snapshot())}\n\n`);
     } catch (err) {
       res.end(`event: error\ndata: ${JSON.stringify({ error: 'state snapshot failed' })}\n\n`);
       return;

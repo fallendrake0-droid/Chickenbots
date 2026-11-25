@@ -2134,6 +2134,53 @@ class RealBot extends BotAdapter {
         }
         return 63;
       },
+      /**
+       * Name-only lookup. Building a full block object (properties, state id)
+       * for every position is what made a dashboard scan of a 25³ cube take
+       * seconds on the live server.
+       */
+      blockNameAt(x, y, z) {
+        const block = self._blockAt({ x, y, z });
+        return block ? block.name : null;
+      },
+      /**
+       * Indexed search backed by Mineflayer's section palette skip. The old
+       * fallback constructed one block object per position in the cube.
+       * Returns null when the API is unavailable so the caller can fall back
+       * to its own bounded scan.
+       */
+      findBlocks(names, near, radius, limit, yFrom = null, yTo = null) {
+        if (!self.bot || !self.bot.entity || typeof self.bot.findBlocks !== 'function') return null;
+        const wanted = new Set(Array.isArray(names) ? names : [names]);
+        const registry = self.bot.registry && self.bot.registry.blocksByName;
+        if (!registry || !wanted.size) return [];
+        const ids = [];
+        for (const name of wanted) {
+          const definition = registry[name];
+          if (definition && Number.isFinite(definition.id)) ids.push(definition.id);
+        }
+        if (!ids.length) return [];
+        let positions;
+        try {
+          positions = self.bot.findBlocks({
+            point: self._vec3(Math.floor(near.x), Math.floor(near.y), Math.floor(near.z)),
+            matching: ids,
+            maxDistance: Math.max(1, radius),
+            count: Math.max(1, limit)
+          });
+        } catch (_) {
+          return null;
+        }
+        if (!Array.isArray(positions)) return null;
+        return positions
+          .filter((position) => position && (yFrom === null || position.y >= yFrom) && (yTo === null || position.y <= yTo))
+          .map((position) => {
+            const block = self._blockAt(position);
+            if (!block || !wanted.has(block.name)) return null;
+            return { x: position.x, y: position.y, z: position.z, name: block.name };
+          })
+          .filter(Boolean);
+      },
       get entities() { return self.entities; },
       get time() { return self.time.timeOfDay; },
       setTime() { throw new Error('cannot set world time'); }
