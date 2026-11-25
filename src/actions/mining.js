@@ -87,8 +87,12 @@ class MiningController {
     // every dashboard snapshot blocked the event loop long enough to miss
     // server keepalives (EPIPE/ECONNRESET), so cache it like the farming,
     // fishing and sleep panels already do.
-    if (!this._statusCache || moved > 6 || now - this._statusCache.at > 10000) {
-      this._statusCache = { center: { x: position.x, z: position.z }, at: now, ores: this.findOres({ radius: 10, limit: 8 }) };
+    // Five blocks is enough for the panel and cuts the cube (and its six
+    // neighbour probes per hit) by a factor of eight. A per-bot jitter stops
+    // ten caches expiring in the same snapshot after a fleet-wide join.
+    const ttl = 12000 + (String(this.bot.name).charCodeAt(0) % 7) * 900;
+    if (!this._statusCache || moved > 6 || now - this._statusCache.at > ttl) {
+      this._statusCache = { center: { x: position.x, z: position.z }, at: now, ores: this.findOres({ radius: 5, limit: 5 }) };
     }
     return {
       bot: this.bot.name,

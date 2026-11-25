@@ -82,7 +82,7 @@ function classifyKick(reason) {
   if (THROTTLE_RE.test(text)) {
     return { kind: 'throttle', retry: true, pauseRetries: false, operator: false, label: 'Server join throttle' };
   }
-  if (/invalid move player packet|bad packet|protocol error|unsupported protocol/i.test(text)) {
+  if (/invalid move player packet|invalid_player_movement|moved wrongly|invalid position|bad packet|protocol error|unsupported protocol/i.test(text)) {
     return { kind: 'protocol', retry: true, pauseRetries: false, operator: false, label: 'Protocol rejection' };
   }
   return { kind: 'generic', retry: true, pauseRetries: false, operator: false, label: 'Connection closed' };

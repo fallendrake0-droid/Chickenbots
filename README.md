@@ -340,13 +340,20 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_RECONNECT_JITTER_MS` | `4000` | jitter added to reconnect attempts so ten bots do not retry together |
 | `MC_DNS_TIMEOUT_MS` | `10000` | DNS preflight budget, timed separately from TCP and reported as its own stage |
 | `MC_CONNECT_TIMEOUT_MS` | `45000` | TCP connect stage timeout, measured from the socket attempt |
-| `MC_VIEW_DISTANCE` | `tiny` | client-requested chunk radius: `tiny` (6), `short` (8), `normal` (10), `far` (12), or 2–32. The live fleet still stalled for 40s at `short`; `tiny` is the safe default. Lower it to 2–5 on a slow host |
+| `MC_VIEW_DISTANCE` | `2` | requested chunk radius: an integer 2–32, or `tiny` (6), `short` (8), `normal` (10), `far` (12). Ten bots at 6 kept 1,690 chunk columns in one process and froze the event loop for 26s, so an old env value is logged and capped by `MC_VIEW_DISTANCE_MAX` |
+| `MC_VIEW_DISTANCE_MAX` | `2` | hard cap for the effective radius. Raise it only after the Connections page shows the host can absorb the chunk burst; a ten-bot process is the constraint, not one bot |
+| `AUTONOMY_WARMUP_MS` | `20000` | live delay after the tenth bot is ready before any pathfinder starts, so the spawn chunk burst finishes first. Simulation and unit tests skip it |
+| `AUTONOMY_CONCURRENCY` | `4` | maximum bots inside a long controller action at once. Others run safety work and rotate into the next free slot |
+| `ACTION_TIMEOUT_MS` | `60000` | hard budget for one autonomous controller step. A hung path or dig is cancelled, movement is stopped and the concurrency slot is released. Operator commands run in their own exclusive slot and cancel the autonomous step instead of racing it |
+| `PATHFINDER_THINK_TIMEOUT_MS` / `PATHFINDER_TICK_TIMEOUT_MS` / `PATHFINDER_SEARCH_RADIUS` | `2500` / `10` / `64` | cooperative A* budget: total decision time, slice per event-loop turn, and maximum search radius |
+| `CLIENT_STALL_GUARD_MS` / `CLIENT_STALL_RESUME_MS` | `2500` / `1500` | if the 20 tps client tick loop arrives this late, stop the stale path, re-anchor to the last server position and hold movement for the resume window. A 5s+ freeze also probes the socket with a real swing so a dead session reconnects instead of showing as online |
+| `MC_RECONNECT_*` | see below | reconnect backoff. Supervision now runs on its own 1.5s timer, independent of long mining or movement actions |
 | `MC_INBOUND_YIELD` | `true` | pause the inbound socket between kernel reads so a chunk burst cannot monopolise one event-loop turn |
 | `MC_LOGIN_TIMEOUT_MS` | `30000` | handshake/login stage timeout; separate from configuration, spawn and AuthMe so failures are diagnosable |
 | `MC_CONFIGURATION_TIMEOUT_MS` | `15000` | configuration-exchange budget once the server sends `start_configuration` |
 | `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
-| `MC_KEEPALIVE_MS` | `120000` | client-side watchdog threshold. The library still sends the reply itself; this is a diagnostic, not the reconnect strategy |
-| `MC_STALE_AFTER_MS` | `90000` | a spawned bot with no inbound packet this long is reported as `No packets`; it stays **online** (the server still lists it) but is not gameplay-ready |
+| `MC_KEEPALIVE_MS` | `60000` | client-side no-packet watchdog passed to Mineflayer. The library still sends the reply itself; the reconnect supervisor owns recovery |
+| `MC_STALE_AFTER_MS` | `45000` | a spawned bot with no inbound packet this long is reported as `No packets`; it stays **online** in the current snapshot but the supervisor force-closes and reconnects the zombie socket |
 | `MC_REJOIN_DELAY_MS` | `5000` | hold-down before the first rejoin after a real session ends; the reconnect supervisor and throttle queue still apply |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
@@ -614,8 +621,8 @@ commissioning.
   outage are one strike, so four bots timing out do not turn a 90s pause into 10 minutes; a bot that
   becomes ready closes the episode and clears the pause, and only a separate later outage escalates
   the bounded, jittered backoff. Only one live runtime may run per checkout: a PID lock
-  (`data/runtime/live.pid`) refuses a second instance, because duplicate logins make Aternos close the
-  first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
+  (`data/runtime/live.pid`, shared by the dashboard and the CLI) refuses a second instance, because
+  duplicate logins make Aternos close the first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
   `settings.connection-throttle: 0` in `bukkit.yml` if the burst is being rejected; otherwise the
   runtime's bounded backoff handles it. A bot that drops re-enters the same queue after
   `MC_REJOIN_DELAY_MS` (5s by default), and the reconnect supervisor keeps running even while
@@ -642,16 +649,23 @@ commissioning.
   a movement packet, and it does not send `player_loaded` itself because Mineflayer already does. If
   protocol kicks continue, set `MC_VERSION` to the server's exact version instead of `auto`.
   The client-requested view distance also matters: Mineflayer's default `far` asks the server for
-  up to 625 chunks per bot. `minecraft-protocol` 1.68.0 decompresses each compressed frame with
-  synchronous `zlib.unzipSync` inside its stream transform, so a ten-bot chunk burst can freeze
-  timers for tens of seconds, miss the server's 30s keep-alive deadline and surface as `EPIPE`
-  right after the block clears. Chickenbots now replaces that transform with an async `zlib.unzip`
-  step as the library is loaded, so decompression no longer holds the event loop. Bots also request
-  `MC_VIEW_DISTANCE=tiny` (6) by default and the inbound socket yields between kernel reads
-  (`MC_INBOUND_YIELD=true`) as defence in depth. The 17:25 live run blocked for 40s at `short` before
-  this patch, so keep 2–5 on a slow host and only raise the distance when the dashboard's live
-  event-loop delay shows the host can absorb the chunk burst. The Connections page reports
-  mean/p99/max delay from `monitorEventLoopDelay`. The pre-teardown snapshot also records the last
+  up to 625 chunks per bot. `minecraft-protocol` 1.68.0 decompressed each compressed frame with
+  synchronous `zlib.unzipSync`; Chickenbots replaces that transform with async `zlib.unzip` as the
+  library loads, and the inbound socket yields between kernel reads (`MC_INBOUND_YIELD=true`).
+  Decompression is not the only cost, though: parsing a chunk column and applying its block updates
+  is still synchronous. Ten bots at `tiny` (6) held 1,690 columns and froze the loop for 26s in the
+  03:18 live run, after which the server dropped four sessions with `EPIPE` and one with
+  `invalid_player_movement`. The default is therefore `MC_VIEW_DISTANCE=2` (25 columns per bot).
+  An explicit `MC_VIEW_DISTANCE=tiny` from an older `.env` is capped by
+  `MC_VIEW_DISTANCE_MAX` (default 2) and the clamp is logged at startup. Raise that cap only when the
+  Connections page shows the host can absorb the burst.
+  The runtime also waits `AUTONOMY_WARMUP_MS` (20s) after the tenth ready before starting
+  pathfinders, bounds concurrent controller actions (`AUTONOMY_CONCURRENCY=4`), and gives
+  reconnect supervision its own 1.5s timer so a long mining/movement action cannot delay a rejoin.
+  If the client tick loop is ever more than `CLIENT_STALL_GUARD_MS` late (event-loop freeze or host
+  suspend), movement is dropped, the stale path is stopped and the entity is re-anchored to the last
+  server position before any new packet is sent. The Connections page reports mean/p99/max delay
+  from `monitorEventLoopDelay`. The pre-teardown snapshot also records the last
   inbound/outbound packet name, pending socket bytes and the last valid state, and
   `/api/diagnostics/export` downloads a redacted state + log bundle for support.
   With `MC_VERSION=auto`, Chickenbots validates the server status ping once before opening any login

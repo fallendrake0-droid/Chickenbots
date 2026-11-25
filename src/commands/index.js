@@ -301,7 +301,19 @@ function fleetStatus(services) {
   };
 }
 
+const QUERY_ACTIONS = new Set(['status', 'where', 'combat', 'inventory', 'inv']);
+
 async function runBotAction(services, bot, args, context = {}) {
+  const action = (args[1] || 'status').toLowerCase();
+  // Read-only views must stay instant. Every gameplay action takes an
+  // exclusive slot so it cannot fight an autonomous pathfinder on the same bot.
+  if (QUERY_ACTIONS.has(action) || !services.runtime || typeof services.runtime.runExclusive !== 'function') {
+    return runBotActionExclusive(services, bot, args, context);
+  }
+  return services.runtime.runExclusive(bot.name, () => runBotActionExclusive(services, bot, args, context));
+}
+
+async function runBotActionExclusive(services, bot, args, context = {}) {
   const action = (args[1] || 'status').toLowerCase();
   const actions = actionsFor(services, bot.name);
   const leader = services.coordinator ? services.bots.get(services.coordinator.leader) : null;

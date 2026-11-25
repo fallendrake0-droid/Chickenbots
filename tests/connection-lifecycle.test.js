@@ -151,6 +151,87 @@ test('the client tick scheduler emits one tick_end per tick and defers a second 
   assert.equal(writes.length, stoppedAt, 'a stopped scheduler cannot emit another tick');
 });
 
+test('a late client tick is treated as a freeze, not as normal movement', () => {
+  const writes = [];
+  const stalls = [];
+  let now = 1000;
+  const scheduler = new ClientTickScheduler({
+    write: (name, packet) => writes.push({ name, packet }),
+    timers: { setInterval: () => ({ unref() {} }), clearInterval: () => {} },
+    now: () => now,
+    stallMs: 2500,
+    onStall: (late) => stalls.push(late)
+  });
+  scheduler.start(1000);
+  now = 1050;
+  scheduler.tick(1050);
+  assert.deepEqual(stalls, [], 'a normal 50ms tick is not a stall');
+  now = 4000;
+  scheduler.tick(4000);
+  assert.equal(stalls.length, 1);
+  assert.equal(stalls[0], 2950);
+  assert.equal(scheduler.stalls, 1);
+  assert.equal(writes.at(-1).name, 'tick_end', 'the recovered tick still closes cleanly');
+  assert.ok(scheduler.snapshot().lastStallMs >= 2950);
+});
+
+test('goTo refuses to start while the freeze resync window is open', async () => {
+  const real = new RealBot({ name: '________', now: () => 1000, createBot: () => new FakeBot() });
+  real.connected = true;
+  real.spawned = true;
+  real.authenticated = true;
+  let moved = 0;
+  real.bot = {
+    entity: { position: { x: 1, y: 64, z: 1 }, yaw: 0, pitch: 0, velocity: { set() {} } },
+    pathfinder: { setMovements() {}, goto: async () => { moved++; } }
+  };
+  real._movementBlockedUntil = 1500;
+  const result = await real.goTo({ x: 5, y: 64, z: 5 });
+  assert.equal(result.ok, false);
+  assert.equal(result.stalled, true);
+  assert.equal(moved, 0, 'no path may start during resync');
+});
+
+test('chunk readiness is false until the block below the entity is loaded', () => {
+  const real = new RealBot({ name: '________', createBot: () => new FakeBot() });
+  real.connected = true;
+  real.spawned = true;
+  real.authenticated = true;
+  let loaded = false;
+  real.bot = {
+    entity: { position: { x: 1, y: 64, z: 1 } },
+    blockAt: () => (loaded ? { name: 'stone' } : null)
+  };
+  assert.equal(real.isChunkReady(), false);
+  loaded = true;
+  assert.equal(real.isChunkReady(), true);
+});
+
+test('freeze recovery stops the stale path and re-anchors the entity to the server', () => {
+  const events = [];
+  const real = new RealBot({ name: '________', now: () => 100000, createBot: () => new FakeBot() });
+  const position = {
+    x: 0, y: 0, z: 0,
+    set(x, y, z) { this.x = x; this.y = y; this.z = z; events.push('position'); }
+  };
+  const velocity = { set() { events.push('velocity'); } };
+  real.bot = {
+    entity: { position, velocity, yaw: 0, pitch: 0 },
+    pathfinder: { stop() { events.push('pathfinder-stop'); } },
+    clearControlStates() { events.push('controls-cleared'); },
+    stopDigging() { events.push('dig-stopped'); }
+  };
+  real.lastServerPosition = { x: 5, y: 64, z: 6, yaw: 1.5, pitch: 0.25 };
+  real._clientTicker = { lastTickAt: 74000 };
+  const recovered = real._onClientStall(26000);
+  assert.equal(recovered, true);
+  assert.deepEqual(position, { x: 5, y: 64, z: 6, set: position.set });
+  assert.equal(real.bot.entity.yaw, 1.5);
+  assert.deepEqual(events, ['pathfinder-stop', 'controls-cleared', 'dig-stopped', 'position', 'velocity']);
+  assert.equal(real._stallRecoveries, 1);
+  assert.equal(real._movementBlockedUntil, 101500, 'movement stays held for the resync window');
+});
+
 test('inbound socket reads yield between bursts so timers can run', async () => {
   const real = new RealBot({ name: '________', createBot: () => new FakeBot() });
   const socket = new EventEmitter();
@@ -171,7 +252,10 @@ test('inbound socket reads yield between bursts so timers can run', async () => 
 });
 
 test('the client asks for a bounded chunk radius so five joins cannot block the tick loop', async () => {
-  assert.equal(config.server.viewDistance, 'tiny');
+  assert.equal(config.server.viewDistance, 2, 'ten bots must not each request a 6-chunk radius');
+  assert.equal(config.server.viewDistanceMax, 2);
+  assert.equal(config.server.keepAliveMs, 60000);
+  assert.equal(config.server.staleAfterMs, 45000);
   const { real, fake, options } = newReal('01010100');
   const pending = real.connect();
   for (let i = 0; i < 80 && !fake(); i++) await new Promise((resolve) => setTimeout(resolve, 10));

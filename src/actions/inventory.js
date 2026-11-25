@@ -468,13 +468,36 @@ class InventoryManager {
 
         if (anchor) {
           const site = this._adjacentFreeSite(anchor, home);
-          if (!site) return { ...report, ok: false, error: 'no free block beside the existing home chest' };
-          const move = await this.bot.goTo(site, { range: 4, timeoutMs: 15000 });
-          if (move && move.ok === false) return { ...report, ok: false, error: move.error };
-          const placed = await this.bot.placeBlock(site, 'chest');
-          if (!placed.ok) return { ...report, ok: false, error: placed.error };
-          if (this._blockName(site) !== 'chest') return { ...report, ok: false, error: 'chest placement was not visible in the world' };
-          report.placed.push({ ...site });
+          if (!site) {
+            // The spawn chest is boxed in (terrain, beds, the base). Failing
+            // the whole overflow trip left six bots permanently full and
+            // re-scanning every 15s. Place the crafted chest on any other
+            // clear ground near home; the existing chest is already real,
+            // verified storage if nothing can be placed at all.
+            report.singleChestFallback = true;
+            report.singleChestReason = 'no free block beside the existing home chest';
+            const alternate = this._freeChestSites(home).find((candidate) => !(
+              candidate.x === anchor.x && candidate.y === anchor.y && candidate.z === anchor.z
+            ));
+            if (alternate) {
+              const move = await this.bot.goTo(alternate, { range: 4, timeoutMs: 15000 });
+              if (!(move && move.ok === false)) {
+                const placed = await this.bot.placeBlock(alternate, 'chest');
+                if (placed.ok && this._blockName(alternate) === 'chest') {
+                  report.placed.push({ ...alternate });
+                  report.singleChestFallback = false;
+                  report.singleChestAlternative = { ...alternate };
+                }
+              }
+            }
+          } else {
+            const move = await this.bot.goTo(site, { range: 4, timeoutMs: 15000 });
+            if (move && move.ok === false) return { ...report, ok: false, error: move.error };
+            const placed = await this.bot.placeBlock(site, 'chest');
+            if (!placed.ok) return { ...report, ok: false, error: placed.error };
+            if (this._blockName(site) !== 'chest') return { ...report, ok: false, error: 'chest placement was not visible in the world' };
+            report.placed.push({ ...site });
+          }
         } else {
           const chosen = this._chooseSitePair(home);
           if (!chosen) return { ...report, ok: false, error: 'no clear ground beside home for a double chest' };
@@ -490,7 +513,11 @@ class InventoryManager {
         pair = this._findDoubleChest(home);
         if (!pair) {
           // One half is still real storage; use it rather than losing the trip.
-          const single = this._chestsNear(home)[0];
+          // Prefer a newly placed empty chest, then the existing anchor.
+          const chests = this._chestsNear(home);
+          const single = chests.find((chest) => !(anchor && chest.x === anchor.x && chest.y === anchor.y && chest.z === anchor.z))
+            || anchor
+            || chests[0];
           if (!single) return { ...report, ok: false, error: 'placed chest was not found in the world' };
           pair = [single];
         }

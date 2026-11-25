@@ -50,8 +50,9 @@ class FarmingController {
     const position = this.bot.position || { x: 0, y: 0, z: 0 };
     const now = Date.now();
     const moved = this._statusCache ? Math.hypot(position.x - this._statusCache.center.x, position.z - this._statusCache.center.z) : Infinity;
-    if (!this._statusCache || moved > 12 || now - this._statusCache.at > 10000) {
-      this._statusCache = { center: { x: position.x, z: position.z }, at: now, crops: this.scanCrops({ radius: 20 }) };
+    const ttl = 12000 + (String(this.bot.name).charCodeAt(0) % 7) * 900;
+    if (!this._statusCache || moved > 12 || now - this._statusCache.at > ttl) {
+      this._statusCache = { center: { x: position.x, z: position.z }, at: now, crops: this.scanCrops({ radius: 8 }) };
     }
     const crops = this._statusCache.crops;
     return {

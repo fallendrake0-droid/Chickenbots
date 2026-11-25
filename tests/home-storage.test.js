@@ -127,6 +127,35 @@ test('a non-full inventory is a no-op for home storage', async () => {
   assert.equal(inventory._chestsNear(home).length, 0);
 });
 
+test('a boxed-in home chest still accepts the overflow instead of failing forever', async () => {
+  const world = new MockWorld({ flat: true });
+  const home = { x: 0, y: world.surfaceY(0, 2) + 1, z: 2 };
+  const anchor = { x: 2, y: home.y, z: 2 };
+  world.setBlock(anchor, 'chest', {});
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    world.setBlock({ x: anchor.x + dx, y: anchor.y, z: anchor.z + dz }, 'stone', {});
+    world.setBlock({ x: anchor.x + dx, y: anchor.y + 1, z: anchor.z + dz }, 'stone', {});
+  }
+  const bot = new MockBot({ name: '10101000', world, inventory: fullResourceInventory(), position: { x: 16, y: home.y, z: 16 } });
+  const ledger = new ResourceLedger({ now: () => 1000 });
+  const inventory = new InventoryManager({ bot, ledger, home });
+
+  const report = await inventory.makeRoomAtHome({ home, resumeAt: { x: 16, y: home.y, z: 16 } });
+
+  assert.equal(report.ok, true, JSON.stringify(report));
+  assert.equal(report.doubleChest, false, 'two adjacent halves were impossible');
+  assert.ok(report.singleChestFallback === false, 'a chest was placed on other clear ground');
+  assert.ok(report.singleChestAlternative, JSON.stringify(report));
+  assert.equal(report.placed.length, 1);
+  assert.equal(bot.countItem('cobblestone'), 0, 'bulk resources must leave the full inventory');
+  assert.ok(bot.inventorySlots().free > 0);
+  const window = await bot.openContainer(report.placed[0]);
+  const contents = window.items();
+  await window.close();
+  assert.ok(Object.values(contents).reduce((sum, n) => sum + n, 0) > 0, 'the alternate chest is the verified storage');
+  assert.ok(report.preDeposit && report.preDeposit.moved > 0, 'the existing chest absorbs what fits');
+});
+
 test('home is anchored to the team spawn point and survives reconnects', async () => {
   const runtime = await createRuntime({ simulate: true, dashboard: false });
   const spawns = [...runtime.bots.values()].map((bot) => bot.position);

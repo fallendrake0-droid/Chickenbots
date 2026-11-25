@@ -81,12 +81,24 @@ class TeamRuntime {
     this.shutdownRequested = false;
     this.idleCounter = 0;
     this.autonomyArmed = false;
+    this.autonomyArmedAt = null;
+    this.autonomyWarmupLogged = false;
+    // A long controller action must not serialise the runtime tick. Each bot
+    // owns at most one in-flight step, and a small fleet-wide cap keeps ten
+    // mineflayer pathfinders from starving tick_end and keep-alive.
+    this.botSteps = new Map();
+    this.botSafety = new Map();
+    this.commandLocks = new Set();
+    this.botStepCursor = 0;
+    this.supervisorTimer = null;
     this.disconnectedNotified = new Set();
     this.reconnectTasks = new Map();
     this.intentionalDisconnects = new Set();
     this.retryPausedBots = new Map();
     this.supervisorTicks = 0;
     this.supervisorBusy = false;
+    this._phase = 'startup';
+    this._lastPhase = 'startup';
     this.serverVersion = null;
     this.serverVersionSource = null;
     this.serverVersionError = null;
@@ -126,9 +138,23 @@ class TeamRuntime {
    * once, the remaining healthy bots keep operating if one drops out.
    */
   get autonomyAllowed() {
+    // The final join is immediately followed by its chunk burst. Starting ten
+    // pathfinders in that window froze the live loop for 26s and caused the
+    // server to drop four bots. Simulators skip the wall-clock warm-up.
+    if (!this.autonomySettled) return false;
     if (this.allBotsReady) return true;
     if (!this.autonomyArmed) return false;
     return [...this.bots.values()].some((bot) => connectionStatus(bot).gameplayReady);
+  }
+
+  get autonomyWarmupRemainingMs() {
+    if (this.simulate || !this.autonomyArmedAt) return 0;
+    return Math.max(0, config.autonomy.warmupMs - (this.now() - this.autonomyArmedAt));
+  }
+
+  get autonomySettled() {
+    if (this.simulate || !config.autonomy.warmupMs) return true;
+    return Boolean(this.autonomyArmedAt) && this.now() - this.autonomyArmedAt >= config.autonomy.warmupMs;
   }
 
   async init() {
@@ -250,11 +276,28 @@ class TeamRuntime {
       this.logger.info(`dashboard listening on http://${dashboardInfo.host}:${dashboardInfo.port}`);
     }
     if (!this.simulate && this.shouldConnect) {
+      const requested = config.server.requestedViewDistance;
+      const effective = config.server.viewDistance;
+      if (String(requested) !== String(effective)) {
+        this.logger.warn(`chunk view distance ${requested} requested but capped to ${effective} (MC_VIEW_DISTANCE_MAX) so ten bots cannot replay the 26s chunk freeze`);
+      }
+      this.logger.info(`live protection: chunk view ${effective}, autonomy warm-up ${(config.autonomy.warmupMs / 1000).toFixed(0)}s, ${config.autonomy.maxConcurrentActions} concurrent actions, reconnect supervisor 1.5s`);
+    }
+    if (!this.simulate && this.shouldConnect) {
       this.connectLoop = this._connectAll().catch((err) => {
       if (!this.shutdownRequested) this.logger.error(`connection supervisor failed: ${err.message}`);
     });
     }
     this.timer = setInterval(() => this._tick().catch((err) => this.logger.error(`autonomy tick failed: ${err.message}`)), config.autonomy.tickMs);
+    // Connection supervision gets its own timer. It used to live inside the
+    // autonomy tick, where one 20s pathfinder step delayed every reconnect by
+    // the same amount. A dropped bot must be restored while work continues.
+    if (!this.simulate && this.shouldConnect) {
+      this.supervisorTimer = setInterval(() => {
+        this._superviseConnections().catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`));
+      }, 1500);
+      if (typeof this.supervisorTimer.unref === 'function') this.supervisorTimer.unref();
+    }
     return { ok: true, mode: this.mode, dashboard: dashboardInfo, autonomyAllowed: this.autonomyAllowed };
   }
 
@@ -598,10 +641,23 @@ class TeamRuntime {
     // the fleet was still joining.
     this.ticking = true;
     try {
-      if (this.allBotsReady) this.autonomyArmed = true;
+      if (this.allBotsReady) {
+        if (!this.autonomyArmedAt) {
+          this.autonomyArmedAt = this.now();
+          this.logger.info(`fleet ready; autonomy warm-up ${(config.autonomy.warmupMs / 1000).toFixed(0)}s while spawn chunks settle`);
+        }
+        this.autonomyArmed = true;
+      } else if (!this.autonomyArmed) {
+        // A joiner dropped during the first warm-up. Restart the settle window
+        // when the fleet is complete again; its replacement is still receiving
+        // the same spawn chunk burst.
+        this.autonomyArmedAt = null;
+      }
       this._checkEventLoopDelay();
+      this._phase = 'state-sync';
       const syncStarted = Date.now();
       this._syncBots();
+      this._lastPhase = 'state-sync';
       const syncMs = Date.now() - syncStarted;
       if (syncMs >= 1000) this.logger.warn(`state sync took ${syncMs}ms; the event loop was blocked inside _syncBots`);
       // Connection supervision must run while paused and while the autonomy
@@ -609,12 +665,7 @@ class TeamRuntime {
       // the server until an operator notices.
       if (!this.simulate && this.shouldConnect) {
         this.supervisorTicks++;
-        if (this.supervisorTicks % 2 === 0 && !this.supervisorBusy) {
-          this.supervisorBusy = true;
-          this._recoverDisconnected()
-            .catch((err) => this.logger.warn(`reconnect supervisor: ${err.message}`))
-            .finally(() => { this.supervisorBusy = false; });
-        }
+        if (this.supervisorTicks % 2 === 0) this._superviseConnections();
       }
       if (this.paused) return;
       if (!this.autonomyAllowed) {
@@ -639,30 +690,16 @@ class TeamRuntime {
           if (actions && actions.combat) actions.combat.onDeath('runtime observed death');
         }
       }
+      this._phase = 'coordinator';
       try {
         this.coordinator.tick();
       } catch (err) {
         this.logger.error(`coordinator tick failed: ${err.message}`);
       }
-      for (const actions of this.actions.list()) {
-        const bot = actions.bot;
-        if (!bot.connected || !bot.spawned) continue;
-        try {
-          // Safety and death bookkeeping must run for a dead bot too; the
-          // controller returns early without moving it.
-          await actions.safetyTick();
-          if (bot.health <= 0) continue;
-          const assignment = this.coordinator.getAssignment(bot.name);
-          if (assignment) {
-            await actions.step({ coordinator: this.coordinator, bots: this.bots });
-          } else if (this.ticks % 20 === 0 && actions.recovery.canWork()) {
-            await this._idleWork(actions);
-          }
-        } catch (err) {
-          // One controller failure must not stop the other four bots.
-          this.logger.warn(`[${bot.name}] action tick failed: ${err.message}`);
-        }
-      }
+      this._lastPhase = 'coordinator';
+      this._phase = 'launch-actions';
+      this._launchBotWork();
+      this._lastPhase = 'launch-actions';
       try {
         if (this.ticks % 5 === 0) this.combatTeam.assignRoles();
       } catch (err) {
@@ -711,7 +748,157 @@ class TeamRuntime {
     if (now - this._eventLoopLastWarnAt < 30000) return;
     this._eventLoopWarnedMax = stats.maxMs;
     this._eventLoopLastWarnAt = now;
-    this.logger.warn(`event loop blocked for up to ${stats.maxMs}ms (p99 ${stats.p99Ms}ms); a chunk/status burst can starve tick_end and keep-alive deadlines`);
+    this.logger.warn(`event loop blocked for up to ${stats.maxMs}ms (p99 ${stats.p99Ms}ms) at phase ${this._lastPhase || this._phase || 'unknown'}; a chunk/status burst can starve tick_end and keep-alive deadlines`);
+  }
+
+  /**
+   * Keep the autonomy tick non-blocking. A controller action can await a
+   * pathfinder for tens of seconds; awaiting ten of them inside the interval
+   * meant status sync, reconnect supervision and the next tick all stalled
+   * behind one bot. Launch at most `autonomy.maxConcurrentActions`, rotate
+   * which bots get a slot, and run safety-only passes for the rest.
+   */
+  _launchBotWork() {
+    if (!this.actions || !this.coordinator) return { launched: 0, safety: 0 };
+    const active = this.actions.list().filter((actions) => {
+      const bot = actions.bot;
+      return bot && bot.connected && bot.spawned;
+    });
+    if (!active.length) return { launched: 0, safety: 0 };
+    const cap = Math.max(1, Number(config.autonomy.maxConcurrentActions) || 4);
+    let launched = 0;
+    let safety = 0;
+    for (let i = 0; i < active.length; i++) {
+      const actions = active[(this.botStepCursor + i) % active.length];
+      const name = actions.bot.name;
+      if (this.commandLocks.has(name)) continue;
+      if (this.botSteps.has(name) || this.botSafety.has(name)) continue;
+      // The spawn chunks can still be streaming after the warm-up. Pathfinding
+      // into an unloaded column is both useless and a synchronous burst, so a
+      // bot without its local column stays on safety work for this tick.
+      const worldBlocked = typeof actions.bot.isChunkReady === 'function' && !actions.bot.isChunkReady();
+      if (!worldBlocked && launched < cap && this.botSteps.size < cap) {
+        this._startBotStep(actions);
+        launched++;
+      } else {
+        this._startBotSafety(actions);
+        safety++;
+      }
+    }
+    this.botStepCursor = (this.botStepCursor + 1) % active.length;
+    return { launched, safety };
+  }
+
+  _startBotSafety(actions) {
+    const name = actions.bot.name;
+    const task = (async () => {
+      try {
+        await actions.safetyTick();
+      } catch (err) {
+        this.logger.warn(`[${name}] safety tick failed: ${err.message}`);
+      }
+    })().finally(() => {
+      if (this.botSafety.get(name) === task) this.botSafety.delete(name);
+    });
+    this.botSafety.set(name, task);
+    return task;
+  }
+
+  _startBotStep(actions) {
+    const bot = actions.bot;
+    const name = bot.name;
+    const started = Date.now();
+    // A controller that never settles must not own a concurrency slot while
+    // its pathfinder is dead. Cancel the movement at the configured budget; a
+    // rejected path lets the action return and the slot free honestly.
+    const watchdog = setTimeout(() => {
+      try { bot.cancelAction?.(`exceeded ${config.autonomy.actionTimeoutMs}ms`); } catch (_) { /* optional */ }
+    }, Math.max(5000, config.autonomy.actionTimeoutMs));
+    if (typeof watchdog.unref === 'function') watchdog.unref();
+    const task = (async () => {
+      try {
+        // Safety and death bookkeeping must run for a dead bot too; the
+        // controller returns early without moving it.
+        await actions.safetyTick();
+        if (bot.health <= 0) return;
+        const assignment = this.coordinator.getAssignment(name);
+        if (assignment) {
+          const assignmentType = assignment.type || 'task';
+          this._lastPhase = `action:${name}:${assignmentType}`;
+          await actions.step({ coordinator: this.coordinator, bots: this.bots });
+        } else if (this.ticks % 20 === 0 && actions.recovery.canWork()) {
+          await this._idleWork(actions);
+        }
+      } catch (err) {
+        // One controller failure must not stop the other bots.
+        this.logger.warn(`[${name}] action tick failed: ${err.message}`);
+      } finally {
+        clearTimeout(watchdog);
+        const elapsed = Date.now() - started;
+        if (elapsed >= 10000) {
+          const assignment = this.coordinator.getAssignment(name);
+          this.logger.info(`[${name}] long action ${assignment ? assignment.type : 'idle'} finished in ${(elapsed / 1000).toFixed(1)}s`);
+        }
+        if (this.botSteps.get(name) === task) this.botSteps.delete(name);
+      }
+    })();
+    this.botSteps.set(name, task);
+    return task;
+  }
+
+  /**
+   * Give an operator command exclusive use of one bot. A live fleet command
+   * must not race an autonomous pathfinder: the autonomous step is cancelled
+   * and its slot stays closed until the command returns.
+   */
+  async runExclusive(name, fn) {
+    if (typeof fn !== 'function') throw new TypeError('runExclusive needs a command function');
+    const bot = this.bots.get(name);
+    const prior = this.botSteps.get(name);
+    this.commandLocks.add(name);
+    try {
+      if (prior) {
+        try { bot?.cancelAction?.('operator command'); } catch (_) { /* optional */ }
+        const grace = new Promise((resolve) => {
+          const timer = setTimeout(resolve, 3000);
+          if (timer.unref) timer.unref();
+        });
+        await Promise.race([prior.catch(() => null), grace]);
+      }
+      return await fn();
+    } finally {
+      this.commandLocks.delete(name);
+    }
+  }
+
+  /** Wait for in-flight controller work (tests, shutdown, diagnostics). */
+  async drainBotWork(timeoutMs = 30000) {
+    const pending = [...this.botSteps.values(), ...this.botSafety.values()];
+    if (!pending.length) return { drained: 0, timedOut: false };
+    const all = Promise.allSettled(pending);
+    if (!timeoutMs) { await all; return { drained: pending.length, timedOut: false }; }
+    const timer = sleep(timeoutMs);
+    const winner = await Promise.race([all.then(() => 'done'), timer.then(() => 'timeout')]);
+    return { drained: pending.length, timedOut: winner === 'timeout' };
+  }
+
+  /**
+   * Run reconnect supervision regardless of whether an autonomy tick is in
+   * flight. The busy flag makes the interval and the tick idempotent.
+   */
+  async _superviseConnections() {
+    if (this.shutdownRequested || this.simulate || !this.shouldConnect) return null;
+    if (this.supervisorBusy) return null;
+    this.supervisorBusy = true;
+    try {
+      await this._recoverDisconnected();
+      return true;
+    } catch (err) {
+      this.logger.warn(`reconnect supervisor: ${err.message}`);
+      return false;
+    } finally {
+      this.supervisorBusy = false;
+    }
   }
 
   async _safetyOnlyTick() {
@@ -751,7 +938,10 @@ class TeamRuntime {
       if (status.status === 'stale') {
         this.logger.warn(`[${name}] connection is stale (${status.statusDetail}); forcing a reconnect`);
         try { await bot.disconnect('no packets from server'); } catch (_) { /* already gone */ }
-      } else if (bot.connected !== false) {
+      } else if (status.transportConnected) {
+        // Trust the lifecycle verdict, not the legacy boolean. A kicked bot can
+        // still have connected=true after a terminal transition; skipping it
+        // here left it offline forever because connect() also saw connected.
         continue;
       }
       if (started > 0) {
@@ -958,6 +1148,14 @@ class TeamRuntime {
     for (const bot of this.bots.values()) bot.shuttingDown = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.supervisorTimer) clearInterval(this.supervisorTimer);
+    this.supervisorTimer = null;
+    if (this.botSteps.size || this.botSafety.size) {
+      await Promise.race([
+        Promise.allSettled([...this.botSteps.values(), ...this.botSafety.values()]),
+        sleep(2000)
+      ]).catch(() => {});
+    }
     try { this.eventLoopDelay?.disable(); } catch (_) { /* unavailable */ }
     try { if (this.coordinator) this.coordinator.disable(); } catch (_) { /* ignore */ }
     if (this.dashboard) {

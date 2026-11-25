@@ -62,6 +62,20 @@ function envViewDistance(name, fallback) {
   return Number.isFinite(numeric) ? numeric : raw.toLowerCase();
 }
 
+const VIEW_DISTANCE_PRESETS = Object.freeze({ tiny: 6, short: 8, normal: 10, far: 12 });
+function viewDistanceNumber(value) {
+  if (Number.isInteger(value)) return value;
+  return VIEW_DISTANCE_PRESETS[String(value || '').toLowerCase()] || 2;
+}
+
+// A stale .env copied from an older release may still say `tiny` (6). Ten bots
+// at six chunks each held 1,690 columns in one Node process and froze the loop
+// for 26s in the 03:18 live run. The requested value is kept for diagnostics,
+// but the effective value is capped by default so an old file cannot replay
+// the crash. Set MC_VIEW_DISTANCE_MAX above 2 only on a host with headroom.
+const REQUESTED_VIEW_DISTANCE = envViewDistance('MC_VIEW_DISTANCE', 2);
+const VIEW_DISTANCE_MAX = envInt('MC_VIEW_DISTANCE_MAX', 2);
+
 /** The ten bot usernames are fixed. Never rename, never add bots. */
 const BOT_NAMES = Object.freeze([
   '________', '10101000', '01010100', '11001100', '00110000',
@@ -110,11 +124,14 @@ const config = {
     // hostname it connects to; the preflight only decides whether to attempt.
     dnsTimeoutMs: envInt('MC_DNS_TIMEOUT_MS', 10000),
     // Client-requested chunk distance. 'far' (12) makes the server send up to
-    // 625 chunks per bot; ten simultaneous joins then parse/decompress them
-    // on the protocol thread, which is enough to starve the 20 tps tick loop.
-    // The live 17:25 run still blocked for 40s at 'short' (8), so the safe
-    // default is 'tiny' (6); a slow host can lower it further with 2-5.
-    viewDistance: envViewDistance('MC_VIEW_DISTANCE', 'tiny'),
+    // 625 chunks per bot; ten simultaneous joins then parse them on the same
+    // event loop. The live 17:25 run blocked for 40s at 'short' (8), and the
+    // 03:18 run blocked for 26s at 'tiny' (6), after which the server dropped
+    // sessions. The effective default is 2 (25 columns per bot) regardless of
+    // an old env value; movement streams new columns in as the bot walks.
+    requestedViewDistance: REQUESTED_VIEW_DISTANCE,
+    viewDistanceMax: VIEW_DISTANCE_MAX,
+    viewDistance: Math.min(viewDistanceNumber(REQUESTED_VIEW_DISTANCE), VIEW_DISTANCE_MAX),
     // Pause the inbound socket after each kernel read so a burst of chunk
     // packets cannot occupy one uninterrupted event-loop turn. Keepalive and
     // tick timers get a turn between reads.
@@ -123,12 +140,17 @@ const config = {
     loginTimeoutMs: envInt('MC_LOGIN_TIMEOUT_MS', 30000),
     configurationTimeoutMs: envInt('MC_CONFIGURATION_TIMEOUT_MS', 15000),
     spawnTimeoutMs: envInt('MC_SPAWN_TIMEOUT_MS', 45000),
-    keepAliveMs: envInt('MC_KEEPALIVE_MS', 120000),
+    // Mineflayer's own no-packet watchdog. Vanilla sends keep-alives every
+    // ~15-20s, so 60s is three missed keep-alives. The old 120s value let a
+    // zombie session sit on the dashboard long after the server had dropped it.
+    keepAliveMs: envInt('MC_KEEPALIVE_MS', 60000),
     // A socket can die silently (NAT timeout, proxy restart) without emitting
     // 'end'. Mark a connected bot as stale when no packet arrives for this
     // long, so the dashboard never reports a dead socket as online. The vanilla
-    // server sends keep-alives every ~15-20s, so 90s is safely above normal.
-    staleAfterMs: envInt('MC_STALE_AFTER_MS', 90000),
+    // server sends keep-alives every ~15-20s. 45s is three missed keep-alives:
+    // long enough for a lagging Aternos tick, short enough to reconnect before
+    // the dashboard spends a minute showing a dead session as online.
+    staleAfterMs: envInt('MC_STALE_AFTER_MS', 45000),
     // Hold a rejoin briefly after a real session ends. Ten simultaneous
     // reconnects were the fastest way to trip a per-IP throttle and to block
     // the event loop with ten chunk bursts.
@@ -219,6 +241,27 @@ const config = {
     tickMs: envInt('AUTONOMY_TICK_MS', 750),
     actionTimeoutMs: envInt('ACTION_TIMEOUT_MS', 60000),
     maxConsecutiveFailures: envInt('MAX_ACTION_FAILURES', 4),
+    // The tenth bot becoming ready is not the same thing as its spawn chunks
+    // having arrived. Starting ten pathfinders in the same second as the last
+    // chunk burst froze the live event loop for 26s and cost four sessions.
+    // Live autonomy waits this long after the last bot becomes ready.
+    warmupMs: envInt('AUTONOMY_WARMUP_MS', 20000),
+    // Bound how many bots may be inside a long action at once. Ten concurrent
+    // mineflayer pathfinders starve tick_end; four still completes fleet work.
+    maxConcurrentActions: envInt('AUTONOMY_CONCURRENCY', 4),
+    // Mineflayer-pathfinder is cooperative, but its default budget still lets
+    // one bot think for 5s and generate 40ms of work per turn. These smaller
+    // budgets make it yield more often and stop searching before it can hold
+    // the event loop long enough for the server to time the client out.
+    pathfinderThinkTimeoutMs: envInt('PATHFINDER_THINK_TIMEOUT_MS', 2500),
+    pathfinderTickTimeoutMs: envInt('PATHFINDER_TICK_TIMEOUT_MS', 10),
+    pathfinderSearchRadius: envInt('PATHFINDER_SEARCH_RADIUS', 64),
+    // A timer callback that arrives this late means the process was frozen
+    // (event-loop block or host suspend). Movement is dropped until the client
+    // tick loop has caught up, otherwise the first post-freeze packet is an
+    // impossible jump and Paper kicks with invalid_player_movement.
+    stallGuardMs: envInt('CLIENT_STALL_GUARD_MS', 2500),
+    stallResumeMs: envInt('CLIENT_STALL_RESUME_MS', 1500),
     // PvE is safe automation and is on by default. PvP is also enabled as a
     // feature, but PvpPolicy still requires an explicit operator target list;
     // no player is ever auto-targeted by scanning.
@@ -363,9 +406,17 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('server.connectTimeoutMs', server.connectTimeoutMs, 1000, 600000);
   integer('server.dnsTimeoutMs', server.dnsTimeoutMs, 1000, 300000);
   const viewDistance = server.viewDistance;
-  if (!(Number.isInteger(viewDistance) && viewDistance >= 2 && viewDistance <= 32)
-    && !['tiny', 'short', 'normal', 'far'].includes(viewDistance)) {
-    fail('server.viewDistance', "must be tiny, short, normal, far or an integer from 2 to 32");
+  if (!(Number.isInteger(viewDistance) && viewDistance >= 2 && viewDistance <= 32)) {
+    fail('server.viewDistance', `must be an integer from 2 to 32 (got ${viewDistance})`);
+  }
+  integer('server.viewDistanceMax', server.viewDistanceMax, 2, 32);
+  const requestedViewDistance = server.requestedViewDistance;
+  if (!(Number.isInteger(requestedViewDistance) && requestedViewDistance >= 2 && requestedViewDistance <= 32)
+    && !['tiny', 'short', 'normal', 'far'].includes(requestedViewDistance)) {
+    fail('server.requestedViewDistance', "must be tiny, short, normal, far or an integer from 2 to 32");
+  }
+  if (Number.isInteger(server.viewDistanceMax) && viewDistanceNumber(requestedViewDistance) > server.viewDistanceMax) {
+    warn('server.viewDistance', `requested ${requestedViewDistance} is capped to ${server.viewDistanceMax} chunks for a ten-bot process`);
   }
   integer('server.loginTimeoutMs', server.loginTimeoutMs, 1000, 600000);
   integer('server.configurationTimeoutMs', server.configurationTimeoutMs, 1000, 600000);
@@ -426,6 +477,13 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   boolean('autonomy.enabled', autonomy.enabled);
   integer('autonomy.tickMs', autonomy.tickMs, 50, 60000);
   integer('autonomy.actionTimeoutMs', autonomy.actionTimeoutMs, 1000, 3600000);
+  integer('autonomy.warmupMs', autonomy.warmupMs, 0, 600000);
+  integer('autonomy.maxConcurrentActions', autonomy.maxConcurrentActions, 1, 50);
+  integer('autonomy.pathfinderThinkTimeoutMs', autonomy.pathfinderThinkTimeoutMs, 100, 60000);
+  integer('autonomy.pathfinderTickTimeoutMs', autonomy.pathfinderTickTimeoutMs, 1, 50);
+  integer('autonomy.pathfinderSearchRadius', autonomy.pathfinderSearchRadius, 8, 512);
+  integer('autonomy.stallGuardMs', autonomy.stallGuardMs, 500, 120000);
+  integer('autonomy.stallResumeMs', autonomy.stallResumeMs, 0, 30000);
   boolean('autonomy.pve', autonomy.pve);
   boolean('autonomy.pvp', autonomy.pvp);
   boolean('autonomy.serverPvp', autonomy.serverPvp);

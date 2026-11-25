@@ -714,6 +714,7 @@ export const connectionsPage = {
               const stateTone = c.state === 'ready' ? 'ok' : c.state === 'failed' ? 'danger' : c.state === 'closed' || c.state === 'idle' ? 'neutral' : 'warn';
               const keep = row.keepAlive || {};
               const ticker = row.ticker || {};
+              const stall = row.stall || {};
               const last = row.lastDisconnect || null;
               const retry = row.retry || null;
               return `<section class="card card--inset">
@@ -724,7 +725,8 @@ export const connectionsPage = {
                     ['Stage budget', c.stageTimeoutMs ? `${(c.stageTimeoutMs / 1000).toFixed(0)}s` : '—'],
                     ['Session elapsed', c.elapsedMs != null ? duration(c.elapsedMs) : '—'],
                     ['Keep-alive', `${num(keep.received || 0)} received · ${num(keep.replies || 0)} replied · max gap ${keep.maxGapMs ? duration(keep.maxGapMs) : '—'}`],
-                    ['Client ticks', ticker.tickEnds != null ? `${num(ticker.tickEnds)} tick_end · ${ticker.tickRate || 20} tps${ticker.frozen ? ' · frozen' : ''}` : 'not active'],
+                    ['Client ticks', ticker.tickEnds != null ? `${num(ticker.tickEnds)} tick_end · ${ticker.tickRate || 20} tps${ticker.frozen ? ' · frozen' : ''}${ticker.stalls ? ` · ${num(ticker.stalls)} late` : ''}` : 'not active'],
+                    ['Freeze guard', `${num(stall.recoveries || 0)} ${Number(stall.recoveries) === 1 ? 'recovery' : 'recoveries'} · ${num(stall.forcedReanchors || 0)} teleport ${Number(stall.forcedReanchors) === 1 ? 'reanchor' : 'reanchors'} · ${num(stall.droppedMovements || 0)} packets held${stall.blockedUntil && stall.blockedUntil > Date.now() ? ' · resyncing' : ''}`],
                     ['Last inbound', c.lastEventAgeMs != null ? `${duration(c.lastEventAgeMs)} ago` : '—'],
                     ['Last failure', c.failure ? esc(`${c.failure.code} in ${c.failure.stage}: ${c.failure.error}`) : '—'],
                     ['Retry', retry ? `attempt ${num(retry.attempt || 0)}${retry.nextRetryAt ? ` · next in ${duration(Math.max(0, retry.nextRetryAt - Date.now()))}` : ''}${retry.lastError ? ` · ${esc(String(retry.lastError).slice(0, 120))}` : ''}` : '—'],

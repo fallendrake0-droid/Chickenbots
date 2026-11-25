@@ -142,6 +142,7 @@ class RealBot extends BotAdapter {
     this._tickEndSent = false;
     this._lastTickEndAt = 0;
     this._lastInboundPacketAt = 0;
+    this._lastGapWarnAt = 0;
     this._lastValidState = null;
     this._cleanupGeneration = null;
     this._transportDead = false;
@@ -150,6 +151,14 @@ class RealBot extends BotAdapter {
     this._antiAfkTimer = null;
     this._antiAfkJumpTimer = null;
     this._antiAfkPulses = 0;
+    // A frozen event loop (or a suspended host) makes the first movement
+    // packet after wake an impossible jump. Paper's answer is
+    // invalid_player_movement, so movement is held until the ticker is fresh.
+    this._movementBlockedUntil = 0;
+    this._forcedReanchors = 0;
+    this._stallRecoveries = 0;
+    this._lastStallWarnAt = 0;
+    this._stallDroppedMovements = 0;
     this.kickKind = null;
     this.retryPaused = false;
     this._blockCache = new Map();
@@ -232,6 +241,18 @@ class RealBot extends BotAdapter {
         try { this._trace(this._movementLock ? 'held-out' : 'out', name, packet); } catch (_) { /* tracing must never break movement */ }
         if (this._movementLock) {
           this._suppressedMovement++;
+          return true;
+        }
+        // The free/held decision above is per-session auth state. This one is
+        // per-freeze: drop movement while the client tick loop is stale or
+        // during the short resync window after a freeze. Dropping is safe; a
+        // position packet generated from a 20s-old physics delta is not.
+        const nowMs = this.now();
+        const tickerStale = Boolean(this._clientTicker
+          && this._clientTicker.lastTickAt
+          && nowMs - this._clientTicker.lastTickAt >= config.autonomy.stallGuardMs);
+        if (tickerStale || nowMs < this._movementBlockedUntil) {
+          this._stallDroppedMovements++;
           return true;
         }
         // The client tick scheduler owns packet ordering: at most one
@@ -376,6 +397,8 @@ class RealBot extends BotAdapter {
       name: this.name,
       logger: this.logger,
       now: this.now,
+      stallMs: config.autonomy.stallGuardMs,
+      onStall: (lateMs) => this._onClientStall(lateMs),
       write: (name, packet) => {
         if (this.bot !== owner || !this.connection.isCurrent(generation) || this._transportDead) return;
         const socket = client.socket;
@@ -401,6 +424,48 @@ class RealBot extends BotAdapter {
     this._clientTicker.start();
     if (this._serverTickingState) this._clientTicker.setTickingState(this._serverTickingState);
     this.connection.event('client_ticker_started', `${this._clientTicker.tickRate} tps`);
+    return true;
+  }
+
+  /** Recover after a frozen event loop or a suspended host. */
+  _onClientStall(lateMs) {
+    if (!this.bot || this._transportDead) return false;
+    this._stallRecoveries += 1;
+    this._movementBlockedUntil = this.now() + Math.max(0, config.autonomy.stallResumeMs);
+    // The pathfinder's plan was computed against a world/entity that is now
+    // stale, and its next step may try to cover the whole frozen interval at
+    // once. Stop it; the action layer returns a path error and retries.
+    try { this.bot.pathfinder?.stop?.(); } catch (_) { /* optional */ }
+    try { this.bot.clearControlStates?.(); } catch (_) { /* optional */ }
+    try { this.bot.stopDigging?.(); } catch (_) { /* optional */ }
+    // Mineflayer keeps the authoritative server position in the last position
+    // packet. Re-anchor the local entity before any new movement is sent so a
+    // post-freeze packet is a small correction, not a teleport.
+    const server = this.lastServerPosition;
+    if (this.bot.entity && server && Number.isFinite(server.x) && Number.isFinite(server.y) && Number.isFinite(server.z)) {
+      try {
+        this.bot.entity.position.set(server.x, server.y, server.z);
+        this.bot.entity.velocity.set(0, 0, 0);
+        if (Number.isFinite(server.yaw)) this.bot.entity.yaw = server.yaw;
+        if (Number.isFinite(server.pitch)) this.bot.entity.pitch = server.pitch;
+        this.position = this._vec(this.bot.entity.position);
+      } catch (_) { /* entity shape changed; the write guard still holds movement */ }
+    }
+    const at = this.now();
+    if (at - this._lastStallWarnAt >= 15000) {
+      this._lastStallWarnAt = at;
+      this.logger.warn(`[${this.name}] client tick loop was ${Math.round(lateMs)}ms late; paused movement, re-anchored to the server position and stopped the stale path (recoveries ${this._stallRecoveries})`);
+    }
+    // Probe the socket with a real animation write. If the freeze outlived the
+    // server's session timeout, this is where EPIPE surfaces; the normal write
+    // failure path then requests a fresh connection instead of leaving a
+    // zombie "online" flag on the dashboard.
+    if (lateMs >= 5000) {
+      setImmediate(() => {
+        if (!this.ready || !this.bot || this._transportDead) return;
+        try { this.bot.swingArm?.(); } catch (_) { /* write path reports the failure */ }
+      });
+    }
     return true;
   }
 
@@ -546,8 +611,12 @@ class RealBot extends BotAdapter {
     for (const entry of (snapshot.timeline || []).slice(-16)) {
       this.logger[entryLevel](`[${this.name}] LIFECYCLE ${new Date(entry.at).toISOString()} ${entry.kind} ${entry.from ? `${entry.from}->` : ''}${entry.to || entry.event || entry.stage} ${entry.detail || ''}`);
     }
-    for (const entry of this._traceLog.slice(-20)) {
-      this.logger.error(`[${this.name}] TRACE ${entry.at} ${entry.direction} ${entry.packet} pos=${entry.x ?? '-'},${entry.y ?? '-'},${entry.z ?? '-'} yaw=${entry.yaw ?? '-'} pitch=${entry.pitch ?? '-'} ground=${entry.onGround} flags=${JSON.stringify(entry.flags)} auth=${entry.auth} locked=${entry.locked}`);
+    // Packet traces are forensic detail, not errors. Dumping 20 ERROR lines per
+    // disconnect was both misleading and enough synchronous console I/O to
+    // delay the reconnect path. They are opt-in with MC_TRACE_PACKETS.
+    const traceOn = String(process.env.MC_TRACE_PACKETS || '').toLowerCase() === 'true';
+    for (const entry of this._traceLog.slice(traceOn ? -40 : -8)) {
+      this.logger[traceOn ? 'error' : 'debug'](`[${this.name}] TRACE ${entry.at} ${entry.direction} ${entry.packet} pos=${entry.x ?? '-'},${entry.y ?? '-'},${entry.z ?? '-'} yaw=${entry.yaw ?? '-'} pitch=${entry.pitch ?? '-'} ground=${entry.onGround} flags=${JSON.stringify(entry.flags)} auth=${entry.auth} locked=${entry.locked}`);
     }
   }
 
@@ -608,7 +677,16 @@ class RealBot extends BotAdapter {
     // One socket per bot. A dashboard reconnect and the supervisor must never
     // race into two simultaneous logins for the same username.
     if (this._connectPromise) return this._connectPromise;
-    if (this.connected) return { ok: true, already: true };
+    // A terminal kick can leave connected=true because the lifecycle machine
+    // rejects a transition out of FAILED. Only a live transport may short-
+    // circuit; otherwise the reconnect supervisor could never open a socket.
+    if (this.connected && !this._transportDead) return { ok: true, already: true };
+    if (this._transportDead && this.bot) {
+      // Close the zombie socket before opening a new session. Two live sockets
+      // for one username make Paper kick the newcomer with "logged in from
+      // another location", which looks exactly like another random leave.
+      try { this.bot._client?.end?.('reconnect'); } catch (_) { /* already closed */ }
+    }
     this._connectPromise = this._connectOnce(options).finally(() => { this._connectPromise = null; });
     return this._connectPromise;
   }
@@ -990,6 +1068,17 @@ class RealBot extends BotAdapter {
       for (const waiter of [...this._spawnWaiters]) waiter.resolve({ ok: true, spawned: true, authenticated: this.authenticated });
       this._spawnWaiters.clear();
     });
+    bot.on('forcedMove', () => {
+      if (this.bot !== bot) return;
+      // The server teleported us. Any plan built from the old position is now
+      // invalid, and continuing it produces one huge correction that Paper
+      // calls invalid_player_movement. Stop the path and settle for a moment.
+      this._markEvent();
+      this._forcedReanchors++;
+      this._movementBlockedUntil = Math.max(this._movementBlockedUntil || 0, this.now() + 400);
+      try { bot.pathfinder?.stop?.(); } catch (_) { /* not loaded */ }
+      this.position = this._vec(bot.entity?.position);
+    });
     bot.on('move', () => {
       if (this.bot !== bot) return;
       this._markEvent();
@@ -1095,7 +1184,7 @@ class RealBot extends BotAdapter {
       if (kick.pauseRetries) {
         this.logger.error(`[${this.name}] automatic retries paused after ${kick.kind} kick; an explicit dashboard reconnect is required`);
       }
-      if (/invalid move player packet/i.test(this.lastError)) {
+      if (/invalid move player packet|invalid_player_movement|moved wrongly/i.test(this.lastError)) {
         this.logger.warn(`[${this.name}] server rejected a movement packet; set MC_VERSION to the server's exact version before relying on live movement`);
       }
       // The lifecycle is already terminal and its end event is ignored by the
@@ -1240,7 +1329,14 @@ class RealBot extends BotAdapter {
         if (!owns()) return;
         const now = Date.now();
         if (this._lastInboundPacketAt && now - this._lastInboundPacketAt >= 1000) {
-          this.logger.warn(`[${this.name}] inbound packet gap ${now - this._lastInboundPacketAt}ms before ${meta && meta.name ? meta.name : 'unknown'} (${buffer ? buffer.length : 0} bytes)`);
+          // Chunk streaming produces dozens of >1s gaps per join. Log the
+          // first one per five seconds, plus every gap over ten seconds; a
+          // warning per packet is itself event-loop work during the burst.
+          const gap = now - this._lastInboundPacketAt;
+          if (gap >= 10000 || !this._lastGapWarnAt || now - this._lastGapWarnAt >= 5000) {
+            this._lastGapWarnAt = now;
+            this.logger.warn(`[${this.name}] inbound packet gap ${gap}ms before ${meta && meta.name ? meta.name : 'unknown'} (${buffer ? buffer.length : 0} bytes)`);
+          }
         }
         this._lastInboundPacketAt = now;
         this.lastInboundPacket = { name: meta && meta.name ? meta.name : null, at: now, bytes: buffer ? buffer.length : 0 };
@@ -2133,11 +2229,64 @@ class RealBot extends BotAdapter {
   // ------------------------------------------------------------------
   // Movement and interaction
   // ------------------------------------------------------------------
+
+  /**
+   * True only when the block under the entity is present in the loaded world.
+   * Starting a pathfinder while the spawn chunks are still streaming produces
+   * long synchronous block lookups and a burst of deferred movements; the
+   * runtime uses this to keep a bot on safety work until its column exists.
+   */
+  isChunkReady() {
+    if (!this.ready || !this.bot || !this.bot.entity) return false;
+    try {
+      const Vec3 = require('vec3');
+      const p = this.bot.entity.position;
+      const below = this.bot.blockAt(new Vec3(Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z)));
+      return Boolean(below);
+    } catch (_) {
+      // An API mismatch must not wedge the whole fleet forever.
+      return true;
+    }
+  }
+
+  /**
+   * Abort the current movement/dig. Used by the runtime watchdog when a
+   * controller call outlives its budget; the action layer then sees a path or
+   * dig rejection instead of holding the bot forever.
+   */
+  cancelAction(reason = 'action timeout') {
+    try { this.bot?.pathfinder?.stop?.(); } catch (_) { /* optional */ }
+    try { this.bot?.stopDigging?.(); } catch (_) { /* optional */ }
+    try { this.bot?.clearControlStates?.(); } catch (_) { /* optional */ }
+    this._movementBlockedUntil = Math.max(this._movementBlockedUntil || 0, this.now() + 500);
+    this.logger.warn(`[${this.name}] action cancelled: ${reason}`);
+    return { ok: true, cancelled: true, reason };
+  }
+
   async goTo(pos, { range = 1, timeoutMs = 20000 } = {}) {
     const check = this._assertReady();
     if (check) return check;
+    // A move that starts while the tick loop is still catching up would emit
+    // one huge correction. Give the loop a moment, then try again next tick.
+    // Check before loading pathfinder so a resync does not build a plan at all.
+    if (this._clientTicker && this._clientTicker.lastTickAt) {
+      const age = this.now() - this._clientTicker.lastTickAt;
+      if (age >= config.autonomy.stallGuardMs) {
+        this._onClientStall(age);
+        return { ok: false, error: 'client tick loop stalled; movement deferred until it recovers', stalled: true };
+      }
+    }
+    if (this.now() < this._movementBlockedUntil) {
+      return { ok: false, error: 'movement paused while resynchronising after a client stall', stalled: true };
+    }
     const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
     if (!this.bot.pathfinder) this.bot.loadPlugin(pathfinder);
+    // Cooperative A*: yield every few milliseconds and cap the total search.
+    // The stock 40ms slice/5s total let one bot hold a whole tick while nine
+    // others missed keep-alive and tick_end deadlines.
+    this.bot.pathfinder.thinkTimeout = config.autonomy.pathfinderThinkTimeoutMs;
+    this.bot.pathfinder.tickTimeout = config.autonomy.pathfinderTickTimeoutMs;
+    this.bot.pathfinder.searchRadius = config.autonomy.pathfinderSearchRadius;
     const movements = new Movements(this.bot);
     this.bot.pathfinder.setMovements(movements);
     const goal = new goals.GoalNear(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z), Math.max(1, range));
@@ -2671,6 +2820,14 @@ class RealBot extends BotAdapter {
       connection: this._connectionSnapshot(),
       keepAlive: { ...this._keepAlive },
       ticker: this._clientTicker ? this._clientTicker.snapshot() : null,
+      // Visible on the Connections page. A non-zero count means the process
+      // was frozen and movement was deliberately held to avoid a kick.
+      stall: {
+        recoveries: this._stallRecoveries,
+        forcedReanchors: this._forcedReanchors,
+        droppedMovements: this._stallDroppedMovements,
+        blockedUntil: this._movementBlockedUntil || null
+      },
       lastDeath: this.lastDeath,
       lastDeathMessage: this.lastDeathMessage,
       lastDamageAt: this.lastDamageAt,

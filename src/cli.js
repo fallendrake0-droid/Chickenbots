@@ -6,6 +6,7 @@ const { config, validateConfig } = require('./config');
 const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
 const { printStartupBanner } = require('./branding');
+const { acquireLiveLock } = require('./liveLock');
 
 function usage() {
   process.stdout.write(`Chickenbots V6 CLI
@@ -46,6 +47,14 @@ async function main() {
     return 2;
   }
   if (!commandArgs.length) printStartupBanner();
+  let liveLock = null;
+  if (live && !simulate) {
+    liveLock = acquireLiveLock();
+    if (!liveLock.ok) {
+      logger.error(`another live runtime is already running (pid ${liveLock.pid}); use its dashboard instead of opening a second set of ten logins`);
+      return 2;
+    }
+  }
   const runtime = await createRuntime({ simulate, connect: live && !simulate, dashboard: false, logger });
   await runtime.start();
   let shuttingDown = false;
@@ -53,6 +62,7 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     try { await runtime.shutdown(reason); } catch (err) { process.stderr.write(`shutdown error: ${err.message}\n`); }
+    if (liveLock && typeof liveLock.release === 'function') liveLock.release();
   };
   const stop = async (signal) => {
     process.stdout.write(`\n${signal}; shutting down…\n`);

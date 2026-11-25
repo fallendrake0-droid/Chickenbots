@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { TeamRuntime } = require('../src/runtime');
+const { config } = require('../src/config');
 
 test('ready bots run safety ticks while the team is still joining', async () => {
   const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
@@ -45,6 +46,109 @@ test('pausing autonomy never stops reconnect supervision', async () => {
   await runtime._tick();
   assert.equal(recovered, 1, 'a paused runtime must still restore dropped bots');
   assert.equal(runtime.ticking, false);
+});
+
+test('live autonomy waits for spawn chunks to settle before starting ten pathfinders', () => {
+  const runtime = new TeamRuntime({ simulate: false, connect: false, dashboard: false });
+  Object.defineProperty(runtime, 'allBotsReady', { configurable: true, get: () => true });
+  runtime.autonomyArmed = true;
+  runtime.autonomyArmedAt = runtime.now() - 1000;
+  assert.equal(runtime.autonomySettled, false);
+  assert.equal(runtime.autonomyAllowed, false);
+  assert.ok(runtime.autonomyWarmupRemainingMs > 0);
+  runtime.autonomyArmedAt = runtime.now() - config.autonomy.warmupMs - 1;
+  assert.equal(runtime.autonomySettled, true);
+  assert.equal(runtime.autonomyAllowed, true);
+});
+
+test('a slow controller action never blocks the autonomy tick or the next bot', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const started = [];
+  const bot = { name: '________', connected: true, spawned: true, health: 20 };
+  runtime.actions = {
+    list: () => [{
+      bot,
+      recovery: { canWork: () => true },
+      safetyTick: async () => {},
+      step: async () => { started.push(bot.name); await gate; }
+    }]
+  };
+  runtime.coordinator = { getAssignment: () => ({ type: 'MINE_ORE' }) };
+  runtime.ticks = 20;
+  const before = Date.now();
+  const result = runtime._launchBotWork();
+  assert.ok(Date.now() - before < 500, 'launching work must not await the action');
+  assert.equal(result.launched, 1);
+  assert.equal(runtime.botSteps.size, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started.length, 1);
+  // A second launch cannot duplicate the same bot's step.
+  runtime._launchBotWork();
+  assert.equal(started.length, 1);
+  release();
+  await runtime.drainBotWork(1000);
+  assert.equal(runtime.botSteps.size, 0);
+});
+
+test('a bot whose spawn column is still streaming does safety work, not pathfinding', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const calls = [];
+  const bot = { name: '________', connected: true, spawned: true, health: 20, isChunkReady: () => false };
+  runtime.actions = {
+    list: () => [{
+      bot,
+      recovery: { canWork: () => true },
+      safetyTick: async () => { calls.push('safety'); },
+      step: async () => { calls.push('step'); }
+    }]
+  };
+  runtime.coordinator = { getAssignment: () => ({ type: 'CHOP_WOOD' }) };
+  runtime.ticks = 20;
+  const result = runtime._launchBotWork();
+  assert.equal(result.launched, 0);
+  await runtime.drainBotWork(1000);
+  assert.deepEqual(calls, ['safety'], 'no pathfinder may start before the local column exists');
+});
+
+test('a terminal kick is reconnected even if the legacy connected flag is stale', async () => {
+  const runtime = new TeamRuntime({ simulate: false, connect: true, dashboard: false });
+  runtime.serverVersion = '26.1';
+  const started = [];
+  runtime._startConnection = (bot) => { started.push(bot.name); return Promise.resolve({ ok: true }); };
+  runtime.bots = new Map([['________', {
+    name: '________',
+    connected: true,
+    _transportDead: true,
+    ready: false,
+    lastSessionEndedAt: 0,
+    connection: { snapshot: () => ({ generation: 1, state: 'failed', open: false, spawned: true, authenticated: true }) }
+  }]]);
+  await runtime._recoverDisconnected();
+  assert.deepEqual(started, ['________'], 'a dead transport must not be skipped because connected=true');
+});
+
+test('connect() reopens a socket after a terminal kick left connected=true', async () => {
+  const { RealBot } = require('../src/bot/realBot');
+  const real = new RealBot({ name: '________', createBot: () => ({}) });
+  let opened = 0;
+  real.connected = true;
+  real._transportDead = true;
+  real._connectOnce = async () => { opened++; return { ok: true }; };
+  const result = await real.connect();
+  assert.equal(result.ok, true);
+  assert.equal(opened, 1);
+});
+
+test('reconnect supervision is callable even while a bot action is in flight', async () => {
+  const runtime = new TeamRuntime({ simulate: false, connect: true, dashboard: false });
+  runtime.serverVersion = '26.1';
+  let recovered = 0;
+  runtime._recoverDisconnected = async () => { recovered++; };
+  await runtime._superviseConnections();
+  assert.equal(recovered, 1);
+  assert.equal(runtime.supervisorBusy, false);
 });
 
 test('bots wait for the version probe instead of burning attempts on VERSION_UNRESOLVED', async () => {
@@ -131,4 +235,26 @@ test('the dashboard state exposes the per-bot retry attempt without a fleet paus
   assert.deepEqual(row.retry, retry);
   assert.equal(runtime.joinCooldownUntil, 0);
   runtime.eventLoopDelay.disable();
+});
+
+test('an operator command takes an exclusive slot and cancels the autonomous step', async () => {
+  const runtime = new TeamRuntime({ simulate: true, connect: false, dashboard: false });
+  const cancelled = [];
+  runtime.bots = new Map([['________', { name: '________', cancelAction: (reason) => cancelled.push(reason) }]]);
+  let finishPrior;
+  const prior = new Promise((resolve) => { finishPrior = resolve; });
+  runtime.botSteps.set('________', prior);
+  let ran = false;
+  const command = runtime.runExclusive('________', async () => {
+    ran = true;
+    assert.equal(runtime.commandLocks.has('________'), true, 'the lock is held while the command runs');
+    return { ok: true };
+  });
+  assert.equal(runtime.commandLocks.has('________'), true);
+  assert.deepEqual(cancelled, ['operator command']);
+  finishPrior();
+  const result = await command;
+  assert.deepEqual(result, { ok: true });
+  assert.equal(ran, true);
+  assert.equal(runtime.commandLocks.has('________'), false, 'the lock is released in finally');
 });

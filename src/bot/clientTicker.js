@@ -33,7 +33,9 @@ class ClientTickScheduler {
     name = '',
     logger = null,
     now = Date.now,
-    timers = null
+    timers = null,
+    stallMs = 0,
+    onStall = null
   } = {}) {
     if (typeof write !== 'function') throw new TypeError('ClientTickScheduler needs a write function');
     this.write = write;
@@ -43,6 +45,8 @@ class ClientTickScheduler {
     this.now = now;
     this.timers = timers || { setInterval, clearInterval };
     this.maxCatchUpTicks = Math.max(1, Math.min(10, Number(maxCatchUpTicks) || 2));
+    this.stallMs = Math.max(0, Number(stallMs) || 0);
+    this.onStall = typeof onStall === 'function' ? onStall : null;
     this.running = false;
     this.frozen = false;
     this.ticks = 0;
@@ -60,6 +64,8 @@ class ClientTickScheduler {
     this._pendingPosition = null;
     this._pendingPositionName = null;
     this._tickEndOpen = false;
+    this.stalls = 0;
+    this.lastStallMs = 0;
   }
 
   get tickMs() { return Math.round(1000 / this.tickRate); }
@@ -180,6 +186,8 @@ class ClientTickScheduler {
       deferredMovements: this.deferredMovements,
       deferredTicks: this.deferredTicks,
       writeErrors: this.writeErrors,
+      stalls: this.stalls,
+      lastStallMs: this.lastStallMs,
       lastTickAt: this.lastTickAt || null,
       ageMs: this.lastTickAt ? Math.max(0, Math.round(when - this.lastTickAt)) : null,
       startedAt: this.startedAt || null,
@@ -189,6 +197,23 @@ class ClientTickScheduler {
   }
 
   _runTick(when) {
+    // A tick arriving hundreds of milliseconds late means the process was
+    // frozen (a synchronous chunk/pathfinding burst or a host suspend). Do not
+    // emit movement before the caller has had a chance to resynchronise the
+    // entity with the server; the first post-freeze packet is otherwise an
+    // impossible jump and Paper answers with invalid_player_movement.
+    if (this.stallMs > 0 && this.lastTickAt > 0) {
+      const late = when - this.lastTickAt;
+      if (late >= this.stallMs) {
+        this.stalls += 1;
+        this.lastStallMs = late;
+        this._pendingPosition = null;
+        this._pendingPositionName = null;
+        if (this.onStall) {
+          try { this.onStall(late, when); } catch (_) { /* recovery must not stop ticks */ }
+        }
+      }
+    }
     // A deferred position belongs to this tick. It is written before the
     // tick's tick_end, exactly as vanilla orders movement then tick end.
     if (this._pendingPosition) {

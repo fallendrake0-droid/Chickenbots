@@ -81,6 +81,11 @@ test('operator and ban kicks pause retries while throttling remains retryable', 
   assert.equal(throttle.kind, 'throttle');
   assert.equal(throttle.pauseRetries, false);
   assert.equal(classifyKick('socket hang up').pauseRetries, false);
+  // Paper's snake_case movement rejection must reconnect, not pause.
+  const movement = classifyKick('Kicked: invalid_player_movement');
+  assert.equal(movement.retry, true);
+  assert.equal(movement.pauseRetries, false);
+  assert.equal(movement.kind, 'protocol');
 });
 
 test('a failed multi-lock claim rolls back every lock it acquired', () => {

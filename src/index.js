@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const { config, BOT_NAMES, validateConfig, ROOT } = require('./config');
+const { config, BOT_NAMES, validateConfig } = require('./config');
 const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
 const { printStartupBanner } = require('./branding');
+const { acquireLiveLock } = require('./liveLock');
 
 function parseArgs(argv) {
   const args = { simulate: config.sim.enabled, dashboard: true, port: config.dashboard.port, host: config.dashboard.host, connect: true, allowInsecure: false };
@@ -22,39 +21,6 @@ function parseArgs(argv) {
     else if (arg === '--help' || arg === '-h') args.help = true;
   }
   return args;
-}
-
-/**
- * A second live runtime would log in with the same ten usernames and make the
- * server kick the first instance (duplicate login), which surfaces as a raw
- * EPIPE/ECONNRESET rather than a readable kick message. Refuse to start twice.
- */
-function acquireLiveLock() {
-  const dir = path.join(ROOT, 'data', 'runtime');
-  const file = path.join(dir, 'live.pid');
-  fs.mkdirSync(dir, { recursive: true });
-  try {
-    const pid = Number(String(fs.readFileSync(file, 'utf8')).trim());
-    if (Number.isFinite(pid) && pid > 0 && pid !== process.pid) {
-      try {
-        process.kill(pid, 0);
-        return { ok: false, pid };
-      } catch (err) {
-        if (err.code === 'EPERM') return { ok: false, pid };
-        if (err.code !== 'ESRCH') throw err;
-      }
-    }
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
-  }
-  fs.writeFileSync(file, String(process.pid));
-  const release = () => {
-    try {
-      if (String(fs.readFileSync(file, 'utf8')).trim() === String(process.pid)) fs.unlinkSync(file);
-    } catch (_) { /* already gone */ }
-  };
-  process.once('exit', release);
-  return { ok: true, release };
 }
 
 function usage() {
