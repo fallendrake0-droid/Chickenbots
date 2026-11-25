@@ -128,13 +128,13 @@ test('the client tick scheduler emits one tick_end per tick and defers a second 
   assert.equal(scheduler.writeMovement('position', { x: 2 }), false, 'second position is deferred');
   assert.equal(scheduler.writeMovement('look', { yaw: 90 }), true, 'look is not position-bearing');
   scheduler.tick();
-  assert.deepEqual(writes.map((entry) => entry.name), ['position', 'look', 'position', 'tick_end']);
+  assert.deepEqual(writes.map((entry) => entry.name), ['position', 'look', 'tick_end']);
   assert.equal(writes.at(-1).name, 'tick_end');
 
   const before = writes.length;
   scheduler.tick();
-  assert.equal(writes.length, before + 1);
-  assert.equal(writes.at(-1).name, 'tick_end');
+  assert.equal(writes.length, before + 2, 'the deferred position opens the next tick');
+  assert.deepEqual(writes.slice(before).map((entry) => entry.name), ['position', 'tick_end']);
   assert.equal(scheduler.ticks, 2);
 
   scheduler.setTickingState({ isFrozen: true });
@@ -149,6 +149,35 @@ test('the client tick scheduler emits one tick_end per tick and defers a second 
   const stoppedAt = writes.length;
   scheduler.tick();
   assert.equal(writes.length, stoppedAt, 'a stopped scheduler cannot emit another tick');
+});
+
+test('a deferred position is closed by tick_end before it is sent', () => {
+  const writes = [];
+  const scheduler = new ClientTickScheduler({
+    write: (name, packet) => writes.push({ name, packet }),
+    timers: { setInterval: () => ({ unref() {} }), clearInterval: () => {} }
+  });
+  scheduler.start();
+  assert.equal(scheduler.writeMovement('position', { x: 1 }), true);
+  assert.equal(scheduler.writeMovement('position', { x: 2 }), false);
+  scheduler.tick();
+  assert.deepEqual(writes.map((entry) => entry.name), ['position', 'tick_end']);
+  // A new physics position arrives before the next tick. It replaces the
+  // queued one; the tick opens with exactly one position and then tick_end.
+  assert.equal(scheduler.writeMovement('position', { x: 3 }), false);
+  scheduler.tick();
+  assert.deepEqual(writes.map((entry) => entry.name), ['position', 'tick_end', 'tick_end']);
+  scheduler.tick();
+  assert.deepEqual(writes.map((entry) => entry.name), ['position', 'tick_end', 'tick_end', 'position', 'tick_end']);
+  const positionsPerTick = [];
+  let count = 0;
+  for (const entry of writes) {
+    if (entry.name === 'tick_end') { positionsPerTick.push(count); count = 0; }
+    else if (entry.name === 'position' || entry.name === 'position_look') count++;
+  }
+  assert.deepEqual(positionsPerTick, [1, 0, 1], 'never two positions before one tick_end');
+  assert.equal(scheduler.deferredMovements, 2);
+  scheduler.stop('test');
 });
 
 test('a late client tick is treated as a freeze, not as normal movement', () => {
@@ -205,6 +234,87 @@ test('chunk readiness is false until the block below the entity is loaded', () =
   assert.equal(real.isChunkReady(), false);
   loaded = true;
   assert.equal(real.isChunkReady(), true);
+});
+
+function movementBot() {
+  const real = new RealBot({ name: '________', createBot: () => new FakeBot(), loginPassword: '', registerPassword: '', authEnabled: false });
+  real.connected = true;
+  real.spawned = true;
+  real.authenticated = true;
+  const registry = require('minecraft-data')('1.21.1');
+  real.bot = new FakeBot();
+  real.bot.registry = registry;
+  real.bot.game = { dimension: 'overworld' };
+  const calls = [];
+  let rejectActive = null;
+  real.bot.pathfinder = {
+    calls,
+    thinkTimeout: 0,
+    tickTimeout: 0,
+    searchRadius: 0,
+    setMovements() {},
+    stop() { if (rejectActive) rejectActive(new Error('Path was stopped before it could be completed!')); },
+    goto() {
+      calls.push(Date.now());
+      return new Promise((resolve, reject) => { rejectActive = reject; setTimeout(resolve, 40); });
+    }
+  };
+  return { real, calls };
+}
+
+test('malformed movement payloads are rejected before the write guard sends them', () => {
+  const real = new RealBot({ name: '________', createBot: () => new FakeBot(), authEnabled: false, loginPassword: '', registerPassword: '' });
+  assert.equal(real._movementPayloadValid('position', { x: 1, y: 64, z: 1, onGround: true }), true);
+  assert.equal(real._movementPayloadValid('position', { x: NaN, y: 64, z: 1 }), false);
+  assert.equal(real._movementPayloadValid('position_look', { x: Infinity, y: 64, z: 1, yaw: 0, pitch: 0 }), false);
+  assert.equal(real._movementPayloadValid('position_look', { x: 1, y: 64, z: 1, yaw: NaN, pitch: 0 }), false);
+  assert.equal(real._movementPayloadValid('look', { yaw: 0, pitch: Infinity }), false);
+  assert.equal(real._movementPayloadValid('look', { yaw: 90, pitch: 10 }), true);
+  assert.equal(real._movementPayloadValid('flying', { onGround: false }), true);
+});
+
+test('a stopped pathfinder rejection is returned, never thrown as an unhandled rejection', async () => {
+  const { real } = movementBot();
+  real.bot.pathfinder.goto = () => Promise.reject(new Error('Path was stopped before it could be completed!'));
+  const result = await real.goTo({ x: 2, y: 64, z: 2 });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Path was stopped/);
+  assert.equal(real.summary().movement.active, false);
+});
+
+test('a lower-priority task cannot replace an emergency retreat', async () => {
+  const { real, calls } = movementBot();
+  const emergency = real.goTo({ x: 20, y: 64, z: 20 }, { priority: 'emergency', owner: 'recovery', timeoutMs: 200 });
+  const blocked = await real.goTo({ x: 30, y: 64, z: 30 }, { priority: 'task', owner: 'mining', timeoutMs: 100 });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.superseded, true);
+  assert.match(blocked.error, /owned by recovery/);
+  assert.equal(calls.length, 1, 'the lower-priority request never reaches the pathfinder');
+  const first = await emergency;
+  assert.equal(first.ok, true);
+});
+
+test('a higher-priority retreat pre-empts a task path', async () => {
+  const { real } = movementBot();
+  const task = real.goTo({ x: 20, y: 64, z: 20 }, { priority: 'task', owner: 'mining', timeoutMs: 300 });
+  const emergency = real.goTo({ x: -8, y: 64, z: -8 }, { priority: 'emergency', owner: 'recovery', timeoutMs: 300 });
+  const taskResult = await task;
+  assert.equal(taskResult.superseded, true);
+  const emergencyResult = await emergency;
+  assert.equal(emergencyResult.ok, true);
+  assert.equal(real._motion, null, 'a completed move releases ownership');
+});
+
+test('movement refuses an invalid destination and a dead bot before touching pathfinder', async () => {
+  const { real, calls } = movementBot();
+  const invalid = await real.goTo({ x: NaN, y: 64, z: 0 });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, 'INVALID_DESTINATION');
+  real.health = 0;
+  const dead = await real.goTo({ x: 2, y: 64, z: 2 });
+  assert.equal(dead.ok, false);
+  assert.match(dead.error, /dead/);
+  assert.equal(calls.length, 0);
 });
 
 test('freeze recovery stops the stale path and re-anchors the entity to the server', () => {

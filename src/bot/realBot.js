@@ -22,6 +22,26 @@ const HOSTILE = new Set([
 
 const FLUID_BLOCKS = new Set(['water', 'lava', 'flowing_water', 'flowing_lava']);
 
+// One movement owner per bot. A recovery retreat must not be overwritten by a
+// task pathfinder, and an operator move must not be silently cancelled by a
+// routine follow command. Higher numbers win.
+const MOVE_PRIORITY = Object.freeze({ routine: 0, task: 1, recovery: 2, operator: 3, emergency: 4 });
+const POSITION_PACKET_NAMES = new Set(['position', 'position_look']);
+const MAX_WORLD_COORDINATE = 30000000;
+
+function movePriority(value) {
+  if (Number.isFinite(Number(value))) return Number(value);
+  return MOVE_PRIORITY[String(value || 'task').toLowerCase()] ?? MOVE_PRIORITY.task;
+}
+
+function finitePosition(pos) {
+  return Boolean(pos)
+    && Number.isFinite(Number(pos.x)) && Number.isFinite(Number(pos.y)) && Number.isFinite(Number(pos.z))
+    && Math.abs(Number(pos.x)) <= MAX_WORLD_COORDINATE
+    && Math.abs(Number(pos.z)) <= MAX_WORLD_COORDINATE
+    && Number(pos.y) >= -512 && Number(pos.y) <= 2048;
+}
+
 /**
  * Live Mineflayer bot.
  *
@@ -159,6 +179,10 @@ class RealBot extends BotAdapter {
     this._stallRecoveries = 0;
     this._lastStallWarnAt = 0;
     this._stallDroppedMovements = 0;
+    this._motion = null;
+    this._motionToken = 0;
+    this._invalidMovementDrops = 0;
+    this._lastInvalidMovementWarnAt = 0;
     this.kickKind = null;
     this.retryPaused = false;
     this._blockCache = new Map();
@@ -253,6 +277,18 @@ class RealBot extends BotAdapter {
           && nowMs - this._clientTicker.lastTickAt >= config.autonomy.stallGuardMs);
         if (tickerStale || nowMs < this._movementBlockedUntil) {
           this._stallDroppedMovements++;
+          return true;
+        }
+        // Never put NaN, Infinity or an out-of-world coordinate on the wire.
+        // A rejected packet at this layer is recoverable; Paper's anti-cheat
+        // answer to a malformed one is not.
+        if (!this._movementPayloadValid(name, packet)) {
+          this._invalidMovementDrops++;
+          this._reanchorAfterInvalidPacket();
+          if (nowMs - this._lastInvalidMovementWarnAt >= 10000) {
+            this._lastInvalidMovementWarnAt = nowMs;
+            this.logger.warn(`[${this.name}] dropped a malformed ${name} packet (invalid coordinates/angles); re-anchored to the last server position`);
+          }
           return true;
         }
         // The client tick scheduler owns packet ordering: at most one
@@ -428,8 +464,40 @@ class RealBot extends BotAdapter {
   }
 
   /** Recover after a frozen event loop or a suspended host. */
+  _movementPayloadValid(name, packet) {
+    if (!packet) return false;
+    if (POSITION_PACKET_NAMES.has(name)) {
+      for (const axis of ['x', 'y', 'z']) {
+        const value = Number(packet[axis]);
+        if (!Number.isFinite(value)) return false;
+        if (axis === 'y' && (value < -512 || value > 2048)) return false;
+        if (axis !== 'y' && Math.abs(value) > MAX_WORLD_COORDINATE) return false;
+      }
+    }
+    if (name === 'position_look' || name === 'look') {
+      if (!Number.isFinite(Number(packet.yaw)) || !Number.isFinite(Number(packet.pitch))) return false;
+    }
+    return true;
+  }
+
+  _reanchorAfterInvalidPacket() {
+    const server = this.lastServerPosition;
+    if (!this.bot?.entity?.position || !finitePosition(server)) return false;
+    try {
+      this.bot.entity.position.set(server.x, server.y, server.z);
+      if (this.bot.entity.velocity && typeof this.bot.entity.velocity.set === 'function') this.bot.entity.velocity.set(0, 0, 0);
+      if (Number.isFinite(server.yaw)) this.bot.entity.yaw = server.yaw;
+      if (Number.isFinite(server.pitch)) this.bot.entity.pitch = server.pitch;
+      this.position = this._vec(this.bot.entity.position);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   _onClientStall(lateMs) {
     if (!this.bot || this._transportDead) return false;
+    this._cancelMotion('client tick stall', { stop: false });
     this._stallRecoveries += 1;
     this._movementBlockedUntil = this.now() + Math.max(0, config.autonomy.stallResumeMs);
     // The pathfinder's plan was computed against a world/entity that is now
@@ -1076,7 +1144,7 @@ class RealBot extends BotAdapter {
       this._markEvent();
       this._forcedReanchors++;
       this._movementBlockedUntil = Math.max(this._movementBlockedUntil || 0, this.now() + 400);
-      try { bot.pathfinder?.stop?.(); } catch (_) { /* not loaded */ }
+      this._cancelMotion('server teleport', { stop: true });
       this.position = this._vec(bot.entity?.position);
     });
     bot.on('move', () => {
@@ -1287,15 +1355,19 @@ class RealBot extends BotAdapter {
       });
       client.on('position', (packet) => {
         if (!owns()) return;
-        this.lastServerPosition = {
-          x: Number.isFinite(packet.x) ? Number(packet.x.toFixed(3)) : packet.x,
-          y: Number.isFinite(packet.y) ? Number(packet.y.toFixed(3)) : packet.y,
-          z: Number.isFinite(packet.z) ? Number(packet.z.toFixed(3)) : packet.z,
-          yaw: packet.yaw,
-          pitch: packet.pitch,
+        // Relative flags can leave a field absent. Never overwrite the last
+        // authoritative anchor with undefined/NaN; the re-anchor path depends
+        // on this object being usable.
+        const previous = this.lastServerPosition || {};
+        const pick = (axis) => (Number.isFinite(Number(packet[axis])) ? Number(Number(packet[axis]).toFixed(3)) : previous[axis]);
+        const authoritative = {
+          x: pick('x'), y: pick('y'), z: pick('z'),
+          yaw: Number.isFinite(Number(packet.yaw)) ? Number(packet.yaw) : previous.yaw,
+          pitch: Number.isFinite(Number(packet.pitch)) ? Number(packet.pitch) : previous.pitch,
           flags: packet.flags,
           teleportId: packet.teleportId
         };
+        this.lastServerPosition = authoritative;
         this.logger.debug(`[${this.name}] TRACE in position x=${packet.x} y=${packet.y} z=${packet.z} yaw=${packet.yaw} pitch=${packet.pitch} flags=${JSON.stringify(packet.flags)} teleportId=${packet.teleportId}`);
       });
       client.on('respawn', () => {
@@ -2255,6 +2327,7 @@ class RealBot extends BotAdapter {
    * dig rejection instead of holding the bot forever.
    */
   cancelAction(reason = 'action timeout') {
+    this._cancelMotion(reason, { stop: true });
     try { this.bot?.pathfinder?.stop?.(); } catch (_) { /* optional */ }
     try { this.bot?.stopDigging?.(); } catch (_) { /* optional */ }
     try { this.bot?.clearControlStates?.(); } catch (_) { /* optional */ }
@@ -2263,9 +2336,19 @@ class RealBot extends BotAdapter {
     return { ok: true, cancelled: true, reason };
   }
 
-  async goTo(pos, { range = 1, timeoutMs = 20000 } = {}) {
+  /**
+   * Move with a single authoritative owner. Every caller that cares about
+   * survival passes `priority`; a lower-priority task path is rejected instead
+   * of silently replacing a retreat, and a higher-priority path cancels the
+   * old one cleanly. The path promise is always caught: mineflayer-pathfinder
+   * rejects with "Path was stopped before it could be completed", and an
+   * uncaught rejection would reach the process unhandledRejection handler.
+   */
+  async goTo(pos, { range = 1, timeoutMs = 20000, priority = 'task', owner = null } = {}) {
     const check = this._assertReady();
     if (check) return check;
+    if (this.health <= 0) return { ok: false, error: 'bot is dead; movement refused' };
+    if (!finitePosition(pos)) return { ok: false, error: `invalid movement destination ${JSON.stringify(pos)}`, code: 'INVALID_DESTINATION' };
     // A move that starts while the tick loop is still catching up would emit
     // one huge correction. Give the loop a moment, then try again next tick.
     // Check before loading pathfinder so a resync does not build a plan at all.
@@ -2279,26 +2362,79 @@ class RealBot extends BotAdapter {
     if (this.now() < this._movementBlockedUntil) {
       return { ok: false, error: 'movement paused while resynchronising after a client stall', stalled: true };
     }
+    const wantedPriority = movePriority(priority);
+    const now = this.now();
+    const active = this._motion;
+    if (active && active.generation === this.connection.generation && now < active.expiresAt && wantedPriority < active.priority) {
+      return {
+        ok: false, superseded: true,
+        error: `movement is owned by ${active.owner} (priority ${active.priority})`,
+        owner: active.owner, priority: active.priority
+      };
+    }
+    if (active) this._cancelMotion(`superseded by ${owner || priority}`, { stop: true });
+    const generation = this.connection.generation;
+    const token = ++this._motionToken;
+    const motion = {
+      token, generation, owner: owner || String(priority), priority: wantedPriority,
+      startedAt: now, expiresAt: now + Math.max(1000, Number(timeoutMs) || 20000) + 5000
+    };
+    this._motion = motion;
     const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
     if (!this.bot.pathfinder) this.bot.loadPlugin(pathfinder);
     // Cooperative A*: yield every few milliseconds and cap the total search.
-    // The stock 40ms slice/5s total let one bot hold a whole tick while nine
-    // others missed keep-alive and tick_end deadlines.
     this.bot.pathfinder.thinkTimeout = config.autonomy.pathfinderThinkTimeoutMs;
     this.bot.pathfinder.tickTimeout = config.autonomy.pathfinderTickTimeoutMs;
     this.bot.pathfinder.searchRadius = config.autonomy.pathfinderSearchRadius;
     const movements = new Movements(this.bot);
     this.bot.pathfinder.setMovements(movements);
     const goal = new goals.GoalNear(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z), Math.max(1, range));
-    const pathPromise = this.bot.pathfinder.goto(goal).then(() => ({ ok: true }));
-    const timeout = new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: 'path timeout' }), timeoutMs));
-    const result = await Promise.race([pathPromise, timeout]);
+    let timer = null;
+    const pathPromise = this.bot.pathfinder.goto(goal).then(
+      () => ({ ok: true }),
+      (err) => ({ ok: false, error: err && err.message ? err.message : String(err), pathRejected: true })
+    );
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false, error: 'path timeout', timedOut: true }), timeoutMs);
+      if (timer.unref) timer.unref();
+    });
+    let result;
+    try {
+      result = await Promise.race([pathPromise, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    // A newer owner (or a reconnect) invalidated this request while it was in
+    // flight. Do not stop the new path and do not report success for the old.
+    if (this._motion?.token !== token || this.connection.generation !== generation) {
+      return { ...result, ok: false, superseded: true, error: 'movement request was superseded' };
+    }
+    this._motion = null;
     if (result.ok === false) {
       try { this.bot.pathfinder.stop(); } catch (_) { /* pathfinder may not be running */ }
     }
-    this.position = this._vec(this.bot.entity?.position);
+    const live = this.bot.entity?.position;
+    if (finitePosition(live)) this.position = this._vec(live);
     return result;
   }
+
+  /** Move near an entity (mineflayer-pathfinder companion; the mock has one). */
+  async goNear(entity, range = 2, options = {}) {
+    if (!entity || !finitePosition(entity.position)) return { ok: false, error: 'entity has no valid position' };
+    return this.goTo(entity.position, { range, ...options });
+  }
+
+  _cancelMotion(reason = 'cancelled', { stop = true } = {}) {
+    if (!this._motion && !stop) return false;
+    this._motionToken += 1;
+    this._motion = null;
+    if (stop) {
+      try { this.bot?.pathfinder?.stop?.(); } catch (_) { /* optional */ }
+    }
+    if (this._motion || stop) this.logger.debug(`[${this.name}] movement cancelled: ${reason}`);
+    return true;
+  }
+
 
   async digBlock(pos, { timeoutMs = 20000 } = {}) {
     const check = this._assertReady();
@@ -2782,6 +2918,7 @@ class RealBot extends BotAdapter {
     this._failTcpWaiters(reason || 'disconnected');
     this._failLoginWaiters(reason || 'disconnected');
     this._restoreClientTrace();
+    this._cancelMotion(`disconnect: ${reason}`, { stop: true });
     if (snapshot.ready) this.lastSessionEndedAt = this.now();
     const bot = this.bot;
     this.bot = null;
@@ -2827,6 +2964,12 @@ class RealBot extends BotAdapter {
         forcedReanchors: this._forcedReanchors,
         droppedMovements: this._stallDroppedMovements,
         blockedUntil: this._movementBlockedUntil || null
+      },
+      movement: {
+        owner: this._motion ? this._motion.owner : null,
+        priority: this._motion ? this._motion.priority : null,
+        active: Boolean(this._motion),
+        invalidDrops: this._invalidMovementDrops
       },
       lastDeath: this.lastDeath,
       lastDeathMessage: this.lastDeathMessage,

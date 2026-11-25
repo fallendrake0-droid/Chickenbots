@@ -220,7 +220,7 @@ test('position packets are suppressed until password auth is released', () => {
   assert.deepEqual(writes, ['chat']);
   assert.equal(real._movementLock, true);
   real._unlockMovement();
-  fake._client.write('position_look', {});
+  fake._client.write('position_look', { x: 1, y: 64, z: 1, yaw: 0, pitch: 0, onGround: true });
   assert.deepEqual(writes, ['chat', 'position_look']);
   assert.equal(real._movementLock, false);
 

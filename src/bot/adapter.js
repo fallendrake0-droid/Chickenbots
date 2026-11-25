@@ -164,6 +164,16 @@ class BotAdapter {
   }
 
   summary() {
+    // One entity scan for both the threat count and the nearest distance.
+    // Calling threatsNear() and then nearestThreat() twice repeated the same
+    // O(entities) work on every state-sync tick and could print NaN when an
+    // entity had a malformed position.
+    const nearbyHostiles = this.entitiesNear(12).filter((entity) => entity.hostile);
+    const nearest = nearbyHostiles
+      .filter((entity) => entity.position && Number.isFinite(Number(entity.position.x)) && Number.isFinite(Number(entity.position.y)) && Number.isFinite(Number(entity.position.z)))
+      .map((entity) => ({ entity, distance: distance(entity.position, this.position) }))
+      .filter((entry) => Number.isFinite(entry.distance))
+      .sort((a, b) => a.distance - b.distance)[0] || null;
     return {
       name: this.name,
       connected: this.connected,
@@ -188,8 +198,8 @@ class BotAdapter {
       isSleeping: this.isSleeping,
       effects: { ...this.effects },
       capabilities: this.capabilities.slice(),
-      threats: this.threatsNear(this.position, 12),
-      nearestThreatDistance: (this.nearestThreat() ? Number(distance(this.nearestThreat().position, this.position).toFixed(1)) : undefined),
+      threats: nearbyHostiles.length,
+      nearestThreatDistance: nearest ? Number(nearest.distance.toFixed(1)) : undefined,
       deaths: this.deaths,
       currentTaskId: this.currentTaskId,
       activity: this.activity,

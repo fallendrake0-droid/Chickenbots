@@ -332,16 +332,16 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
   if (action === 'where') return { ok: true, bot: bot.name, position: { ...bot.position }, dimension: bot.dimension };
   if (action === 'goto') {
     const pos = parseOrigin(args, 2);
-    const result = await bot.goTo(pos, { range: 2, timeoutMs: 30000 });
+    const result = await bot.goTo(pos, { range: 2, timeoutMs: 30000, priority: 'operator', owner: 'operator-goto' });
     return { ok: result.ok !== false, ...result, position: { ...bot.position } };
   }
   if (action === 'come' || action === 'follow') {
     const destination = leader && leader !== bot ? leader.position : bot.position;
-    const result = await bot.goTo(destination, { range: 2, timeoutMs: 30000 });
+    const result = await bot.goTo(destination, { range: 2, timeoutMs: 30000, priority: 'operator', owner: 'operator-come' });
     return { ok: result.ok !== false, ...result, position: { ...bot.position }, followed: leader ? leader.name : null };
   }
   if (action === 'return') {
-    const result = await bot.goTo(services.runtime ? services.runtime.home : actions.home, { range: 3, timeoutMs: 30000 });
+    const result = await bot.goTo(services.runtime ? services.runtime.home : actions.home, { range: 3, timeoutMs: 30000, priority: 'operator', owner: 'operator-return' });
     return { ok: result.ok !== false, ...result, position: { ...bot.position } };
   }
   if (action === 'eat') return actions.survival.eat();

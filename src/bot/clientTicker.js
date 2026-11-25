@@ -63,6 +63,7 @@ class ClientTickScheduler {
     this._positionWrittenThisTick = false;
     this._pendingPosition = null;
     this._pendingPositionName = null;
+    this._pendingTick = -1;
     this._tickEndOpen = false;
     this.stalls = 0;
     this.lastStallMs = 0;
@@ -92,6 +93,7 @@ class ClientTickScheduler {
     }
     this._pendingPosition = null;
     this._pendingPositionName = null;
+    this._pendingTick = -1;
     return true;
   }
 
@@ -118,13 +120,17 @@ class ClientTickScheduler {
       this._safeWrite(name, packet);
       return true;
     }
-    if (!this._positionWrittenThisTick) {
+    if (!this._positionWrittenThisTick && !this._pendingPosition) {
       this._safeWrite(name, packet);
       this._positionWrittenThisTick = true;
       return true;
     }
+    // A position is already waiting for the next tick boundary. Replace it
+    // with the newest coordinates rather than letting two queue up; the older
+    // correction is already stale by the time the next tick opens.
     this._pendingPosition = packet;
     this._pendingPositionName = name;
+    this._pendingTick = this.ticks;
     this.deferredMovements += 1;
     return false;
   }
@@ -209,6 +215,7 @@ class ClientTickScheduler {
         this.lastStallMs = late;
         this._pendingPosition = null;
         this._pendingPositionName = null;
+        this._pendingTick = -1;
         if (this.onStall) {
           try { this.onStall(late, when); } catch (_) { /* recovery must not stop ticks */ }
         }
@@ -216,15 +223,22 @@ class ClientTickScheduler {
     }
     // A deferred position belongs to this tick. It is written before the
     // tick's tick_end, exactly as vanilla orders movement then tick end.
-    if (this._pendingPosition) {
+    // Only a position deferred by an EARLIER tick may open this tick. If it
+    // was deferred during the tick that just ended, the previous position
+    // packet has not been closed by a tick_end yet; sending it here would put
+    // two positions before one tick_end, which is exactly the order Paper
+    // rejects with invalid_player_movement.
+    this._positionWrittenThisTick = false;
+    if (this._pendingPosition && this._pendingTick < this.ticks) {
       const name = this._pendingPositionName || 'position';
       const packet = this._pendingPosition;
       this._pendingPosition = null;
       this._pendingPositionName = null;
+      this._pendingTick = -1;
       this._safeWrite(name, packet);
+      this._positionWrittenThisTick = true;
       this.deferredTicks += 1;
     }
-    this._positionWrittenThisTick = false;
     this._safeWrite('tick_end', {});
     this.ticks += 1;
     this.tickEnds += 1;
