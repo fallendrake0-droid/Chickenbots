@@ -325,6 +325,33 @@ const config = {
       apiKey: env('AI_API_KEY', '')
     }
   },
+  navigation: {
+    // Destination validation is on by default. `strictDestinations: false`
+    // exists only for a deliberately unvalidated diagnostic move.
+    strictDestinations: envBool('NAV_STRICT_DESTINATIONS', true),
+    maxDrop: envInt('NAV_MAX_DROP', 3),
+    allowWater: envBool('NAV_ALLOW_WATER', true),
+    // A routine task gets one path attempt; operator moves get a replan ladder.
+    // `replan: true` opts an autonomous caller into the same bounded ladder.
+    maxAttempts: envInt('NAV_TASK_ATTEMPTS', 1),
+    operatorAttempts: envInt('NAV_OPERATOR_ATTEMPTS', 3),
+    recoveryDelayMs: envInt('NAV_RECOVERY_DELAY_MS', 250),
+    stuckWindowMs: envInt('NAV_STUCK_WINDOW_MS', 2500),
+    waitForWorldMs: envInt('NAV_WAIT_FOR_WORLD_MS', 750),
+    defaultTimeoutMs: envInt('NAV_DEFAULT_TIMEOUT_MS', 20000),
+    // Follow/escort and autonomous task moves claim a stance so five bots do
+    // not pile onto the same block.
+    congestionRadius: Number(env('NAV_CONGESTION_RADIUS', '1.5')),
+    congestionTtlMs: envInt('NAV_CONGESTION_TTL_MS', 5000),
+    longDistance: envInt('NAV_LONG_DISTANCE', 64),
+    segmentLength: envInt('NAV_SEGMENT_LENGTH', 32),
+    maxNodes: envInt('NAV_MAX_NODES', 12000),
+    // Pathfinder griefing controls: routine travel does not dig or scaffold.
+    allowDig: envBool('NAV_ALLOW_DIG', false),
+    allowScaffold: envBool('NAV_ALLOW_SCAFFOLD', false),
+    openDoors: envBool('NAV_OPEN_DOORS', false),
+    sprint: envBool('NAV_SPRINT', true)
+  },
   survival: {
     eatAtFood: envInt('EAT_AT_FOOD', 18),
     eatAtHealth: envInt('EAT_AT_HEALTH', 14),
@@ -467,6 +494,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   const autonomy = candidate.autonomy || {};
   const survival = candidate.survival || {};
   const workZone = candidate.workZone || config.workZone || { enabled: true, size: 100, margin: 2 };
+  const navigation = candidate.navigation || config.navigation || {};
   const reconnect = server.reconnect || {};
 
   text('server.host', server.host, 255);
@@ -603,6 +631,26 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('autonomy.stallGuardMs', autonomy.stallGuardMs, 500, 120000);
   integer('autonomy.stallResumeMs', autonomy.stallResumeMs, 0, 30000);
   integer('survival.spawnGuardMs', survival.spawnGuardMs, 0, 120000);
+  boolean('navigation.strictDestinations', navigation.strictDestinations);
+  integer('navigation.maxDrop', navigation.maxDrop, 0, 8);
+  boolean('navigation.allowWater', navigation.allowWater);
+  integer('navigation.maxAttempts', navigation.maxAttempts, 1, 5);
+  integer('navigation.operatorAttempts', navigation.operatorAttempts, 1, 5);
+  integer('navigation.recoveryDelayMs', navigation.recoveryDelayMs, 0, 10000);
+  integer('navigation.stuckWindowMs', navigation.stuckWindowMs, 500, 60000);
+  integer('navigation.waitForWorldMs', navigation.waitForWorldMs, 0, 10000);
+  integer('navigation.defaultTimeoutMs', navigation.defaultTimeoutMs, 1000, 300000);
+  if (!Number.isFinite(Number(navigation.congestionRadius)) || Number(navigation.congestionRadius) < 0.5 || Number(navigation.congestionRadius) > 8) {
+    fail('navigation.congestionRadius', 'must be between 0.5 and 8');
+  }
+  integer('navigation.congestionTtlMs', navigation.congestionTtlMs, 500, 120000);
+  integer('navigation.longDistance', navigation.longDistance, 8, 512);
+  integer('navigation.segmentLength', navigation.segmentLength, 8, 128);
+  integer('navigation.maxNodes', navigation.maxNodes, 100, 200000);
+  boolean('navigation.allowDig', navigation.allowDig);
+  boolean('navigation.allowScaffold', navigation.allowScaffold);
+  boolean('navigation.openDoors', navigation.openDoors);
+  boolean('navigation.sprint', navigation.sprint);
   boolean('autonomy.pve', autonomy.pve);
   boolean('autonomy.pvp', autonomy.pvp);
   boolean('autonomy.serverPvp', autonomy.serverPvp);

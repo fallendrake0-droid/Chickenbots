@@ -753,7 +753,13 @@ class BotActions {
         continue;
       }
       const move = await this.bot.goTo(pos, { range: 3 });
-      if (move && move.ok === false) { missing.push({ ...pos, reason: move.error }); continue; }
+      // A failed approach is only fatal when the block is actually out of
+      // placing reach. Mock builders advertise a large reach; refusing a
+      // perimeter cell that is already within it wedged base phases on terrain
+      // furniture (fences, path edges) that block a strict route.
+      const reach = Number(this.bot.buildReach) > 0 ? Number(this.bot.buildReach) : 5.8;
+      const outOfReach = typeof distance === 'function' ? distance(this.bot.position, pos) > reach : false;
+      if (move && move.ok === false && outOfReach) { missing.push({ ...pos, reason: move.error }); continue; }
       const result = await this.bot.placeBlock(pos, material);
       if (result.ok) placed++;
       else missing.push({ ...pos, reason: result.error });

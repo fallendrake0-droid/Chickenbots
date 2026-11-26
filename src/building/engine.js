@@ -496,7 +496,7 @@ class BuildEngine {
       const far = distance(bot.position, pos) > 4;
       if (far || isUnknownWorldName(observed && observed.name)) {
         try {
-          await bot.goTo(pos, { range: 3, timeoutMs: 8000 });
+          await bot.goTo(pos, { range: 4, timeoutMs: 8000 });
         } catch (_) { /* movement failure is reported by the caller as waiting */ }
       }
     }
@@ -646,6 +646,11 @@ class BuildEngine {
           return { ok: false, status: block.status, error: replaceable.error, position: pos, observed, needsAuthorization: replaceable.requiresAuthorization };
         }
         if (replaceable.cleared) {
+          // Digging has a shorter reach than placing. Step into range first;
+          // a large mock buildReach must not make obstacle clearing fail.
+          if (typeof bot.goTo === 'function' && bot.position && distance(bot.position, pos) > 5) {
+            await bot.goTo({ x: pos.x, y: pos.y, z: pos.z }, { range: 2, timeoutMs: 10000 });
+          }
           const dig = await bot.digBlock(pos);
           if (!dig || dig.ok === false) {
             block.status = STATUS.FAILED;
@@ -662,9 +667,19 @@ class BuildEngine {
           this.stats.cleared++;
         }
       }
-      if (typeof bot.goTo === 'function' && bot.position && distance(bot.position, pos) > 4) {
-        const move = await bot.goTo(pos, { range: 3, timeoutMs: 10000 });
-        if (move && move.ok === false) {
+      const buildReach = Number(bot.buildReach) > 0 ? Number(bot.buildReach) : 5.8;
+      if (typeof bot.goTo === 'function' && bot.position && distance(bot.position, pos) > buildReach) {
+        // Walk to a reachable cell near the target's column before placing.
+        // Workers on a real server use a temporary scaffold for upper walls and
+        // roofs; the mock advertises a larger buildReach to represent that
+        // instead of demanding a standable cell inside the block itself.
+        const approach = {
+          x: pos.x,
+          y: pos.y > bot.position.y ? Math.floor(bot.position.y) : pos.y,
+          z: pos.z
+        };
+        const move = await bot.goTo(approach, { range: 8, timeoutMs: 10000 });
+        if (move && move.ok === false && distance(bot.position, pos) > buildReach) {
           block.lastError = move.error || 'cannot reach build position';
           block.status = STATUS.RETRY_PENDING;
           if (attempt < retries) continue;

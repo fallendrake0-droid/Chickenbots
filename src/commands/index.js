@@ -14,6 +14,8 @@ const { connectionStatus } = require('../bot/status');
 const { botWorldView } = require('../construction/constants');
 const { normalizeMineTarget, isMineableTarget, isOreName, BLOCK_TIERS } = require('../actions/miningCatalog');
 const { workZone } = require('../world/workZone');
+const { planRoute } = require('../navigation/planner');
+const { goalPosition } = require('../navigation/standability');
 
 const TASK_TYPES = new Set([
   'CHOP_WOOD', 'MINE_ORE', 'MINE_BLOCK', 'FARM_CROP', 'FARM_ANIMAL', 'BUILD_BLOCK', 'BUILD_PHASE', 'EXCAVATE_REGION',
@@ -742,6 +744,67 @@ function registerAll(services, registry) {
       }
       const bot = pickBot(services, target);
       return runBotAction(services, bot, [bot.name, 'goto', String(pos.x), String(pos.y), String(pos.z)], context);
+    }
+  });
+
+  registry.register({
+    name: 'path', category: 'exploration', summary: 'Plan (without moving) or inspect a bot navigation route', usage: 'path <x> <y> <z> [bot] | path [bot]', examples: ['path 100 65 -40', 'path 10101000 100 65 -40', 'path 10101000'],
+    execute: async (args, context = {}) => {
+      const raw = args.map((value) => String(value));
+      if (!raw.length) throw new CommandError('usage: path <x> <y> <z> [bot] or path [bot]');
+      // Status form: a single known bot (or the leader) and no coordinates.
+      if (raw.length === 1 && services.bots.has(raw[0])) {
+        const bot = pickBot(services, raw[0]);
+        return { ok: true, bot: bot.name, navigation: bot.navigationStatus ? bot.navigationStatus() : null, position: { ...bot.position } };
+      }
+      let target = context.bot || services.coordinator?.leader || [...services.bots.keys()][0];
+      let coordinateArgs = raw;
+      if (raw.length === 4) {
+        if (raw[0].toLowerCase() === 'all' || services.bots.has(raw[0])) {
+          if (raw[0].toLowerCase() === 'all') throw new CommandError('path plans one route; name a single bot');
+          target = raw[0];
+          coordinateArgs = raw.slice(1);
+        } else if (services.bots.has(raw[3])) {
+          target = raw[3];
+          coordinateArgs = raw.slice(0, 3);
+        }
+      }
+      const bot = pickBot(services, target);
+      const destination = parseOrigin(coordinateArgs, 0);
+      const nav = config.navigation || {};
+      const validation = goalPosition(bot, destination, {
+        range: 1,
+        adjustY: true,
+        maxDrop: nav.maxDrop === undefined ? 3 : nav.maxDrop,
+        allowWater: nav.allowWater !== false
+      });
+      if (!validation.ok) {
+        return {
+          ok: false, bot: bot.name, from: { ...bot.position }, target: destination,
+          reachable: false, code: validation.code || 'NO_STANDABLE_DESTINATION',
+          error: `no standable destination near ${destination.x},${destination.y},${destination.z}: ${validation.reason}`
+        };
+      }
+      const route = planRoute({
+        from: bot.position,
+        to: validation.goal || destination,
+        reader: bot,
+        range: 1,
+        maxNodes: Math.max(2000, Number(nav.maxNodes) || 12000),
+        maxDrop: nav.maxDrop === undefined ? 3 : nav.maxDrop,
+        allowWater: nav.allowWater !== false,
+        allowHazard: false
+      });
+      return {
+        ok: Boolean(route.ok), bot: bot.name, from: { ...bot.position }, target: destination,
+        goal: validation.goal || destination, reachable: Boolean(route.ok),
+        reason: route.reason || null, steps: route.path ? route.path.length : 0,
+        distance: route.cost === Infinity ? null : route.cost,
+        path: (route.path || []).slice(0, 200),
+        expanded: route.expanded || 0, visited: route.visited || 0, ms: route.ms || 0,
+        moved: false,
+        error: route.ok ? undefined : `no route to ${destination.x},${destination.y},${destination.z}: ${route.reason}`
+      };
     }
   });
 

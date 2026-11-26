@@ -14,6 +14,10 @@ const { Logger } = require('../logger');
 const { distance } = require('../util/vec');
 const { FOODS, BED_NAMES, toolTier } = require('../world/items');
 const { TILLABLE } = require('../world/crops');
+const { NavigationManager } = require('../navigation/manager');
+const { resolveStandableY } = require('../navigation/standability');
+const { configureMovements } = require('../navigation/movements');
+const { StuckDetector } = require('../navigation/stuck');
 
 const HOSTILE = new Set([
   'zombie', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider', 'cave_spider',
@@ -225,6 +229,9 @@ class RealBot extends BotAdapter {
     this._stallDroppedMovements = 0;
     this._motion = null;
     this._motionToken = 0;
+    // Assigned by the runtime so all five bots share one congestion registry.
+    this.navigationFleet = null;
+    this._navigation = null;
     this._invalidMovementDrops = 0;
     this._lastInvalidMovementWarnAt = 0;
     this.kickKind = null;
@@ -2687,43 +2694,66 @@ class RealBot extends BotAdapter {
   }
 
   /**
+   * Lazily constructed navigation state machine. Lazy construction matters:
+   * RealBot is also instantiated by connection tests that never attach a
+   * Mineflayer bot, and constructing a pathfinder at that point would throw.
+   */
+  get navigation() {
+    if (!this._navigation) {
+      this._navigation = new NavigationManager({
+        bot: this,
+        reader: this,
+        now: this.now,
+        logger: this.logger,
+        fleet: this.navigationFleet,
+        onMotion: (motion, meta = {}) => {
+          if (motion) this._motion = motion;
+          else if (!meta.token || (this._motion && this._motion.token === meta.token)) this._motion = null;
+        },
+        onRecovery: async ({ reason }) => {
+          // The failed attempt has already settled. Clear the controls left by
+          // it before the next goal is planned; a held jump/sprint otherwise
+          // makes the next path look stuck from its first tick.
+          try { this.bot?.pathfinder?.stop?.(); } catch (_) { /* optional */ }
+          try { this.bot?.clearControlStates?.(); } catch (_) { /* optional */ }
+          if (this.bot?.entity && reason === 'stuck') {
+            try { this.bot.setControlState('jump', true); } catch (_) { /* optional */ }
+            setTimeout(() => { try { this.bot?.setControlState?.('jump', false); } catch (_) { /* optional */ } }, 120).unref?.();
+          }
+        }
+      });
+    }
+    return this._navigation;
+  }
+
+  navigationStatus() { return this.navigation.status(); }
+
+  /**
    * Find the first standable feet Y at (x,z), starting at the requested Y.
    * `unloaded` is unknown terrain, not air: do not rewrite the operator's Y
-   * from a chunk that has not arrived yet.
+   * from a chunk that has not arrived yet. This is now a thin wrapper around
+   * the shared resolver, which also checks support, drops, water and hazards.
    */
   _standableY(pos) {
-    const x = Math.floor(Number(pos.x));
-    const z = Math.floor(Number(pos.z));
-    let y = Math.floor(Number(pos.y));
-    if (!Number.isFinite(y)) return pos.y;
-    for (let step = 0; step <= 6; step++, y++) {
-      const feet = this.getBlock({ x, y, z });
-      const head = this.getBlock({ x, y: y + 1, z });
-      if (!feet || !head) return y;
-      if (feet.name === 'unloaded' || head.name === 'unloaded') return Math.floor(Number(pos.y));
-      const clear = (block) => block.name === 'air' || block.name === 'cave_air' || block.name === 'void_air' || block.name === 'water';
-      if (clear(feet) && clear(head)) return y;
-    }
-    return Math.floor(Number(pos.y));
+    return resolveStandableY(this, pos, {
+      maxDrop: config.navigation ? config.navigation.maxDrop : 3,
+      allowWater: config.navigation ? config.navigation.allowWater : true
+    });
   }
 
   /**
    * Move with a single authoritative owner. Every caller that cares about
    * survival passes `priority`; a lower-priority task path is rejected instead
    * of silently replacing a retreat, and a higher-priority path cancels the
-   * old one cleanly. The path promise is always caught: mineflayer-pathfinder
-   * rejects with "Path was stopped before it could be completed", and an
-   * uncaught rejection would reach the process unhandledRejection handler.
+   * old one cleanly. Destination validation, stuck recovery, arrival evidence
+   * and telemetry live in NavigationManager; this method owns only the
+   * Mineflayer pathfinder call.
    */
-  async goTo(pos, { range = 1, timeoutMs = 20000, priority = 'task', owner = null, adjustY = false } = {}) {
+  async goTo(pos, options = {}) {
     const check = this._assertReady();
     if (check) return check;
     if (this.health <= 0) return { ok: false, error: 'bot is dead; movement refused' };
     if (!finitePosition(pos)) return { ok: false, error: `invalid movement destination ${JSON.stringify(pos)}`, code: 'INVALID_DESTINATION' };
-    // Operator coordinates are often copied from a map as the block Y, which
-    // is inside the ground. Ask for a standable feet position instead of
-    // handing pathfinder a goal it can never occupy.
-    if (adjustY) pos = { ...pos, y: this._standableY(pos) };
     // A move that starts while the tick loop is still catching up would emit
     // one huge correction. Give the loop a moment, then try again next tick.
     // Check before loading pathfinder so a resync does not build a plan at all.
@@ -2737,40 +2767,82 @@ class RealBot extends BotAdapter {
     if (this.now() < this._movementBlockedUntil) {
       return { ok: false, error: 'movement paused while resynchronising after a client stall', stalled: true };
     }
-    const wantedPriority = movePriority(priority);
-    const now = this.now();
-    const active = this._motion;
-    if (active && active.generation === this.connection.generation && now < active.expiresAt && wantedPriority < active.priority) {
-      return {
-        ok: false, superseded: true,
-        error: `movement is owned by ${active.owner} (priority ${active.priority})`,
-        owner: active.owner, priority: active.priority
-      };
-    }
-    if (active) this._cancelMotion(`superseded by ${owner || priority}`, { stop: true });
-    const generation = this.connection.generation;
-    const token = ++this._motionToken;
-    const motion = {
-      token, generation, owner: owner || String(priority), priority: wantedPriority,
-      startedAt: now, expiresAt: now + Math.max(1000, Number(timeoutMs) || 20000) + 5000
-    };
-    this._motion = motion;
+    const {
+      range = 1, timeoutMs = config.navigation?.defaultTimeoutMs || 20000,
+      priority = 'task', owner = null, adjustY = false
+    } = options;
+    return this.navigation.navigate(pos, {
+      ...options, range, timeoutMs, priority, owner: owner || String(priority),
+      generation: this.connection.generation
+    }, (goal, context) => this._executeNavigationPath(goal, {
+      ...context, options: { ...options, range, timeoutMs, adjustY }
+    }));
+  }
+
+  /**
+   * One bounded pathfinder attempt. Returns a plain result instead of letting
+   * a stopped path reject into the process-wide unhandledRejection handler.
+   */
+  async _executeNavigationPath(goal, context = {}) {
+    const options = context.options || {};
     const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
     if (!this.bot.pathfinder) this.bot.loadPlugin(pathfinder);
-    // Cooperative A*: yield every few milliseconds and cap the total search.
-    this.bot.pathfinder.thinkTimeout = config.autonomy.pathfinderThinkTimeoutMs;
-    this.bot.pathfinder.tickTimeout = config.autonomy.pathfinderTickTimeoutMs;
-    this.bot.pathfinder.searchRadius = config.autonomy.pathfinderSearchRadius;
-    const movements = new Movements(this.bot);
-    this.bot.pathfinder.setMovements(movements);
-    const goal = new goals.GoalNear(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z), Math.max(1, range));
+    if (Number.isFinite(Number(config.autonomy.pathfinderThinkTimeoutMs))) {
+      this.bot.pathfinder.thinkTimeout = config.autonomy.pathfinderThinkTimeoutMs;
+    }
+    if (Number.isFinite(Number(config.autonomy.pathfinderTickTimeoutMs))) {
+      this.bot.pathfinder.tickTimeout = config.autonomy.pathfinderTickTimeoutMs;
+    }
+    if (Number.isFinite(Number(config.autonomy.pathfinderSearchRadius))) {
+      this.bot.pathfinder.searchRadius = config.autonomy.pathfinderSearchRadius;
+    }
+    if (this.bot.registry) {
+      const movements = new Movements(this.bot);
+      configureMovements(movements, {
+        bot: this.bot,
+        registry: this.bot.registry,
+        settings: config.navigation,
+        options
+      });
+      this.bot.pathfinder.setMovements(movements);
+    }
+    const radius = Math.max(1, Number(options.range) || 1);
+    const target = {
+      x: Math.floor(Number(goal.x)), y: Math.floor(Number(goal.y)), z: Math.floor(Number(goal.z))
+    };
+    const goalObject = new goals.GoalNear(target.x, target.y, target.z, radius);
     let timer = null;
-    const pathPromise = this.bot.pathfinder.goto(goal).then(
+    let progressTimer = null;
+    let stoppedForStuck = false;
+    let timedOut = false;
+    const pathPromise = this.bot.pathfinder.goto(goalObject).then(
       () => ({ ok: true }),
       (err) => ({ ok: false, error: err && err.message ? err.message : String(err), pathRejected: true })
     );
+    // Sample progress while the pathfinder is working. The detector needs a
+    // grace period because A* may spend its first second searching.
+    if (this.bot.entity && this.bot.entity.position) {
+      progressTimer = setInterval(() => {
+        if (timedOut || stoppedForStuck) return;
+        const live = this.bot.entity && this.bot.entity.position;
+        const sample = this.navigation.stuck.sample(live);
+        if (sample.stuck) {
+          stoppedForStuck = true;
+          this.navigation.telemetry.event('stuck', {
+            attempt: context.attempt, owner: context.owner, target: target,
+            displacement: sample.displacement, elapsed: sample.elapsed
+          });
+          try { this.bot.pathfinder.stop(); } catch (_) { /* optional */ }
+        }
+      }, 150);
+      if (progressTimer.unref) progressTimer.unref();
+    }
     const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ ok: false, error: 'path timeout', timedOut: true }), timeoutMs);
+      timer = setTimeout(() => {
+        timedOut = true;
+        try { this.bot.pathfinder.stop(); } catch (_) { /* optional */ }
+        resolve({ ok: false, error: 'path timeout', timedOut: true });
+      }, Math.max(250, Number(context.timeoutMs) || 20000));
       if (timer.unref) timer.unref();
     });
     let result;
@@ -2778,21 +2850,26 @@ class RealBot extends BotAdapter {
       result = await Promise.race([pathPromise, timeout]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (progressTimer) clearInterval(progressTimer);
     }
-    // A newer owner (or a reconnect) invalidated this request while it was in
-    // flight. Do not stop the new path and do not report success for the old.
-    if (this._motion?.token !== token || this.connection.generation !== generation) {
+    // A newer owner may own the pathfinder now. Never stop its path from the
+    // losing request's cleanup path.
+    if (this._motion && this._motion.token !== context.token) {
       return { ...result, ok: false, superseded: true, error: 'movement request was superseded' };
     }
-    this._motion = null;
-    if (result.ok === false) {
+    if (stoppedForStuck) {
+      return {
+        ok: false, stuck: true, pathRejected: false,
+        error: `movement stalled near ${target.x},${target.y},${target.z}`
+      };
+    }
+    if (result.ok === false && !timedOut && !stoppedForStuck) {
       try { this.bot.pathfinder.stop(); } catch (_) { /* pathfinder may not be running */ }
     }
     const live = this.bot.entity?.position;
     if (finitePosition(live)) this.position = this._vec(live);
     return result;
   }
-
   /** Move near an entity (mineflayer-pathfinder companion; the mock has one). */
   async goNear(entity, range = 2, options = {}) {
     if (!entity || !finitePosition(entity.position)) return { ok: false, error: 'entity has no valid position' };
@@ -2803,14 +2880,16 @@ class RealBot extends BotAdapter {
   cancelMotion(reason = 'operator') { return this._cancelMotion(reason); }
 
   _cancelMotion(reason = 'cancelled', { stop = true } = {}) {
-    if (!this._motion && !stop) return false;
+    const wasActive = Boolean(this._motion);
     this._motionToken += 1;
+    let cancelled = false;
+    try { cancelled = this.navigation.cancel(reason); } catch (_) { cancelled = false; }
     this._motion = null;
     if (stop) {
       try { this.bot?.pathfinder?.stop?.(); } catch (_) { /* optional */ }
     }
-    if (this._motion || stop) this.logger.debug(`[${this.name}] movement cancelled: ${reason}`);
-    return true;
+    if (wasActive || cancelled || stop) this.logger.debug(`[${this.name}] movement cancelled: ${reason}`);
+    return wasActive || cancelled || stop;
   }
 
 
@@ -3558,6 +3637,7 @@ class RealBot extends BotAdapter {
         active: Boolean(this._motion),
         invalidDrops: this._invalidMovementDrops
       },
+      navigation: this._navigation ? this._navigation.status() : null,
       lastDeath: this.lastDeath,
       lastDeathMessage: this.lastDeathMessage,
       lastDamageAt: this.lastDamageAt,

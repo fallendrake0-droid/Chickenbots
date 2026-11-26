@@ -465,6 +465,31 @@ function profileNavigation(bot, actions, name) {
       </div>
       <aside class="stack gap-4">
         <section class="card">
+          <div class="card-header"><div class="card-title">${icon('map')} Navigation</div></div>
+          <div class="card-body">${(() => {
+            const nav = bot.navigation;
+            if (!nav) return '<div class="muted small">No navigation state reported.</div>';
+            const telemetry = nav.telemetry || {};
+            const durations = telemetry.durationMs || {};
+            const stuck = nav.stuck || {};
+            const congestion = nav.congestion || [];
+            return kvRows([
+              ['Moving', nav.active ? esc([nav.owner, nav.priority].filter(Boolean).join(' / ') || 'yes') : 'Idle'],
+              ['Attempts', num(telemetry.attempts)],
+              ['Success rate', telemetry.successRate === null || telemetry.successRate === undefined ? '—' : `${telemetry.successRate}%`],
+              ['Last error', esc(telemetry.lastError || '—')],
+              ['Stuck samples', num(stuck.samples), true],
+              ['Stuck events', num(stuck.stuck)],
+              ['Plan p50 / p95', durations.p50 === null || durations.p50 === undefined ? '—' : `${num(durations.p50)} / ${num(durations.p95)} ms`],
+              ['Congestion', congestion.length ? esc(congestion.map((row) => row.owner).join(', ')) : 'Clear']
+            ]);
+          })()}
+            <div class="row gap-2" style="margin-top:12px">
+              <button class="button" type="button" data-command="path ${esc(name)}">${icon('map')} Inspect route state</button>
+            </div>
+          </div>
+        </section>
+        <section class="card">
           <div class="card-header"><div class="card-title">${icon('bed')} Rest</div></div>
           <div class="card-body">${sleep ? kvRows([
             ['World time', num(sleep.time)],

@@ -24,6 +24,7 @@ const { isThrottleError, isJoinStallError, reconnectDelay, staggerDelay, sleep }
 const { JoinScheduler } = require('./bot/joinScheduler');
 const { resolveServerVersion } = require('./bot/serverVersion');
 const { connectionStatus } = require('./bot/status');
+const { FleetCongestion } = require('./navigation/congestion');
 
 const STARTER_KIT = {
   bread: 32, cooked_beef: 16, stone_pickaxe: 2, iron_pickaxe: 1, iron_axe: 1, iron_sword: 1, iron_hoe: 1,
@@ -78,6 +79,9 @@ class TeamRuntime {
       botNames: BOT_NAMES, memory: this.memory, board: this.board, ledger: this.ledger, comms: this.comms, logger: this.logger, now: this.now
     });
     this.excavation = new ExcavationManager({ coordinator: this.coordinator, logger: this.logger, now: this.now });
+    // One congestion registry for the whole fleet: ten workers choosing the
+    // same stance must be arbitrated centrally, not per bot.
+    this.navigationFleet = new FleetCongestion({ now: this.now, radius: config.navigation && config.navigation.congestionRadius, ttlMs: config.navigation && config.navigation.congestionTtlMs });
     this.construction = null;
     this.constructionBusy = false;
     this.library = new SchematicLibrary();
@@ -724,6 +728,7 @@ class TeamRuntime {
     for (const bot of this.bots.values()) {
       const started = Date.now();
       try {
+        if (typeof bot.setNavigationFleet === 'function' && bot.navigationFleet !== this.navigationFleet) bot.setNavigationFleet(this.navigationFleet);
         if (refreshInventory && typeof bot._syncInventory === 'function') bot._syncInventory();
         const status = connectionStatus(bot);
         const fallback = {

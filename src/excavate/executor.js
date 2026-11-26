@@ -167,17 +167,108 @@ class ExcavationExecutor {
       { x: pos.x + 2, y: pos.y + 1, z: pos.z },
       { x: pos.x - 2, y: pos.y + 1, z: pos.z },
       { x: pos.x, y: pos.y + 1, z: pos.z + 2 },
-      { x: pos.x, y: pos.y + 1, z: pos.z - 2 }
+      { x: pos.x, y: pos.y + 1, z: pos.z - 2 },
+      // The last block in a pit is often under the bot's feet after the floor
+      // around it has been removed. Stepping down to the next solid layer is a
+      // legitimate way off the column.
+      { x: pos.x + 1, y: pos.y, z: pos.z },
+      { x: pos.x - 1, y: pos.y, z: pos.z },
+      { x: pos.x, y: pos.y, z: pos.z + 1 },
+      { x: pos.x, y: pos.y, z: pos.z - 1 },
+      { x: pos.x + 1, y: pos.y + 1, z: pos.z },
+      { x: pos.x - 1, y: pos.y + 1, z: pos.z },
+      { x: pos.x, y: pos.y + 1, z: pos.z + 1 },
+      { x: pos.x, y: pos.y + 1, z: pos.z - 1 }
     ];
     for (const c of candidates) {
-      const b = this.bot.getBlock(c);
-      if (b && isAir(b.name)) {
-        const result = await this.bot.goTo(c, { range: 1, token: this.token, timeoutMs: 15000 });
-        this.stats.moved++;
-        if (result && result.ok) return true;
-      }
+      const result = await this.bot.goTo(c, { range: 1, adjustY: true, token: this.token, timeoutMs: 5000 }).catch(() => null);
+      this.stats.moved++;
+      if (result && result.ok && !this._standingOn(pos)) return true;
     }
     return false;
+  }
+
+  /**
+   * Move to a stance from which `pos` can be dug. A block coordinate is not a
+   * stance: targeting it directly made pathfinding choose the surface while the
+   * bot fell further and further behind the layer being excavated. Candidates
+   * are the cell above the target (standing on it), the four neighbours on the
+   * target's layer, and the same cells one level up. Every candidate is
+   * validated by the adapter's navigation layer before it is used.
+   */
+  async _ensureReach(pos) {
+    if (!this.bot.position || distance(this.bot.position, pos) <= 4.4) return true;
+    const candidates = [
+      { x: pos.x, y: pos.y + 1, z: pos.z },
+      { x: pos.x + 1, y: pos.y + 1, z: pos.z },
+      { x: pos.x - 1, y: pos.y + 1, z: pos.z },
+      { x: pos.x, y: pos.y + 1, z: pos.z + 1 },
+      { x: pos.x, y: pos.y + 1, z: pos.z - 1 },
+      { x: pos.x + 1, y: pos.y, z: pos.z },
+      { x: pos.x - 1, y: pos.y, z: pos.z },
+      { x: pos.x, y: pos.y, z: pos.z + 1 },
+      { x: pos.x, y: pos.y, z: pos.z - 1 }
+    ];
+    let tried = 0;
+    for (const candidate of candidates) {
+      if (tried >= 4) break;
+      const block = this.bot.getBlock(candidate);
+      if (!block || isLiquid(block.name)) continue;
+      if (!['air', 'cave_air', 'void_air', 'water'].includes(block.name)) continue;
+      tried++;
+      const nav = await this.bot.goTo(candidate, { range: 0, token: this.token, timeoutMs: 12000, adjustY: true });
+      this.stats.moved++;
+      if (nav && nav.ok && distance(this.bot.position, pos) <= 5) return true;
+    }
+    // A failed relocation may still have brought the bot within digging reach.
+    return distance(this.bot.position, pos) <= 5;
+  }
+
+  /**
+   * Final pass over blocks still inside reach. The layer walk may have
+   * navigated away from a corner, or failed to relocate while the block was
+   * actually only a few blocks away; a player finishes those by hand rather
+   * than reporting the site complete with a visible pillar.
+   */
+  async _sweepReachable() {
+    let removed = 0;
+    for (let pass = 0; pass < 3 && !this.token.cancelled; pass++) {
+      let changed = false;
+      for (const pos of iterateRegionLayers(this.region.box, { order: 'top-down', serpentine: true })) {
+        if (this.token.cancelled) break;
+        if (this.mask && !this.mask.includes(pos)) continue;
+        if (this._standingOn(pos)) {
+          await this._moveAwayFrom(pos);
+          if (this._standingOn(pos)) continue;
+        }
+        const block = this.bot.getBlock(pos);
+        if (!block || isAir(block.name) || isLiquid(block.name)) continue;
+        const cls = classifyBlock(block.name, this.options);
+        if (!cls.excavatable) continue;
+        if (!this.bot.isDiggable(block.name)) continue;
+        if (distance(this.bot.position, pos) > 4.9) {
+          // The layer walk can finish at the opposite corner of a wide shaft.
+          // Move to a standable cell within range of this last block, then dig
+          // it instead of leaving a single visible pillar in the floor.
+          const nav = await this.bot.goTo(pos, { range: 3, timeoutMs: 12000, token: this.token }).catch(() => null);
+          if (!nav || nav.ok === false || distance(this.bot.position, pos) > 4.9) continue;
+        }
+        if (this._neighbourLiquid(pos)) continue;
+        const result = await this.bot.digBlock(pos, { token: this.token, timeoutMs: 10000, region: this.region.id }).catch(() => null);
+        const after = this.bot.getBlock(pos);
+        if (after === null || isAir(after.name)) {
+          removed++;
+          changed = true;
+          this.stats.attempted++;
+          this.stats.dug++;
+          this.removedKeys.add(key(pos));
+        } else if (result && result.error) {
+          this.stats.lastError = result.error;
+        }
+      }
+      if (!changed) break;
+    }
+    return removed;
   }
 
   async _handleThreats() {
@@ -221,10 +312,7 @@ class ExcavationExecutor {
         const cls = classifyBlock(block.name, this.options);
         if (!cls.excavatable) continue;
         if (!this.bot.isDiggable(block.name)) continue;
-        if (this.bot.position && distance(this.bot.position, pos) > 4) {
-          const nav = await this.bot.goTo(pos, { range: 2, token: this.token, timeoutMs: 12000 });
-          if (!nav || !nav.ok) continue;
-        }
+        if (!(await this._ensureReach(pos))) continue;
         await this.bot.digBlock(pos, { token: this.token, timeoutMs: 10000, access: true });
       }
     } catch (err) {
@@ -235,6 +323,20 @@ class ExcavationExecutor {
     }
   }
 
+  /**
+   * Start each worker on the surface above its own region. The access staircase
+   * remains available for later descent, but a deep quarry cannot be excavated
+   * top-down from a bottom corridor: the top layers are simply out of reach.
+   */
+  async _positionAtRegionTop() {
+    const box = this.region.box;
+    const target = { x: box.min.x, y: box.max.y + 1, z: box.min.z };
+    await this.bot.goTo(target, {
+      range: 1, adjustY: true, token: this.token, timeoutMs: 12000
+    }).catch(() => null);
+    this.stats.moved++;
+  }
+
   async run() {
     this.status = this.paused ? 'paused' : 'running';
     this.stats.startedAt = this.now();
@@ -243,6 +345,7 @@ class ExcavationExecutor {
     let sinceTorch = 0;
     try {
       await this._carveAccess();
+      await this._positionAtRegionTop();
       for (const pos of iterateRegionLayers(box, { order: 'top-down', serpentine: true })) {
         this.token.throwIfCancelled();
         await this._waitIfPaused();
@@ -290,10 +393,11 @@ class ExcavationExecutor {
           if (!moved) { this.stats.skippedHazard++; continue; }
         }
 
-        if (this.bot.position && distance(this.bot.position, pos) > 4) {
-          const nav = await this.bot.goTo(pos, { range: 2, token: this.token, timeoutMs: 20000 });
-          this.stats.moved++;
-          if (!nav || !nav.ok) { this.stats.failed++; consecutiveFailures++; if (consecutiveFailures > this.options.maxConsecutiveFailures) break; continue; }
+        if (!(await this._ensureReach(pos))) {
+          this.stats.failed++;
+          consecutiveFailures++;
+          if (consecutiveFailures > this.options.maxConsecutiveFailures) break;
+          continue;
         }
 
         this.stats.attempted++;
@@ -319,7 +423,16 @@ class ExcavationExecutor {
             const floor = this.bot.getBlock({ x: pos.x, y: pos.y - 1, z: pos.z });
             const torchPos = { x: pos.x, y: pos.y, z: pos.z };
             const torchCell = this.bot.getBlock(torchPos);
-            if (floor && !isAir(floor.name) && !isLiquid(floor.name) && torchCell && isAir(torchCell.name) && this.bot.placeBlock) {
+            // Keep the centre of the pit floor clear: that is the walking line
+            // between regions, and a torch there is quickly trampled.
+            const bounds = this.plan && this.plan.bounds;
+            const centreX = bounds ? (bounds.min.x + bounds.max.x) / 2 : null;
+            const centreZ = bounds ? (bounds.min.z + bounds.max.z) / 2 : null;
+            const bottomCentre = Boolean(bounds)
+              && pos.y === bounds.min.y
+              && Math.abs(pos.x - centreX) <= 1
+              && Math.abs(pos.z - centreZ) <= 1;
+            if (!bottomCentre && floor && !isAir(floor.name) && !isLiquid(floor.name) && torchCell && isAir(torchCell.name) && this.bot.placeBlock) {
               const placed = await this.bot.placeBlock(torchPos, 'torch', { token: this.token });
               if (placed && placed.ok) { this.stats.torchesPlaced++; sinceTorch = 0; }
             }
@@ -331,6 +444,9 @@ class ExcavationExecutor {
           if (consecutiveFailures > this.options.maxConsecutiveFailures) break;
         }
         this._reportProgress();
+      }
+      if (!this.token.cancelled && this.status === 'running') {
+        await this._sweepReachable();
       }
       if (this.token.cancelled) this.status = 'stopped';
       else if (this.status === 'running') this.status = 'completed';

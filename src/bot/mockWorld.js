@@ -181,6 +181,10 @@ class MockWorld {
       if (pos.x === min.x + 1 && pos.z === min.z + 1 && pos.y === baseY) return 'chest';
       if (pos.x === max.x - 1 && pos.z === max.z - 1 && pos.y === baseY) return 'crafting_table';
       if (pos.x === min.x + 1 && pos.z === max.z - 1 && pos.y === baseY) return 'white_bed';
+      // The hut has a real interior. Without this explicit air the underlying
+      // hillside leaked through the floor and a doorway could lead into solid
+      // ground, which made every deterministic route into the hut fail.
+      if (pos.y >= baseY && pos.y <= baseY + 3) return 'air';
     }
     return null;
   }

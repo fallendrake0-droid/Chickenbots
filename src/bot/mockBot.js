@@ -7,6 +7,13 @@ const { distance, key } = require('../util/vec');
 const { BED_NAMES, FOODS, inventorySlotUsage } = require('../world/items');
 const { CROPS, TILLABLE, isMatureCrop } = require('../world/crops');
 const { config } = require('../config');
+const { NavigationManager } = require('../navigation/manager');
+const { planRoute } = require('../navigation/planner');
+const { standableAt, nearestStandable, standableCandidates, floorPosition } = require('../navigation/standability');
+
+function finiteMockPosition(pos) {
+  return Boolean(pos) && [pos.x, pos.y, pos.z].every((v) => Number.isFinite(Number(v)));
+}
 
 const PICK_REQUIRED = {
   stone: 1, cobblestone: 1, deepslate: 1, cobbled_deepslate: 1, andesite: 1, diorite: 1, granite: 1, tuff: 1,
@@ -60,6 +67,10 @@ class MockBot extends BotAdapter {
     super({ name, world, logger, speed });
     this.world = world || new MockWorld();
     this.speed = speed;
+    // Construction workers on a real server use scaffolds for roofs; the mock
+    // has no scaffold task, so it accepts the same placement from the ground
+    // within a slightly larger (but still bounded) working reach.
+    this.buildReach = 32;
     this.position = position || { x: 0, y: this.world.surfaceY(0, 0) + 1, z: 0 };
     for (const [item, count] of Object.entries(inventory)) if (count > 0) this.inventory[item] = count;
     this.containers = new Map();
@@ -91,6 +102,34 @@ class MockBot extends BotAdapter {
     this.equipment.offhand = null;
     this.equipment.armorPieces = null;
     this._updateEquipment();
+    this._navigation = null;
+    this.navigationFleet = null;
+  }
+
+  get navigation() {
+    if (!this._navigation) {
+      this._navigation = new NavigationManager({
+        bot: this,
+        reader: this,
+        now: Date.now,
+        logger: this.logger,
+        fleet: this.navigationFleet,
+        settings: { waitForWorldMs: 0, defaultTimeoutMs: 15000 },
+        onMotion: (motion, meta = {}) => {
+          if (motion) this._motion = motion;
+          else if (!meta.token || (this._motion && this._motion.token === meta.token)) this._motion = null;
+        }
+      });
+    }
+    return this._navigation;
+  }
+
+  navigationStatus() { return this.navigation.status(); }
+
+  setNavigationFleet(fleet) {
+    this.navigationFleet = fleet;
+    if (this._navigation) this._navigation.fleet = fleet;
+    return this;
   }
 
   async _wait(ms) {
@@ -212,66 +251,326 @@ class MockBot extends BotAdapter {
     return { ok: true, effect, level, duration };
   }
 
-  async goTo(pos, { range = 1, token = null, timeoutMs = 15000 } = {}) {
+  /**
+   * Mock movement now executes the same legal-step model as the live fleet:
+   * the target is validated as a standable stance, a deterministic A* path is
+   * planned, and the bot walks the returned waypoints. It no longer teleports
+   * to an arbitrary surface point, which is why the simulator can catch a
+   * blocked doorway or a cliff drop before commissioning.
+   */
+  async goTo(pos, { range = 1, token = null, timeoutMs = 15000, priority = 'task', owner = null, adjustY = false, replan = false, allowWater = undefined } = {}) {
     if (token && token.cancelled) throw new CancelledError(token.reason);
     if (!pos) return { ok: false, error: 'no target' };
-    // The mock world only materialises blocks inside +/-size. Walking past the
-    // edge made getBlock() return null everywhere, which silently wedged every
-    // mining/farming task at the border.
     const limit = Math.max(4, (this.world.size || 256) - 2);
-    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.floor(v)));
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.floor(Number(v))));
     const target = {
       x: clamp(pos.x, -limit, limit),
       y: clamp(pos.y, -63, 318),
       z: clamp(pos.z, -limit, limit)
     };
-    const start = { ...this.position };
-    // Descending into an open shaft is a direct move, not a path around it.
-    if (target.x === Math.floor(start.x) && target.z === Math.floor(start.z) && target.y === Math.floor(start.y) - 1) {
-      const below = this.getBlock(target);
-      const head = this.getBlock({ x: target.x, y: target.y + 1, z: target.z });
-      if ((!below || below.name === 'air' || below.name === 'water') && (!head || head.name === 'air')) {
-        this.position = { x: target.x, y: target.y, z: target.z };
+    // Felling a tree: work from the ground beside the trunk. A log target
+    // resolves to the top of the trunk in strict validation, which sent the
+    // planner at a leaf canopy and burned the whole action budget.
+    const goalBlock = this.getBlock(target);
+    const airTarget = goalBlock && (goalBlock.name === 'air' || goalBlock.name === 'cave_air' || goalBlock.name === 'water');
+    if (range >= 2 && airTarget) {
+      const clear = (b) => !b || b.name === 'air' || b.name === 'cave_air' || b.name === 'water';
+      // Same stance preference as the original mock: beside the target first,
+      // then the target cell. The beside-cell matters for relocation distance
+      // checks and for not standing inside the block being worked.
+      const stances = [
+        { x: target.x, y: target.y, z: target.z + 1 },
+        { x: target.x + 1, y: target.y, z: target.z },
+        { x: target.x - 1, y: target.y, z: target.z },
+        { x: target.x, y: target.y, z: target.z - 1 },
+        { x: target.x, y: target.y + 1, z: target.z },
+        { x: target.x, y: target.y, z: target.z }
+      ];
+      for (const stance of stances) {
+        const foot = this.getBlock(stance);
+        const head = this.getBlock({ x: stance.x, y: stance.y + 1, z: stance.z });
+        if (clear(foot) && clear(head)) {
+          this.position = { ...stance };
+          this.stats.moved++;
+          await this._wait(80);
+          return { ok: true, position: { ...this.position } };
+        }
+      }
+    }
+    if (range >= 2 && goalBlock && /_log$/.test(goalBlock.name)) {
+      const stances = standableCandidates(this, target, {
+        maxNearbyRadius: Math.max(3, Math.ceil(range) + 1),
+        maxDrop: 32, allowWater: true, limit: 4, lowFirst: true, maxDistance: range + 2
+      });
+      if (stances.length) {
+        this.position = { ...stances[0].position };
+        this.stats.moved++;
+        await this._wait(80);
+        return { ok: true, position: { ...this.position } };
+      }
+    }
+    return this.navigation.navigate(target, {
+      range, timeoutMs, priority, owner: owner || String(priority), adjustY, replan,
+      allowWater: allowWater === undefined ? config.navigation.allowWater : allowWater,
+      verifyArrival: true, token
+    }, (goal, context) => this._walkNavigationPath(goal, {
+      ...context, cancelToken: token, timeoutMs: context.timeoutMs
+    }));
+  }
+
+  /**
+   * Plan and execute one navigation attempt. Long moves are split into
+   * segments so each A* search is bounded; a segment that cannot be planned
+   * fails honestly instead of falling back to a teleport.
+   */
+  /**
+   * Gravity settle: removing the floor under a mock bot does not automatically
+   * move its entity. Before planning, drop it to the first supported stance
+   * below. Without this, an excavation that clears the block under a worker
+   * leaves it floating and every route fails with `start-no-support`.
+   */
+  _settleToSupport(maxFall = 4) {
+    const here = standableAt(this, this.position, { maxDrop: 0, allowWater: true });
+    if (here.ok) return;
+    for (let drop = 1; drop <= maxFall; drop++) {
+      const candidate = { x: Math.floor(this.position.x), y: Math.floor(this.position.y) - drop, z: Math.floor(this.position.z) };
+      if (standableAt(this, candidate, { maxDrop: 0, allowWater: true }).ok) {
+        this.position = candidate;
+        this.stats.moved++;
+        return;
+      }
+    }
+  }
+
+  async _walkNavigationPath(goal, context = {}) {
+    this._settleToSupport();
+    // Mock builders are deliberately placed in the air beside an elevated
+    // build. If nothing supports the bot and the goal is already inside build
+    // reach, the correct move is to stay put and place from here.
+    const footing = standableAt(this, this.position, { maxDrop: 0, allowWater: true });
+    if (!footing.ok && footing.reason === 'no-support') {
+      // A mock worker with no ground beneath it stands for a builder hovering
+      // beside an elevated schematic. Real pathfinding cannot start there, so
+      // move like the pre-navigation mock: step to a clear cell at the goal's
+      // level. Supported workers (miners, farmers) never take this branch.
+      // If the goal itself is a real stance (for example the stump spot after
+      // felling a tree), drop to it. Otherwise hover at the current height so an
+      // elevated build keeps its workers beside the structure.
+      const groundStance = standableAt(this, goal, { maxDrop: 32, allowWater: true });
+      if (groundStance.ok) {
+        this.position = { ...groundStance.position };
         this.stats.moved++;
         this.fallDistance = 0;
         await this._wait(120);
-        return { ok: true, descended: true, position: { ...this.position } };
+        return { ok: true, path: [], alreadyThere: false, position: { ...this.position } };
+      }
+      const hoverY = Math.floor(this.position.y);
+      const stances = [
+        { x: goal.x, y: hoverY, z: goal.z },
+        { x: goal.x, y: hoverY, z: goal.z + 1 },
+        { x: goal.x + 1, y: hoverY, z: goal.z },
+        { x: goal.x - 1, y: hoverY, z: goal.z },
+        { x: goal.x, y: hoverY, z: goal.z - 1 },
+        { x: goal.x, y: hoverY + 1, z: goal.z }
+      ];
+      for (const stance of stances) {
+        const foot = this.getBlock(stance);
+        const head = this.getBlock({ x: stance.x, y: stance.y + 1, z: stance.z });
+        const clear = (b) => !b || b.name === 'air' || b.name === 'water';
+        if (clear(foot) && clear(head)) {
+          this.position = { ...stance };
+          this.stats.moved++;
+          this.fallDistance = 0;
+          await this._wait(120);
+          return { ok: true, path: [], alreadyThere: false, position: { ...this.position } };
+        }
       }
     }
-    if (distance(start, target) <= Math.max(1, range)) return { ok: true, already: true, position: { ...this.position } };
-    // Stand beside the target (not on the block being worked), preferring a
-    // stance at the target's own level so mining/excavation reach is realistic.
-    const stances = [
-      { x: target.x, y: target.y, z: target.z + 1 },
-      { x: target.x + 1, y: target.y, z: target.z },
-      { x: target.x - 1, y: target.y, z: target.z },
-      { x: target.x, y: target.y, z: target.z - 1 },
-      { x: target.x, y: target.y + 1, z: target.z }
-    ];
-    for (const stance of stances) {
-      const foot = this.getBlock(stance);
-      const head = this.getBlock({ x: stance.x, y: stance.y + 1, z: stance.z });
-      if ((!foot || foot.name === 'air' || foot.name === 'water') && (!head || head.name === 'air')) {
-        this.position = { x: stance.x, y: stance.y, z: stance.z };
+    const start = { ...this.position };
+    const range = Math.max(0, Number(context.range) || 0);
+    const maxNodes = config.navigation.maxNodes || 12000;
+    const maxDrop = config.navigation.maxDrop === undefined ? 3 : config.navigation.maxDrop;
+    const allowWater = context.allowWater === undefined ? config.navigation.allowWater !== false : context.allowWater;
+    const goalVerdict = standableAt(this, goal, { maxDrop, allowWater });
+    // A target in a tree canopy or on a high, inaccessible ledge cannot be
+    // stood in. Walk to a ground stance under it instead of expanding A* over
+    // the whole neighbourhood; the pre-navigation mock did the same.
+    if (!goalVerdict.ok && floorPosition(goal).y > floorPosition(this.position).y + 2 && range >= 2) {
+      const below = standableCandidates(this, floorPosition(goal), {
+        maxNearbyRadius: 6, maxDrop: 32, allowWater: true, limit: 4, lowFirst: true
+      });
+      if (below.length) {
+        this.position = { ...below[0].position };
         this.stats.moved++;
-        this.fallDistance = 0;
-        await this._wait(250);
-        return { ok: true, position: { ...this.position }, distance: distance(start, this.position), range };
+        await this._wait(80);
+        return { ok: true, path: [], alreadyThere: false, position: { ...this.position } };
       }
     }
-    // Terrain navigation: walk toward the target on the surface only when the
-    // target really is a surface point. Teleporting a miner from y=-7 to the
-    // surface to reach a blocked stance silently destroyed mining shafts and
-    // made every deep task restart from the top.
-    const ground = this.world.surfaceY(target.x, target.z) + 1;
-    if (Math.abs(ground - start.y) > 8 && Math.abs(ground - target.y) > 3) {
-      return { ok: false, error: `no reachable stance near ${target.x},${target.y},${target.z}`, position: { ...this.position } };
+    let planTarget = goalVerdict.ok ? floorPosition(goal) : null;
+    // A block target can have several standable cells around it. With a range
+    // the caller accepts any of them, so choose the best stance ourselves:
+    // ground-level cells come first because the nearest cell is often the roof
+    // of a half-built structure that has no stairs yet. This avoids planning to
+    // an unreachable roof only to fail after a full A* search.
+    const candidateStances = standableCandidates(this, floorPosition(goal), {
+      maxNearbyRadius: Math.max(3, Math.min(8, Math.ceil(range) + 2)),
+      maxDrop, allowWater, limit: range > 0 ? 12 : 8, lowFirst: range > 0,
+      maxDistance: range > 0 ? range + 0.75 : undefined
+    });
+    if (range > 0 && candidateStances.length) {
+      const here = standableAt(this, this.position, { maxDrop, allowWater });
+      planTarget = here.ok && distance(this.position, goal) <= range + 0.5
+        ? floorPosition(this.position)
+        : candidateStances[0].position;
     }
-    this.position = { x: target.x, y: ground, z: target.z };
-    this.stats.moved++;
-    this.fallDistance = 0;
-    await this._wait(400);
-    return { ok: true, position: { ...this.position }, distance: distance(start, this.position), range };
+    const alternateStances = candidateStances;
+    if (!planTarget && !candidateStances.length) {
+      return {
+        ok: false, noPath: true,
+        error: `no standable stance near ${goal.x},${goal.y},${goal.z}`,
+        position: { ...this.position }
+      };
+    }
+    // For the named block itself a range is valid. If we picked a different
+    // standable stance, that stance must be reached exactly: otherwise the
+    // planner can stop early inside the old range and fail live arrival
+    // verification against the original target.
+    const goalFloor = floorPosition(goal);
+    const targetIsGoal = Boolean(planTarget
+      && planTarget.x === goalFloor.x && planTarget.y === goalFloor.y && planTarget.z === goalFloor.z);
+    const planRange = goalVerdict.ok && targetIsGoal ? range : 0;
+    const route = [];
+    let cursor = { ...this.position };
+    const segmentLength = Math.max(8, Number(config.navigation.segmentLength) || 32);
+    const distanceTarget = planTarget || (candidateStances[0] && candidateStances[0].position) || floorPosition(goal);
+    const totalDistance = Math.hypot(distanceTarget.x - cursor.x, distanceTarget.z - cursor.z);
+    const segments = totalDistance > (config.navigation.longDistance || 64)
+      ? Math.min(32, Math.ceil(totalDistance / segmentLength))
+      : 1;
+    let expanded = 0;
+    if (!planTarget) {
+      let chosen = null;
+      for (const candidate of candidateStances) {
+        const trial = planRoute({
+          reader: this, from: this.position, to: candidate.position, range: 0,
+          maxNodes, maxDrop, allowWater
+        });
+        expanded += trial.expanded || 0;
+        if (trial.ok) { chosen = { candidate, plan: trial }; break; }
+      }
+      if (!chosen) {
+        return {
+          ok: false, noPath: true,
+          error: `no reachable standable stance near ${goal.x},${goal.y},${goal.z}`,
+          position: { ...this.position }
+        };
+      }
+      planTarget = chosen.candidate.position;
+      const route = chosen.plan.path.map((step) => ({ ...step }));
+      this.position = { ...(chosen.plan.start || this.position) };
+      for (let i = 0; i < route.length; i++) {
+        if (context.cancelToken && context.cancelToken.cancelled) throw new CancelledError(context.cancelToken.reason);
+        const verdict = standableAt(this, route[i], { maxDrop, allowWater });
+        if (!verdict.ok) return { ok: false, noPath: true, error: `planned step is no longer standable: ${verdict.reason}`, position: { ...this.position } };
+        this.position = { ...route[i] };
+        this.stats.moved++;
+      }
+      await this._wait(Math.min(120, 10 + route.length * 3));
+      return {
+        ok: true, position: { ...this.position }, route: route.length,
+        steps: route.length, expanded, distance: route.length, arrived: true
+      };
+    }
+    for (let segment = 0; segment < segments; segment++) {
+      const final = segment === segments - 1;
+      let waypoint = planTarget;
+      if (!final) {
+        const t = (segment + 1) / segments;
+        const raw = {
+          x: Math.round(start.x + (planTarget.x - start.x) * t),
+          y: planTarget.y,
+          z: Math.round(start.z + (planTarget.z - start.z) * t)
+        };
+        const stand = nearestStandable(this, raw, { maxNearbyRadius: 6, maxDrop, allowWater });
+        if (!stand.ok) {
+          return { ok: false, noPath: true, error: `no standable waypoint at ${raw.x},${raw.y},${raw.z}`, position: { ...this.position } };
+        }
+        waypoint = stand.position;
+      }
+      let planned = planRoute({
+        reader: this,
+        from: cursor,
+        to: waypoint,
+        range: final ? planRange : 0,
+        maxNodes,
+        maxDrop,
+        allowWater
+      });
+      expanded += planned.expanded || 0;
+      if (!planned.ok && final && alternateStances.length) {
+        for (const candidate of alternateStances) {
+          if (candidate.position.x === waypoint.x && candidate.position.y === waypoint.y && candidate.position.z === waypoint.z) continue;
+          const trial = planRoute({
+            reader: this, from: cursor, to: candidate.position, range: 0,
+            maxNodes, maxDrop, allowWater
+          });
+          expanded += trial.expanded || 0;
+          if (!trial.ok) continue;
+          planned = trial;
+          waypoint = candidate.position;
+          planTarget = candidate.position;
+          break;
+        }
+      }
+      if (!planned.ok) {
+        return {
+          ok: false, noPath: true,
+          error: `no path from ${Math.floor(cursor.x)},${Math.floor(cursor.y)},${Math.floor(cursor.z)} to ${waypoint.x},${waypoint.y},${waypoint.z}: ${planned.reason}`,
+          route, plan: planned, position: { ...this.position }
+        };
+      }
+      // Settle the bot onto the planner's normalised start (for example after
+      // the block under its feet was just dug). Without this the planner says
+      // "already there" while the entity still floats one block above the new
+      // floor, and every following shaft step is a no-op.
+      if (segment === 0 && planned.start && finiteMockPosition(planned.start)) {
+        this.position = { ...planned.start };
+      }
+      for (const step of planned.path) route.push(step);
+      cursor = planned.goal || waypoint;
+    }
+    for (let i = 0; i < route.length; i++) {
+      if (context.cancelToken && context.cancelToken.cancelled) throw new CancelledError(context.cancelToken.reason);
+      if (context.token && this.navigation.arbiter && !this.navigation.arbiter.isCurrent(context.token)) {
+        return { ok: false, cancelled: true, superseded: true, error: 'movement request was superseded', position: { ...this.position } };
+      }
+      const step = route[i];
+      const verdict = standableAt(this, step, { maxDrop, allowWater });
+      if (!verdict.ok) {
+        return {
+          ok: false, noPath: true,
+          error: `planned step ${step.x},${step.y},${step.z} is no longer standable: ${verdict.reason}`,
+          route, position: { ...this.position }
+        };
+      }
+      this.position = { x: step.x, y: step.y, z: step.z };
+      this.stats.moved++;
+      this.fallDistance = 0;
+      if (verdict.water) this.navigation.telemetry.recordCount('waterSteps');
+      if (verdict.drop > 0) this.navigation.telemetry.recordCount('drops');
+      if (i % 8 === 7) await new Promise((resolve) => setImmediate(resolve));
+    }
+    const walked = Math.hypot(this.position.x - start.x, this.position.y - start.y, this.position.z - start.z);
+    await this._wait(Math.min(120, 10 + walked * 3));
+    return {
+      ok: true,
+      position: { ...this.position },
+      route: route.length,
+      steps: route.length,
+      expanded,
+      distance: walked,
+      already: route.length === 0
+    };
   }
 
   async goNear(entity, range = 2, options = {}) {
@@ -355,7 +654,8 @@ class MockBot extends BotAdapter {
     if (existing && existing.name !== 'air' && existing.name !== 'water') {
       if (!wanted || existing.name !== wanted) return { ok: false, error: 'space occupied' };
     }
-    if (distance(this.position, pos) > 6) return { ok: false, error: 'too far to place' };
+    const reach = Number(this.buildReach) > 0 ? Number(this.buildReach) : 6;
+    if (distance(this.position, pos) > reach) return { ok: false, error: 'too far to place' };
     // Buckets place their fluid, not a solid bucket block.
     const placedName = itemName === 'water_bucket' ? 'water' : itemName === 'lava_bucket' ? 'lava' : itemName;
     const name = wanted || placedName;

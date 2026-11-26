@@ -83,9 +83,10 @@ function scanArea(bounds, blockAt, { scanLimit = 120000, mask = null } = {}) {
   };
 }
 
-function buildAccessRoute(bounds, mode) {
+function buildAccessRoute(bounds, mode, regions = [], surfaceAt = null, blockAt = null) {
   const depth = bounds.max.y - bounds.min.y + 1;
   const z = bounds.min.z;
+  const stairZ = bounds.min.z - 1;
   const steps = [];
   const seen = new Set();
   const add = (x, y, zz) => {
@@ -94,31 +95,62 @@ function buildAccessRoute(bounds, mode) {
     seen.add(k);
     steps.push({ x, y, z: zz });
   };
+  // Feet coordinates, not "clear everything" coordinates. Every step keeps the
+  // block underneath it, so the staircase is walkable in both directions. The
+  // old route removed the floor of each step (including the surface landing),
+  // which left bots at the bottom of a shaft with no path back to the surface.
+  let surface = null;
+  if (typeof surfaceAt === 'function') {
+    try { surface = Math.floor(surfaceAt(bounds.min.x, z)); } catch (_) { surface = null; }
+  }
+  if (!Number.isFinite(surface) && typeof blockAt === 'function') {
+    try {
+      for (let y = bounds.max.y + 8; y >= bounds.min.y; y--) {
+        const block = blockAt({ x: bounds.min.x, y, z });
+        if (block && !['air', 'cave_air', 'void_air', 'water', 'lava'].includes(block.name)) { surface = y; break; }
+      }
+    } catch (_) { surface = null; }
+  }
+  // Start at the real terrain surface, one block above the highest solid block,
+  // so the first landing is reachable from ordinary ground. A fixed offset above
+  // the box left a one-block gap between the surface and the staircase.
+  let feet = Number.isFinite(surface) ? surface + 1 : bounds.max.y + 3;
+  feet = Math.max(feet, bounds.min.y + 1);
   let x = bounds.min.x - 2;
-  let y = bounds.max.y + 1;
-  for (let i = 0; i < depth; i++) {
-    // One block down per block along -X, with two blocks of headroom.
-    add(x, y, z);
-    add(x, y + 1, z);
-    add(x, y + 2, z);
+  let stairSteps = 0;
+  while (feet >= bounds.min.y && stairSteps < depth + 8) {
+    add(x, feet, stairZ);
+    add(x, feet + 1, stairZ);
+    // Headroom for the jump back up to the previous step.
+    add(x, feet + 2, stairZ);
     x -= 1;
-    y -= 1;
+    feet -= 1;
+    stairSteps++;
   }
   const stairEndX = x + 1;
-  // Bottom corridor back into the pit, two blocks high.
-  for (let cx = stairEndX; cx <= bounds.min.x; cx++) {
+  // Join the stair bottom (one block outside the footprint) to the bottom
+  // corridor. Stairs and corridor live at different z values so the corridor
+  // cannot remove the floor of an upper stair step.
+  add(stairEndX, bounds.min.y, stairZ);
+  add(stairEndX, bounds.min.y + 1, stairZ);
+  add(stairEndX, bounds.min.y, z);
+  add(stairEndX, bounds.min.y + 1, z);
+  for (let cx = stairEndX; cx <= bounds.max.x; cx++) {
     add(cx, bounds.min.y, z);
     add(cx, bounds.min.y + 1, z);
-    add(cx, bounds.min.y + 2, z);
   }
-  const entrance = steps[0] || { x: bounds.min.x - 2, y: bounds.max.y + 1, z };
+  // No per-region branches: once a worker has excavated its own top layers it
+  // stands on the preserved floor at y=min.y-1 and can walk anywhere in its
+  // region. Branches carved earlier cut through the very volume being dug and
+  // removed quarry terrace walls.
+  const entrance = steps[0] || { x: bounds.min.x - 2, y: bounds.max.y + 3, z: stairZ };
   return {
     type: mode === 'QUARRY' ? 'ramp' : 'staircase',
     entrance,
     bottom: { x: bounds.min.x, y: bounds.min.y, z },
     steps: steps.slice(0, 1200),
-    stepCount: depth,
-    note: 'one-block staircase with two-block headroom outside the footprint, plus a bottom corridor'
+    stepCount: stairSteps,
+    note: 'walkable staircase with preserved floors, plus a bottom corridor under the full footprint'
   };
 }
 
@@ -279,7 +311,7 @@ function createExcavationPlan(opts = {}) {
     exitSteps: footprint.exitSteps || null,
     targetY: footprint.targetY !== undefined ? footprint.targetY : null,
     schematicId: footprint.schematicId || null,
-    accessRoute: buildAccessRoute(footprint.bounds, footprint.mode),
+    accessRoute: buildAccessRoute(footprint.bounds, footprint.mode, regions, surfaceAt, blockAt),
     regions,
     workerCount: regions.length,
     assignments: [],
