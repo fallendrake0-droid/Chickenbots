@@ -531,13 +531,19 @@ class CombatController {
   }
 
   _verifyTarget(target) {
-    if (!target) return { alive: false, missing: true };
-    if (target.alive === false) return { alive: false, health: 0 };
-    if (target.health !== undefined && target.health <= 0) return { alive: false, health: 0 };
+    if (!target) return { alive: null, missing: true, confirmedDeath: false };
+    if (target.alive === false) return { alive: false, health: 0, confirmedDeath: true };
+    if (target.health !== undefined && target.health <= 0) return { alive: false, health: 0, confirmedDeath: true };
     const live = typeof this.bot.entitiesNear === 'function'
       ? this.bot.entitiesNear(64).find((entity) => entity.id === target.id)
       : null;
-    return { alive: Boolean(live) || target.health === undefined || target.health > 0, health: live ? live.health : target.health };
+    if (live) return { alive: true, health: live.health, confirmedDeath: false };
+    // An entity id can vanish because the mob died, because it walked out of
+    // render distance, or because the server unloaded it. That is "unknown",
+    // not a confirmed kill. The old fallback treated a previously healthy
+    // target as alive, but a caller that mutated `alive` could still produce a
+    // verified kill with no death evidence.
+    return { alive: null, missing: true, confirmedDeath: false, health: target.health };
   }
 
   async engage(options = {}) {
@@ -609,7 +615,12 @@ class CombatController {
         results.push({ action: 'heal', ...survival });
       }
       const verified = this._verifyTarget(target);
-      if (!verified.alive) break;
+      if (verified.alive === false) break;
+      if (verified.alive === null) {
+        this._setState('DISENGAGED', 'target lost; kill unconfirmed');
+        results.push({ action: 'lost-target', target: target.name || target.type, confirmed: false });
+        break;
+      }
       let current = assessment.threats.find((threat) => threat.id === target.id) || null;
       if (!current || !current.position) {
         assessment = this.assess(options.radius || 20);
@@ -708,10 +719,15 @@ class CombatController {
         continue;
       }
       const post = this._verifyTarget(target);
-      if (!post.alive) {
+      if (post.alive === false && post.confirmedDeath) {
         confirmedKill = true;
         this._recordKill(target, { verified: true });
         results.push({ action: 'killed', target: target.name || target.type, verified: true });
+        break;
+      }
+      if (post.alive === null) {
+        this._setState('DISENGAGED', 'target lost; kill unconfirmed');
+        results.push({ action: 'lost-target', target: target.name || target.type, confirmed: false });
         break;
       }
       const attackDelay = this.bot.speed ? Math.max(50, Math.round(1000 / (weapon.weapon.attackSpeed || 1))) : 0;
@@ -723,11 +739,14 @@ class CombatController {
     }
     this._setState('VERIFYING');
     const finalTarget = this.target;
-    const finalState = confirmedKill ? { alive: false, killed: true } : finalTarget ? this._verifyTarget(finalTarget) : { alive: false };
-    if (!finalState.alive && finalTarget) this._recordKill(finalTarget, { verified: true });
-    if (finalState.alive) this._setState('DISENGAGED', 'attack budget exhausted');
+    const finalState = confirmedKill
+      ? { alive: false, confirmedDeath: true, killed: true }
+      : finalTarget ? this._verifyTarget(finalTarget) : { alive: null, missing: true, confirmedDeath: false };
+    if (finalState.alive === false && finalState.confirmedDeath && finalTarget) this._recordKill(finalTarget, { verified: true });
+    if (finalState.alive === null) this._setState('DISENGAGED', 'target lost; kill unconfirmed');
+    else if (finalState.alive) this._setState('DISENGAGED', 'attack budget exhausted');
     else this._setState('LOOTING', 'target defeated');
-    if (!finalState.alive && typeof this.bot.collectDrops === 'function') {
+    if (finalState.alive === false && finalState.confirmedDeath && typeof this.bot.collectDrops === 'function') {
       const loot = await this.bot.collectDrops();
       results.push({ action: 'loot', ...loot });
     }
@@ -738,7 +757,7 @@ class CombatController {
     return {
       action: onlyRetreat ? 'retreat' : 'defend', ok: results.every((entry) => entry.ok !== false || entry.action === 'retreat'),
       state: this.state, target: finalTarget ? (finalTarget.name || finalTarget.type) : null,
-      targetDefeated: !finalState.alive, remaining, attacks: results.filter((entry) => entry.action === 'attack').length,
+      targetDefeated: finalState.alive === false, remaining, attacks: results.filter((entry) => entry.action === 'attack').length,
       results, stats: { ...this.stats }
     };
   }

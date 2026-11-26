@@ -26,7 +26,12 @@ function buildSummary(manifest) {
   const topMaterials = Object.entries(materialTotals).sort((a, b) => b[1] - a[1]).slice(0, 15)
     .map(([name, count]) => ({ name, count }));
   const tiers = [...new Set(designs.map((d) => d.tier))].map((tier) => ({ tier, count: designs.filter((d) => d.tier === tier).length }));
-  const categories = [...new Set(designs.map((d) => d.category))].sort();
+  // The dashboard filter, the CLI stats printer and construction.js all read
+  // category objects ({category, count}), matching the full-manifest stats.
+  // This summary used to emit bare strings, so a cold dashboard showed every
+  // option as "undefined" and `npm run schematics:stats` crashed on padEnd.
+  const categories = [...new Set(designs.map((d) => d.category))].sort()
+    .map((category) => ({ category, count: designs.filter((d) => d.category === category).length }));
   return {
     version: 1,
     source: 'manifest.json',

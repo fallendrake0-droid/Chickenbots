@@ -550,6 +550,9 @@ class TeamCoordinator {
         dimension: state.dimension || 'overworld',
         yaw: state.yaw || 0,
         role: this.roles.get(name) || 'IDLE',
+        // The allocator and rescue scorer read this field. It was declared on
+        // the adapter but never populated, so both penalties were dead.
+        currentTaskId: (this.assignments.get(name) && this.assignments.get(name).taskId) || null,
         assignment: this.assignments.get(name) || null,
         rescue: this.rescues.get(name) || null,
         task: this.assignments.get(name) ? this.assignments.get(name).label : null,

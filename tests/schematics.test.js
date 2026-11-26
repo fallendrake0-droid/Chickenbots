@@ -56,6 +56,10 @@ test('library lookup, stats and filtering work on real manifest data', () => {
   assert.equal(stats.uniqueGeometry, stats.count);
   assert.ok(stats.tiers.length === 8);
   assert.ok(stats.blocks.total > 1_000_000);
+  // The dashboard filter and the CLI stats printer both expect category
+  // objects. A bare-string summary made every cold option render as undefined.
+  assert.ok(stats.categories.length > 0);
+  assert.ok(stats.categories.every((entry) => entry && typeof entry.category === 'string' && typeof entry.count === 'number'));
   const first = manifest.designs[0];
   assert.ok(library.get(first.id));
   assert.equal(library.get('does-not-exist'), null);
@@ -65,6 +69,15 @@ test('library lookup, stats and filtering work on real manifest data', () => {
   const built = library.build(first.id);
   assert.equal(built.geometryHash, first.geometryHash);
   assert.equal(built.dimensions.width, first.dimensions.width);
+});
+
+test('the generated summary exposes category objects without loading the full manifest', () => {
+  const summaryLibrary = new SchematicLibrary({ manifest: null, custom: false });
+  const stats = summaryLibrary.stats();
+  assert.equal(stats.fromSummary, true, 'summary.json should satisfy the cold stats path');
+  assert.ok(stats.count >= 10000);
+  assert.ok(stats.categories.length > 0);
+  assert.ok(stats.categories.every((entry) => entry && typeof entry.category === 'string' && typeof entry.count === 'number' && entry.count > 0));
 });
 
 test('generation is deterministic for identical specs', () => {

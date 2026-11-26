@@ -220,7 +220,10 @@ class EmergencyManager {
       const state = byName.get(emergency.bot);
       if (!state) {
         if (this.now() - emergency.lastSeen > this.ttlMs) {
-          this.resolve(emergency.id, { confirmedSafe: true, reason: 'bot gone' });
+          // Losing telemetry is not evidence of safety. Keep the emergency in
+          // the explicit UNCONFIRMED state so the dashboard does not report a
+          // disconnected or invisible bot as rescued.
+          this.resolve(emergency.id, { confirmedSafe: false, reason: 'bot gone; outcome unknown' });
           resolved.push(emergency.id);
         }
         continue;

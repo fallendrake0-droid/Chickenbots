@@ -176,6 +176,18 @@ test('mob registry covers current hostiles, separates neutrals and applies speci
   assert.equal(profileFor({ name: 'drowned' }).aquatic, true);
 });
 
+test('a vanished target is unknown, not a verified kill', () => {
+  const { bot } = flatBot(NAMES[0], { iron_sword: 1 });
+  const controller = new CombatController({ bot });
+  const target = { id: 'mob-1', name: 'zombie', position: { x: 2, y: 64, z: 0 }, health: 20 };
+  const live = controller._verifyTarget(target);
+  assert.equal(live.alive, null);
+  assert.equal(live.missing, true);
+  assert.equal(live.confirmedDeath, false);
+  assert.equal(controller._verifyTarget({ ...target, alive: false }).confirmedDeath, true);
+  assert.equal(controller._verifyTarget({ ...target, health: 0 }).confirmedDeath, true);
+});
+
 test('PvP policy is explicit, refuses teammates/protected players and requires enablement', () => {
   const policy = new PvpPolicy({ enabled: false });
   const [enemy, friend] = players();

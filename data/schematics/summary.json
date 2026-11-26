@@ -41,84 +41,318 @@
     }
   ],
   "categories": [
-    "academy",
-    "aqueduct",
-    "arcane_academy",
-    "barn",
-    "bridge",
-    "cabin",
-    "castle",
-    "cathedral_complex",
-    "chapel",
-    "citadel",
-    "city_block",
-    "colossal_castle",
-    "cottage",
-    "courtyard",
-    "dock",
-    "dojo",
-    "eternal_library",
-    "farm_shed",
-    "floating_citadel",
-    "floating_island",
-    "forge",
-    "fortress",
-    "fortress_city",
-    "fountain",
-    "garden",
-    "gatehouse",
-    "grand_station",
-    "grand_temple",
-    "greenhouse",
-    "guildhall",
-    "harbor",
-    "house",
-    "imperial_palace",
-    "inn",
-    "keep",
-    "kingdom",
-    "library",
-    "mansion",
-    "maze",
-    "mega_base",
-    "mega_castle",
-    "metropolis",
-    "mill",
-    "mine_entrance",
-    "mountain_keep",
-    "observatory",
-    "pagoda",
-    "palace",
-    "park",
-    "pier",
-    "plaza",
-    "pyramid",
-    "railway",
-    "road",
-    "royal_gardens",
-    "shelter",
-    "shrine",
-    "sky_city",
-    "sky_fortress",
-    "skyscraper",
-    "stable",
-    "station",
-    "subterranean_city",
-    "sunken_city",
-    "temple",
-    "titan_forge",
-    "treehouse",
-    "tunnel",
-    "underground_base",
-    "underground_kingdom",
-    "underground_metropolis",
-    "underground_room",
-    "villa",
-    "warehouse",
-    "watchtower",
-    "well",
-    "workshop",
-    "world_tree_palace"
+    {
+      "category": "academy",
+      "count": 68
+    },
+    {
+      "category": "aqueduct",
+      "count": 338
+    },
+    {
+      "category": "arcane_academy",
+      "count": 32
+    },
+    {
+      "category": "barn",
+      "count": 285
+    },
+    {
+      "category": "bridge",
+      "count": 75
+    },
+    {
+      "category": "cabin",
+      "count": 97
+    },
+    {
+      "category": "castle",
+      "count": 69
+    },
+    {
+      "category": "cathedral_complex",
+      "count": 33
+    },
+    {
+      "category": "chapel",
+      "count": 339
+    },
+    {
+      "category": "citadel",
+      "count": 51
+    },
+    {
+      "category": "city_block",
+      "count": 68
+    },
+    {
+      "category": "colossal_castle",
+      "count": 26
+    },
+    {
+      "category": "cottage",
+      "count": 285
+    },
+    {
+      "category": "courtyard",
+      "count": 130
+    },
+    {
+      "category": "dock",
+      "count": 96
+    },
+    {
+      "category": "dojo",
+      "count": 337
+    },
+    {
+      "category": "eternal_library",
+      "count": 25
+    },
+    {
+      "category": "farm_shed",
+      "count": 96
+    },
+    {
+      "category": "floating_citadel",
+      "count": 26
+    },
+    {
+      "category": "floating_island",
+      "count": 33
+    },
+    {
+      "category": "forge",
+      "count": 339
+    },
+    {
+      "category": "fortress",
+      "count": 68
+    },
+    {
+      "category": "fortress_city",
+      "count": 32
+    },
+    {
+      "category": "fountain",
+      "count": 284
+    },
+    {
+      "category": "garden",
+      "count": 96
+    },
+    {
+      "category": "gatehouse",
+      "count": 285
+    },
+    {
+      "category": "grand_station",
+      "count": 33
+    },
+    {
+      "category": "grand_temple",
+      "count": 51
+    },
+    {
+      "category": "greenhouse",
+      "count": 338
+    },
+    {
+      "category": "guildhall",
+      "count": 131
+    },
+    {
+      "category": "harbor",
+      "count": 389
+    },
+    {
+      "category": "house",
+      "count": 339
+    },
+    {
+      "category": "imperial_palace",
+      "count": 33
+    },
+    {
+      "category": "inn",
+      "count": 131
+    },
+    {
+      "category": "keep",
+      "count": 131
+    },
+    {
+      "category": "kingdom",
+      "count": 26
+    },
+    {
+      "category": "library",
+      "count": 131
+    },
+    {
+      "category": "mansion",
+      "count": 51
+    },
+    {
+      "category": "maze",
+      "count": 130
+    },
+    {
+      "category": "mega_base",
+      "count": 26
+    },
+    {
+      "category": "mega_castle",
+      "count": 33
+    },
+    {
+      "category": "metropolis",
+      "count": 26
+    },
+    {
+      "category": "mill",
+      "count": 339
+    },
+    {
+      "category": "mine_entrance",
+      "count": 94
+    },
+    {
+      "category": "mountain_keep",
+      "count": 50
+    },
+    {
+      "category": "observatory",
+      "count": 130
+    },
+    {
+      "category": "pagoda",
+      "count": 338
+    },
+    {
+      "category": "palace",
+      "count": 51
+    },
+    {
+      "category": "park",
+      "count": 130
+    },
+    {
+      "category": "pier",
+      "count": 285
+    },
+    {
+      "category": "plaza",
+      "count": 352
+    },
+    {
+      "category": "pyramid",
+      "count": 50
+    },
+    {
+      "category": "railway",
+      "count": 130
+    },
+    {
+      "category": "road",
+      "count": 130
+    },
+    {
+      "category": "royal_gardens",
+      "count": 50
+    },
+    {
+      "category": "shelter",
+      "count": 97
+    },
+    {
+      "category": "shrine",
+      "count": 96
+    },
+    {
+      "category": "sky_city",
+      "count": 33
+    },
+    {
+      "category": "sky_fortress",
+      "count": 25
+    },
+    {
+      "category": "skyscraper",
+      "count": 51
+    },
+    {
+      "category": "stable",
+      "count": 285
+    },
+    {
+      "category": "station",
+      "count": 68
+    },
+    {
+      "category": "subterranean_city",
+      "count": 50
+    },
+    {
+      "category": "sunken_city",
+      "count": 26
+    },
+    {
+      "category": "temple",
+      "count": 69
+    },
+    {
+      "category": "titan_forge",
+      "count": 32
+    },
+    {
+      "category": "treehouse",
+      "count": 285
+    },
+    {
+      "category": "tunnel",
+      "count": 38
+    },
+    {
+      "category": "underground_base",
+      "count": 68
+    },
+    {
+      "category": "underground_kingdom",
+      "count": 26
+    },
+    {
+      "category": "underground_metropolis",
+      "count": 33
+    },
+    {
+      "category": "underground_room",
+      "count": 338
+    },
+    {
+      "category": "villa",
+      "count": 68
+    },
+    {
+      "category": "warehouse",
+      "count": 68
+    },
+    {
+      "category": "watchtower",
+      "count": 96
+    },
+    {
+      "category": "well",
+      "count": 96
+    },
+    {
+      "category": "workshop",
+      "count": 285
+    },
+    {
+      "category": "world_tree_palace",
+      "count": 26
+    }
   ],
   "blocks": {
     "total": 27821660,
@@ -196,6 +430,6 @@
   "manifestGeneratedAt": "2026-11-24T21:19:53.813Z",
   "generationMs": 402528,
   "rejected": 269,
-  "summarizedAt": "2026-11-25T19:55:20.866Z",
-  "summaryMs": 299
+  "summarizedAt": "2026-11-26T06:37:04.186Z",
+  "summaryMs": 303
 }

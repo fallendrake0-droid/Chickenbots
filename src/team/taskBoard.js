@@ -317,11 +317,24 @@ class TaskBoard {
     // task is claimed; verified work must identify the bot that did it.
     if (task.claimedBy && task.claimedBy !== by) return { ok: false, error: 'completed by non-owner' };
     if (!verified) return { ok: false, error: 'unverified completion rejected' };
+    // A verified single-unit task is complete on its own. A multi-unit task
+    // must show the units it actually verified; the old code silently rewrote
+    // current to target, so a task that produced nothing still displayed 100%.
+    const unitTarget = task.units ? Number(task.units.target) || 0 : 0;
+    const unitCurrent = task.units ? Number(task.units.current) || 0 : 0;
+    if (unitTarget > 1 && unitCurrent < unitTarget) {
+      return {
+        ok: false,
+        error: `verified progress is below the unit target (${unitCurrent}/${unitTarget})`,
+        task
+      };
+    }
     task.status = TASK_STATUS.COMPLETED;
     task.completedAt = this.now();
     task.lastUpdateAt = task.completedAt;
     task.verification = { verifiedBy: by || task.claimedBy, at: this.now(), notes };
-    task.units.current = Math.max(task.units.current, task.units.target);
+    // Single-unit work has no finer count than "done"; zero-unit work stays 0.
+    if (task.units && unitTarget > 0) task.units.current = Math.max(unitCurrent, unitTarget);
     this._releaseTaskResources(task);
     this._event('task.completed', { taskId, by: by || task.claimedBy });
     if (task.objectiveId) this.refreshObjectiveProgress(task.objectiveId);

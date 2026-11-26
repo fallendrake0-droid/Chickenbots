@@ -408,7 +408,13 @@ class ExcavationManager {
     const verification = verifier.verifyRegion(region);
     const board = this.coordinator ? this.coordinator.board : null;
     if (summary.status === 'completed' && verification.complete) {
-      if (board) board.complete(task.id, { by: botName, verified: true, notes: `region ${regionId} verified empty` });
+      // The region verifier is the evidence: every target block is absent, so
+      // the unit target is met even when some cells were already empty. Record
+      // that evidence before completing instead of letting complete() invent it.
+      if (board) {
+        board.updateProgress(task.id, { current: task.units.target, target: task.units.target });
+        board.complete(task.id, { by: botName, verified: true, notes: `region ${regionId} verified empty` });
+      }
       if (this.coordinator) {
         this.coordinator.comms.send('EXCAVATION_PHASE_COMPLETE', botName, { excavationId, regionId, verified: true });
         this.coordinator.clearAssignment(botName, { completed: true });

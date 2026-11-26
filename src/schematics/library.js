@@ -433,6 +433,12 @@ class SchematicLibrary {
       const customStats = store ? store.statsSummary() : null;
       return {
         ...summary,
+        // Older committed summaries used bare category names; normalize them
+        // here so every consumer sees the same {category, count} shape. The
+        // count is unknown in that legacy format, not zero.
+        categories: Array.isArray(summary.categories)
+          ? summary.categories.map((entry) => (typeof entry === 'string' ? { category: entry, count: null } : entry))
+          : [],
         minimumRequired: this.minCount,
         meetsMinimum: summary.count >= this.minCount,
         generatedAt: summary.manifestGeneratedAt || null,

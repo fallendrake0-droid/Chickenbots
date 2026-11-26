@@ -147,6 +147,10 @@ test('completed tasks reject restart/heartbeat and non-finite progress', () => {
   board.start(task.id, '10101000');
   assert.equal(board.updateProgress(task.id, { current: Number.NaN }), null);
   assert.equal(board.updateProgress(task.id, { target: Infinity }), null);
+  const underTarget = board.complete(task.id, { by: '10101000', verified: true });
+  assert.equal(underTarget.ok, false);
+  assert.match(underTarget.error, /below the unit target/);
+  board.updateProgress(task.id, { current: 5 });
   assert.equal(board.complete(task.id, { by: '10101000', verified: true }).ok, true);
   assert.equal(board.start(task.id, '10101000').ok, false);
   assert.equal(board.heartbeat(task.id, '10101000'), false);
@@ -322,6 +326,19 @@ test('emergency classification covers lava, falls, starvation and swarms', () =>
   assert.deepEqual(classifyEmergency({ ...base }), []);
 });
 
+test('an emergency loses telemetry as UNCONFIRMED, never as confirmed safe', () => {
+  let now = 0;
+  const em = new EmergencyManager({ now: () => now, ttlMs: 1000 });
+  em.report({ name: '10101000', connected: true, spawned: true, health: 3, food: 20, position: { x: 0, y: 64, z: 0 } });
+  const emergency = em.active()[0];
+  now = 2000;
+  const resolved = em.refresh([]);
+  assert.deepEqual(resolved, [emergency.id]);
+  assert.equal(em.get(emergency.id).status, 'UNCONFIRMED');
+  assert.equal(em.get(emergency.id).resolution.confirmedSafe, false);
+  assert.match(em.get(emergency.id).resolution.reason, /outcome unknown/i);
+});
+
 test('rescue plans do not send the whole team into danger', () => {
   const em = new EmergencyManager();
   const victim = { name: '10101000', health: 4, food: 10, position: { x: 0, y: 20, z: 0 } };
@@ -390,6 +407,8 @@ test('coordinator assigns, reassigns after disconnect, and preserves objectives'
   const assignment = coordinator.getAssignment(assignedBot);
   assert.ok(assignment.taskId);
   assert.equal(coordinator.board.getTask(assignment.taskId).claimedBy, assignedBot);
+  const assignedState = coordinator.getState().bots.find((row) => row.name === assignedBot);
+  assert.equal(assignedState.currentTaskId, assignment.taskId, 'rescue/allocation scoring must see the real task');
   coordinator.setDisconnected(assignedBot, 'socket reset');
   assert.equal(coordinator.getAssignment(assignedBot), null);
   const state = coordinator.getState();

@@ -257,6 +257,8 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   });
 
   app.get('/api/settings', (req, res) => {
+    // state() walks every bot and controller; read it once per request.
+    const runtimeState = services.runtime ? services.runtime.state() : null;
     res.json({
       ok: true,
       settings: {
@@ -276,7 +278,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
         pve: config.autonomy.pve,
         pvp: config.autonomy.pvp,
         ai: { enabled: config.autonomy.ai.enabled, provider: config.autonomy.ai.provider || null },
-        autonomy: { tickMs: config.autonomy.tickMs, enabled: services.runtime ? services.runtime.state().running : false, paused: services.runtime ? services.runtime.state().paused : false },
+        autonomy: { tickMs: config.autonomy.tickMs, enabled: runtimeState ? runtimeState.running : false, paused: runtimeState ? runtimeState.paused : false },
         excavation: { maxBlocks: config.excavation ? config.excavation.maxBlocks : null },
         reserves: config.reserves,
         limits: { commandRatePerMinute: 120, requestBodyMb: 2 }

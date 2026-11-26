@@ -198,3 +198,41 @@ test('cancel stops pending tasks and a completed build is idempotent', async () 
   assert.equal(result.ok, true);
   assert.equal(result.message, 'structure already exists');
 });
+
+test('storage withdrawal records the pre-close snapshot and the measured amount', async () => {
+  const schematic = smallSchematic();
+  const world = new MockWorld({ flat: true });
+  const counts = { oak_planks: 0 };
+  let closed = false;
+  const contents = { oak_planks: 5 };
+  const bot = {
+    name: '________',
+    world: {},
+    position: { x: 0, y: 64, z: 0 },
+    inventory: counts,
+    countItem: (name) => counts[name] || 0,
+    openContainer: async () => ({
+      ok: true,
+      items: () => {
+        if (closed) throw new Error('window closed');
+        return { ...contents };
+      },
+      withdraw: async (item, count) => {
+        const take = Math.min(count, contents[item] || 0);
+        if (take <= 0) return { ok: false, error: 'not in container' };
+        contents[item] -= take;
+        counts[item] = (counts[item] || 0) + take;
+        return { ok: true, count: take };
+      },
+      close: async () => { closed = true; }
+    })
+  };
+  const ledger = new ResourceLedger();
+  ledger.updateStorage('chest-1', { position: { x: 0, y: 64, z: 0 }, counts: contents });
+  const builder = new SchematicBuilder({ schematic, origin: { x: 12, y: 70, z: 12 }, world, bots: [bot], taskBoard: new TaskBoard(), ledger });
+  const taken = await builder._acquireMaterial(bot, 'oak_planks', 2);
+  assert.equal(taken.ok, true, taken.error);
+  assert.equal(taken.count, 2);
+  assert.equal(counts.oak_planks, 2);
+  assert.deepEqual(ledger.storages.get('chest-1').counts, { oak_planks: 3 });
+});

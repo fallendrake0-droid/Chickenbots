@@ -141,10 +141,13 @@ class InventoryManager {
   async findStorage() {
     if (!this.ledger) return null;
     let best = null;
-    for (const storage of this.ledger.storages.values()) {
+    // The map key is the storage id; the value does not carry one. Reading
+    // storage.id produced `{id: undefined}`, so deposit()/withdraw() later
+    // updated a bogus storage row and never refreshed the real chest.
+    for (const [id, storage] of this.ledger.storages.entries()) {
       if (!storage.position) continue;
       const d = distance(this.bot.position, storage.position);
-      if (!best || d < best.distance) best = { id: storage.id, position: storage.position, distance: d };
+      if (!best || d < best.distance) best = { id, position: storage.position, distance: d };
     }
     if (best) return best;
     // No registered storage yet: discover real containers in the world, then
@@ -167,10 +170,11 @@ class InventoryManager {
     const window = await this.bot.openContainer(storage.position);
     if (!window.ok) return window;
     const result = await window.deposit(itemName, count);
+    // Read before close(): a live mineflayer window is not readable afterwards.
     const remaining = window.items();
     await window.close();
     if (this.ledger) this.ledger.updateStorage(storage.id, { position: storage.position, counts: remaining });
-    if (result.ok) this.stats.deposited += result.count;
+    if (result.ok) this.stats.deposited += Number(result.count) || 0;
     return result;
   }
 
@@ -185,7 +189,7 @@ class InventoryManager {
     const remaining = window.items();
     await window.close();
     if (this.ledger) this.ledger.updateStorage(storage.id, { position: storage.position, counts: remaining });
-    if (result.ok) this.stats.withdrawn += result.count;
+    if (result.ok) this.stats.withdrawn += Number(result.count) || 0;
     return result;
   }
 
@@ -195,24 +199,28 @@ class InventoryManager {
     const before = typeof recipient.countItem === 'function' ? recipient.countItem(itemName) : 0;
     const toss = await this.bot.tossItem(itemName, count);
     if (!toss.ok) return toss;
+    const dropped = Math.max(1, Number(toss.count) || 1);
     if (typeof recipient.addItem === 'function') {
-      recipient.addItem(itemName, count);
+      recipient.addItem(itemName, dropped);
     } else if (typeof recipient.refreshInventory === 'function') {
       // Real adapters cannot be mutated locally: wait for the pickup and then
       // verify the recipient's actual inventory before claiming the transfer.
       await new Promise((resolve) => setTimeout(resolve, 900));
       recipient.refreshInventory();
-      const after = recipient.countItem(itemName);
-      if (after < before + count) return { ok: false, error: 'recipient did not pick up the tossed item', tossed: true, item: itemName, count };
     } else {
       return { ok: false, error: 'recipient cannot receive tossed items through this adapter', tossed: true };
     }
-    this.stats.shared += count;
+    // Both paths must prove the recipient's inventory grew. The simulated
+    // addItem() path was assumed to work; a no-op then still reported a share.
+    const after = typeof recipient.countItem === 'function' ? recipient.countItem(itemName) : before;
+    const received = Math.max(0, after - before);
+    if (received <= 0) return { ok: false, error: 'recipient did not pick up the tossed item', tossed: true, item: itemName, count: dropped };
+    this.stats.shared += received;
     if (this.ledger) {
-      const request = this.ledger.requestTransfer({ from: this.bot.name, to: recipient.name, item: itemName, count, reason: 'inventory share' });
+      const request = this.ledger.requestTransfer({ from: this.bot.name, to: recipient.name, item: itemName, count: received, reason: 'inventory share' });
       if (request.ok) { this.ledger.claimTransfer(request.request.id, recipient.name); this.ledger.completeTransfer(request.request.id, true); }
     }
-    return { ok: true, item: itemName, count, to: recipient.name };
+    return { ok: true, item: itemName, count: received, to: recipient.name };
   }
 
   async dropJunk() {

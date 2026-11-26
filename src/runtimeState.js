@@ -106,7 +106,10 @@ function statusSnapshot(services) {
       focus: services.combatTeam.focus ? { id: services.combatTeam.focus.id, name: services.combatTeam.focus.name || services.combatTeam.focus.type } : null,
       roles: services.combatTeam.roles,
       totems: services.combatTeam.list().reduce((sum, controller) => sum + controller.totems.count(), 0),
-      engaged: services.combatTeam.list().filter((controller) => ['ENGAGING', 'APPROACHING', 'RETREATING', 'TOTEM_EMERGENCY'].includes(controller.state)).length
+      // One definition of "engaged" for the whole snapshot. The team status
+      // already computed it; a second, narrower filter here made the overview
+      // and the combat page disagree whenever a bot was healing or defending.
+      engaged: combatTeamStatus && Number.isFinite(combatTeamStatus.engaged) ? combatTeamStatus.engaged : 0
     } : null;
   } catch (err) {
     combatTeamStatus = { error: `combat team status failed: ${err.message}` };
@@ -123,7 +126,13 @@ function statusSnapshot(services) {
   lap('runtime');
   const safetyByName = new Map((runtime && runtime.bots ? runtime.bots : []).map((bot) => [bot.name, bot.safety || null]));
   const byBot = {};
-  for (const status of actionStatus) byBot[status.bot] = status;
+  for (const status of actionStatus) if (status && status.bot) byBot[status.bot] = status;
+  // Controller status is cache-only. Before the startup warm-up has filled a
+  // controller's slot, its section is null. Keeping those nulls in a per-bot
+  // array made the browser pages read `row.health` / `row.ok` from null and
+  // throw during a cold `/api/state`; an empty section is the honest, safe
+  // representation of "not reported yet".
+  const controllerRows = (key) => actionStatus.map((status) => status && status[key]).filter(Boolean);
   const online = summaries.filter((s) => s.online === true).length;
   const ready = summaries.filter((s) => s.gameplayReady === true).length;
   const alerts = buildAlerts(summaries, board, services, { excavationStatus, boardStats, deadlocks });
@@ -164,29 +173,29 @@ function statusSnapshot(services) {
       deadlocks,
       comms: services.comms ? services.comms.recent(25) : []
     },
-    survival: actionStatus.map((a) => a.survival),
-    combat: actionStatus.map((a) => a.combat),
-    recovery: actionStatus.map((a) => a.recovery).filter(Boolean),
+    survival: controllerRows('survival'),
+    combat: controllerRows('combat'),
+    recovery: controllerRows('recovery'),
     // Seen players are directory data only. Following or guarding a player
     // never adds them to the PvP target list.
     players: services.players ? services.players.status() : { count: 0, online: 0, rows: [], stats: null },
-    playerWatch: actionStatus.map((a) => a.players).filter(Boolean),
+    playerWatch: controllerRows('players'),
     combatTeam: combatTeamStatus,
     inventory: {
       ledger: services.ledger ? services.ledger.snapshot() : null,
-      bots: actionStatus.map((a) => a.inventory)
+      bots: controllerRows('inventory')
     },
-    mining: actionStatus.map((a) => a.mining),
+    mining: controllerRows('mining'),
     excavation: {
       status: excavationStatus,
       history: services.excavation ? services.excavation.history.slice(-15) : [],
       previews: services.excavation ? [...services.excavation.previews.values()].map((p) => ({ previewId: p.previewId, mode: p.mode, bounds: p.bounds, volume: p.volume, warnings: p.warnings, authorizationRequired: p.authorizationRequired })) : []
     },
-    woodcutting: actionStatus.map((a) => a.woodcutting),
-    farming: actionStatus.map((a) => a.farming),
-    sleep: actionStatus.map((a) => a.sleep),
-    fishing: actionStatus.map((a) => a.fishing),
-    exploration: actionStatus.map((a) => a.exploration),
+    woodcutting: controllerRows('woodcutting'),
+    farming: controllerRows('farming'),
+    sleep: controllerRows('sleep'),
+    fishing: controllerRows('fishing'),
+    exploration: controllerRows('exploration'),
     construction: constructionState,
     builder: {
       builds,
@@ -229,7 +238,7 @@ function statusSnapshot(services) {
       home: services.runtime ? services.runtime.home : null,
       source: services.runtime ? services.runtime.homeSource : null,
       builds: builds.filter((b) => String(b.buildId).startsWith('home-')),
-      perBot: actionStatus.map((a) => ({ bot: a.bot, ...a.homeBase }))
+      perBot: actionStatus.filter((a) => a && a.homeBase).map((a) => ({ bot: a.bot, ...a.homeBase }))
     },
     taskManager: {
       stats: boardStats,

@@ -480,38 +480,53 @@ class SchematicBuilder {
   }
 
   async _acquireMaterial(bot, item, count) {
+    const wanted = Math.max(1, Number(count) || 1);
     // 1. Ask a teammate that already holds the material; record a real transfer.
     for (const other of this.bots) {
       if (other === bot || other.name === bot.name) continue;
       if (!other.countItem(item)) continue;
-      if (typeof other.tossItem !== 'function' || typeof bot.addItem !== 'function') break;
-      const toss = await other.tossItem(item, count);
-      if (!toss.ok) continue;
-      bot.addItem(item, count);
-      this.stats.transferred += count;
+      // A live adapter cannot accept items that were never thrown into its
+      // inventory. Only an adapter that exposes addItem can complete a direct
+      // teammate transfer; everyone else must use a real container below.
+      if (typeof other.tossItem !== 'function' || typeof bot.addItem !== 'function') continue;
+      const before = Number(bot.countItem(item) || 0);
+      const toss = await other.tossItem(item, wanted);
+      if (!toss || toss.ok === false) continue;
+      bot.addItem(item, Number(toss.count) || 0);
+      const gained = Math.max(0, Number(bot.countItem(item) || 0) - before);
+      if (gained <= 0) continue;
+      this.stats.transferred += gained;
       if (this.ledger) {
-        const req = this.ledger.requestTransfer({ from: other.name, to: bot.name, item, count, reason: `build ${this.id}` });
+        const req = this.ledger.requestTransfer({ from: other.name, to: bot.name, item, count: gained, reason: `build ${this.id}` });
         if (req.ok) {
           this.ledger.claimTransfer(req.request.id, bot.name);
           this.ledger.completeTransfer(req.request.id, true);
         }
       }
-      this._event('build.transfer', { from: other.name, to: bot.name, item, count });
-      return { ok: true, from: other.name, item, count };
+      this._event('build.transfer', { from: other.name, to: bot.name, item, count: gained });
+      return { ok: true, from: other.name, item, count: gained, requested: wanted };
     }
     // 2. Withdraw from recorded storage containers.
     if (this.ledger && bot.world) {
-      for (const storage of this.ledger.storages.values()) {
+      // Iterate entries: the storage record itself carries no id, so the old
+      // values() loop called updateStorage(undefined, ...) and left the real
+      // chest's ledger row permanently stale.
+      for (const [storageId, storage] of this.ledger.storages.entries()) {
         if (!storage.position) continue;
         if (distance(bot.position, storage.position) > 32) continue;
         const container = await bot.openContainer(storage.position);
         if (!container || !container.ok) continue;
-        const taken = await container.withdraw(item, count);
+        const taken = await container.withdraw(item, wanted);
+        // Snapshot the container before closing. Mineflayer's container object
+        // is not readable after close(); the old code called items() there and
+        // either threw or recorded an empty chest in the ledger.
+        const remaining = typeof container.items === 'function' ? container.items() : null;
         await container.close();
-        if (taken.ok) {
-          this.ledger.updateStorage(storage.id, { position: storage.position, counts: container.items() });
-          this._event('build.storage', { storage: storage.id, item, count });
-          return { ok: true, from: storage.id, item, count };
+        const gained = taken && taken.ok ? Math.max(0, Number(taken.count) || 0) : 0;
+        if (remaining) this.ledger.updateStorage(storageId, { position: storage.position, counts: remaining });
+        if (gained > 0) {
+          this._event('build.storage', { storage: storageId, item, count: gained });
+          return { ok: true, from: storageId, item, count: gained, requested: wanted };
         }
       }
     }

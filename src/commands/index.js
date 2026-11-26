@@ -162,6 +162,14 @@ function findBuild(services, id) {
   return services.builders.get(id) || [...services.builders.values()].find((builder) => String(builder.id).startsWith(String(id))) || null;
 }
 
+/** Run one bot's team action under the same exclusive slot as `bot <name>`.
+ *  Team commands used to call goTo/defend/sleep directly, so an autonomous
+ *  pathfinder or safety pass could own the bot at the same time. */
+async function withBotExclusive(services, bot, fn) {
+  if (!services.runtime || typeof services.runtime.runExclusive !== 'function') return fn();
+  return services.runtime.runExclusive(bot.name, fn);
+}
+
 async function moveTeam(services, mode) {
   const coordinator = services.coordinator;
   if (!coordinator) throw new CommandError('no team coordinator');
@@ -174,7 +182,9 @@ async function moveTeam(services, mode) {
     const slot = anchors.find((entry) => entry.name === bot.name);
     const target = slot && slot.position ? { x: slot.position.x, y: leader.position.y, z: slot.position.z } : { ...leader.position };
     if (bot.name === leaderName) return { bot: bot.name, ok: true, leader: true };
-    const result = await bot.goTo(target, { range: 3, timeoutMs: 15000 });
+    const result = await withBotExclusive(services, bot, () => bot.goTo(target, {
+      range: 3, timeoutMs: 15000, priority: 'operator', owner: `team-${mode.toLowerCase()}`, adjustY: true
+    }));
     return { bot: bot.name, ok: result.ok !== false, position: { ...bot.position }, target, error: result.error };
   }));
   return { ok: results.every((result) => result.ok), formation: mode, leader: leaderName, results };
@@ -659,7 +669,9 @@ function registerAll(services, registry) {
       if (sub === 'sleep') {
         const target = args[1] && args[1] !== 'all' ? [actionsFor(services, pickBot(services, args[1]).name)] : allActions(services);
         const results = [];
-        for (const actions of target) results.push({ bot: actions.bot.name, ...(await actions.sleep.sleep()) });
+        for (const actions of target) {
+          results.push({ bot: actions.bot.name, ...(await withBotExclusive(services, actions.bot, () => actions.sleep.sleep())) });
+        }
         return { ok: results.every((result) => result.ok !== false), results };
       }
       if (sub === 'formation') {
@@ -675,14 +687,19 @@ function registerAll(services, registry) {
         coordinator.setFormation('RETREAT');
         if (!services.runtime) return { ok: false, error: 'no runtime home' };
         const results = await Promise.all([...services.bots.values()].map(async (bot) => {
-          const result = await bot.goTo(services.runtime.home, { range: 3, timeoutMs: 20000 });
+          const result = await withBotExclusive(services, bot, () => bot.goTo(services.runtime.home, {
+            range: 3, timeoutMs: 20000, priority: 'emergency', owner: 'team-retreat', adjustY: true
+          }));
           return { bot: bot.name, ok: result.ok !== false, position: { ...bot.position }, error: result.error };
         }));
         return { ok: results.every((result) => result.ok), formation: 'RETREAT', home: services.runtime.home, results };
       }
       if (sub === 'defend') {
         coordinator.setFormation('DEFENSIVE');
-        const results = await Promise.all(allActions(services).map(async (actions) => ({ bot: actions.bot.name, ...(await actions.combat.defend({ maxAttacks: 8 })) })));
+        const results = await Promise.all(allActions(services).map(async (actions) => ({
+          bot: actions.bot.name,
+          ...(await withBotExclusive(services, actions.bot, () => actions.combat.defend({ maxAttacks: 8 })))
+        })));
         return { ok: true, formation: 'DEFENSIVE', results, threats: results.reduce((sum, result) => sum + (result.action === 'retreat' ? 1 : 0), 0) };
       }
       if (sub === 'reassign') {
@@ -808,7 +825,7 @@ function registerAll(services, registry) {
     name: 'eat', category: 'survival', summary: 'Eat the best available food, for one bot or the whole fleet', usage: 'eat [bot|all]',
     execute: async (args) => {
       if (isFleetTarget(args[0])) {
-        return runFleetActions(services, 'all', (actions) => actions.survival.eat());
+        return runFleetActions(services, 'all', (actions) => withBotExclusive(services, actions.bot, () => actions.survival.eat()));
       }
       const bot = pickBot(services, args[0]);
       return runBotAction(services, bot, [bot.name, 'eat'], {});
@@ -924,7 +941,7 @@ function registerAll(services, registry) {
       }
       if (isFleetTarget(first)) {
         const casts = args[1] === undefined ? 1 : intArg(args[1], 'casts', { min: 1, max: 3 });
-        const fleet = await runFleetActions(services, 'all', (actions) => actions.fishing.tick({ casts }));
+        const fleet = await runFleetActions(services, 'all', (actions) => withBotExclusive(services, actions.bot, () => actions.fishing.tick({ casts })));
         return { ...fleet, ok: fleet.completed > 0 && fleet.results.every((result) => result.ok), caught: fleet.results.reduce((sum, result) => sum + (result.caught || 0), 0) };
       }
       const named = isBotName(services, args[0]) ? args[0] : null;
@@ -946,7 +963,10 @@ function registerAll(services, registry) {
         return { ok: results.every((result) => result.ok), auto: value === 'on', results };
       }
       if (first === 'all' || first === 'fleet') {
-        const results = await Promise.all(allActions(services).map(async (actions) => ({ bot: actions.bot.name, ...(await actions.sleep.sleep()) })));
+        const results = await Promise.all(allActions(services).map(async (actions) => ({
+          bot: actions.bot.name,
+          ...(await withBotExclusive(services, actions.bot, () => actions.sleep.sleep()))
+        })));
         return { ok: results.some((result) => result.ok !== false), results };
       }
       const bot = pickBot(services, args[0]);
@@ -958,7 +978,7 @@ function registerAll(services, registry) {
       }
       const health = connectionStatus(bot);
       if (!health.gameplayReady) return { ok: false, code: 'BOT_NOT_READY', status: health.status, error: `${bot.name} is not gameplay-ready (${health.statusLabel})` };
-      const result = await actions.sleep.sleep();
+      const result = await withBotExclusive(services, bot, () => actions.sleep.sleep());
       return { ok: result.ok !== false, ...result };
     }
   });
@@ -1039,7 +1059,9 @@ function registerAll(services, registry) {
       const target = args[1] || 'all';
       const home = services.runtime.home;
       const fleet = await runFleetActions(services, target, async (actions) => {
-        const result = await actions.bot.goTo(home, { range: 3, timeoutMs: 30000 });
+        const result = await withBotExclusive(services, actions.bot, () => actions.bot.goTo(home, {
+          range: 3, timeoutMs: 30000, priority: 'operator', owner: 'return-home', adjustY: true
+        }));
         return { ok: result.ok !== false, position: { ...actions.bot.position }, error: result.error };
       });
       return { ...fleet, home };
@@ -1621,7 +1643,10 @@ function registerSchematics(registry, services) {
           const result = store.export(args[2], args[3] || 'sponge-schem');
           if (!result.ok) return result;
           fs.mkdirSync(config.paths.exports, { recursive: true });
-          const file = path.join(config.paths.exports, `${args[2]}${result.extension}`);
+          // The id came from an operator token. Never let it escape the export
+          // directory: path.basename plus an allow-list of filename characters.
+          const exportName = path.basename(String(args[2] || 'schematic')).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 96) || 'schematic';
+          const file = path.join(config.paths.exports, `${exportName}${result.extension}`);
           fs.writeFileSync(file, result.buffer);
           return { ok: true, file, bytes: result.buffer.length, format: args[3] || 'sponge-schem' };
         }
@@ -1654,7 +1679,7 @@ async function teamAttack(services, playerName) {
   for (const controller of controllers) {
     const target = controller.bot.entitiesNear(64).find((entity) => String(entity.username || entity.name || '').toLowerCase() === name);
     if (!target) { results.push({ bot: controller.bot.name, ok: false, error: 'authorised player is not currently visible' }); continue; }
-    results.push({ bot: controller.bot.name, ...(await controller.engage({ target, maxAttacks: 10 })) });
+    results.push({ bot: controller.bot.name, ...(await withBotExclusive(services, controller.bot, () => controller.engage({ target, maxAttacks: 10 }))) });
   }
   return { ok: results.some((result) => result.ok !== false), target: name, results };
 }
@@ -1676,7 +1701,7 @@ function registerCombat(registry, services) {
       if (sub === 'start') {
         team().setEnabled(true);
         const results = [];
-        for (const controller of controllers()) results.push({ bot: controller.bot.name, ...(await controller.engage({ maxAttacks: 10 })) });
+        for (const controller of controllers()) results.push({ bot: controller.bot.name, ...(await withBotExclusive(services, controller.bot, () => controller.engage({ maxAttacks: 10 }))) });
         return { ok: results.some((result) => result.ok !== false), results };
       }
       if (sub === 'stop') {
@@ -1693,7 +1718,7 @@ function registerCombat(registry, services) {
       if (sub === 'guard') {
         const position = args.length >= 4 ? parseOrigin(args, 1) : null;
         const results = [];
-        for (const controller of controllers()) results.push({ bot: controller.bot.name, ...(await controller.guard(position)) });
+        for (const controller of controllers()) results.push({ bot: controller.bot.name, ...(await withBotExclusive(services, controller.bot, () => controller.guard(position))) });
         return { ok: results.some((result) => result.ok !== false), results };
       }
       if (sub === 'duel') {
@@ -1796,9 +1821,9 @@ function registerCombat(registry, services) {
           if (recipient.totems.count() >= recipient.totems.reserve) { rows.push({ bot: recipient.bot.name, ok: true, already: true, totems: recipient.totems.count() }); continue; }
           const donor = list.find((entry) => entry !== recipient && entry.totems.count() > Math.max(entry.totems.reserve, 1) && entry.bot.countItem('totem_of_undying') > 0);
           if (!donor) { rows.push({ bot: recipient.bot.name, ok: false, error: 'no donor with surplus totems' }); continue; }
-          await recipient.bot.goNear(donor.bot, 2);
-          const shared = await actionsFor(services, donor.bot.name).inventory.share('totem_of_undying', 1, recipient.bot);
-          const equipped = shared.ok ? await recipient.totems.equip({ force: true }) : { ok: false, error: shared.error };
+          await withBotExclusive(services, recipient.bot, () => recipient.bot.goNear(donor.bot, 2));
+          const shared = await withBotExclusive(services, donor.bot, () => actionsFor(services, donor.bot.name).inventory.share('totem_of_undying', 1, recipient.bot));
+          const equipped = shared.ok ? await withBotExclusive(services, recipient.bot, () => recipient.totems.equip({ force: true })) : { ok: false, error: shared.error };
           rows.push({ bot: recipient.bot.name, donor: donor.bot.name, shared, equipped, totems: recipient.totems.count() });
         }
         return { ok: rows.every((row) => row.ok !== false || row.already), rows, ledger: require('../combat/totems').teamTotemLedger(list) };
@@ -1850,7 +1875,7 @@ function registerCombat(registry, services) {
       if (String(args[0] || '').toLowerCase() === 'stop') return { ok: true, stopped: controllers().map((controller) => controller.stop()) };
       const position = parseOrigin(args, 0);
       const target = args[3] ? actionsFor(services, pickBot(services, args[3]).name).combat : controllers()[0];
-      return { ok: true, ...(await target.guard(position)) };
+      return { ok: true, ...(await withBotExclusive(services, target.bot, () => target.guard(position))) };
     }
   });
 

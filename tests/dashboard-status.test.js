@@ -70,6 +70,24 @@ test('connection status is a single honest verdict for every lifecycle state', (
   assert.equal(initialising.gameplayReady, false);
 });
 
+test('a cold snapshot contains no null controller rows for the browser to dereference', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    const snapshot = statusSnapshot(runtime.services);
+    const keys = ['survival', 'combat', 'recovery', 'mining', 'woodcutting', 'farming', 'sleep', 'fishing', 'exploration', 'playerWatch'];
+    for (const key of keys) {
+      assert.ok(Array.isArray(snapshot[key]), `${key} must be an array`);
+      assert.ok(snapshot[key].every((row) => row && typeof row === 'object'), `${key} contains a null row`);
+    }
+    assert.ok(Array.isArray(snapshot.inventory.bots));
+    assert.ok(snapshot.inventory.bots.every((row) => row && typeof row === 'object'));
+    assert.ok(Array.isArray(snapshot.homeBase.perBot));
+    assert.ok(snapshot.homeBase.perBot.every((row) => row && typeof row === 'object'));
+  } finally {
+    await runtime.shutdown('test');
+  }
+});
+
 test('the snapshot never reports a kicked or failed bot as online', async () => {
   const runtime = await createRuntime({ simulate: true, dashboard: false });
   try {
@@ -130,7 +148,14 @@ test('dashboard state and bot actions reflect connection truth immediately', asy
     assert.deepEqual(state.body.state.diagnostics.config.roster, NAMES);
     assert.ok(state.body.state.diagnostics.config.server.joinIntervalMs > 0);
     assert.match(String(state.headers['cache-control']), /no-store/);
+    // /api/settings used to call runtime.state() twice (enabled + paused),
+    // doubling a full controller walk on every page load.
+    const originalState = runtime.state.bind(runtime);
+    let stateCalls = 0;
+    runtime.state = (...args) => { stateCalls++; return originalState(...args); };
     const settings = await request(port, '/api/settings');
+    runtime.state = originalState;
+    assert.equal(stateCalls, 1);
     assert.deepEqual(settings.body.settings.roster, NAMES);
     assert.ok(settings.body.settings.server.joinIntervalMs > 0);
     assert.match(String(settings.headers['cache-control']), /no-store/);
@@ -218,4 +243,18 @@ test('the real schematic library exposes a non-loading status count', () => {
   assert.equal(stats.fromSummary, true);
   assert.equal(library.loadedInMemory, false, 'stats must not trigger the 20 MB manifest load');
   assert.equal(library.loaded, true);
+});
+
+test('the overview and combat-team snapshot agree on how many bots are engaged', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    const controller = runtime.services.combatTeam.list()[0];
+    controller.state = 'HEALING';
+    const snapshot = statusSnapshot(runtime.services);
+    assert.ok(snapshot.overview.combat, 'overview combat section is present');
+    assert.equal(snapshot.overview.combat.engaged, snapshot.combatTeam.engaged);
+    assert.ok(snapshot.combatTeam.engaged >= 1, 'a healing bot is still engaged');
+  } finally {
+    await runtime.shutdown('test');
+  }
 });

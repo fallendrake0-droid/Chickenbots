@@ -384,10 +384,24 @@ function scrollLogs() {
 export const settingsPage = {
   title: 'Settings',
   render() {
-    const settings = state.settings;
-    if (!settings) {
+    const rawSettings = state.settings;
+    if (!rawSettings) {
       return `<div class="page">${pageHeader({ eyebrow: 'System', title: 'Settings', description: 'Configuration is loaded from the running backend.' })}<div class="card">${emptyState('Settings unavailable', state.error || 'The settings endpoint did not respond.', 'settings')}</div></div>`;
     }
+    // A partial or failed /api/settings response must not blank the whole page
+    // with a null dereference. Normalize the sections this page reads.
+    const settings = {
+      ...rawSettings,
+      server: rawSettings.server || {},
+      dashboard: rawSettings.dashboard || {},
+      security: rawSettings.security || {},
+      roster: Array.isArray(rawSettings.roster) ? rawSettings.roster : [],
+      autonomy: rawSettings.autonomy || {},
+      ai: rawSettings.ai || {},
+      excavation: rawSettings.excavation || {},
+      limits: rawSettings.limits || {},
+      reserves: rawSettings.reserves || {}
+    };
     const runtime = (state.snapshot && state.snapshot.diagnostics && state.snapshot.diagnostics.runtime) || {};
     const data = ledger();
     const survival = (state.snapshot && state.snapshot.survival) || [];
@@ -406,11 +420,11 @@ export const settingsPage = {
             <div class="card-header"><div class="card-title">${icon('server')} Server</div>${badge(state.snapshot && state.snapshot.mode === 'live' ? 'Live' : 'Simulation', 'info')}</div>
             <div class="card-body">
               ${kvRows([
-                ['Host', esc(settings.server.host), true],
-                ['Port', esc(settings.server.port), true],
+                ['Host', esc(settings.server.host || '—'), true],
+                ['Port', esc(settings.server.port || '—'), true],
                 ['Protocol version', esc(settings.server.version || '—'), true],
                 ['Authentication mode', esc(settings.server.auth || 'offline')],
-                ['Dashboard bind', esc(`${settings.dashboard.host}:${settings.dashboard.port}`), true],
+                ['Dashboard bind', esc(`${settings.dashboard.host || '—'}:${settings.dashboard.port || '—'}`), true],
                 ['Control-plane auth', settings.security && settings.security.tokenRequired ? 'Token required' : 'No token (local demo only)']
               ])}
               <p class="tiny muted" style="margin:10px 0 0">Credentials are never returned by the settings API.</p>

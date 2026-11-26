@@ -23,6 +23,7 @@ const HOSTILE = new Set([
 ]);
 
 const FLUID_BLOCKS = new Set(['water', 'lava', 'flowing_water', 'flowing_lava']);
+const EMPTY_BLOCKS = new Set(['air', 'cave_air', 'void_air']);
 
 // One movement owner per bot. A recovery retreat must not be overwritten by a
 // task pathfinder, and an operator move must not be silently cancelled by a
@@ -887,6 +888,11 @@ class RealBot extends BotAdapter {
     this.lastClientPacket = null;
     this._transportDead = false;
     this._serverTickingState = null;
+    // A reconnect can land in a different world/seed. Keeping block objects
+    // from the previous session let terrain, containers and build audits read
+    // blocks that no longer exist.
+    this._blockCache.clear();
+    this._itemAliases.clear();
     this._tcpConnected = false;
     this._tcpAt = 0;
     this._loginReceivedAt = 0;
@@ -1237,6 +1243,9 @@ class RealBot extends BotAdapter {
       this.position = this._vec(bot.entity?.position);
       this.spawnPosition = { ...this.position };
       this.dimension = bot.game?.dimension || 'overworld';
+      // A first spawn or respawn can change dimension / load a fresh set of
+      // columns. Nothing cached from the previous spawn is safe to reuse.
+      this._blockCache.clear();
       this._syncInventory();
       this.stageTimings.spawnMs = this.loginAt ? this.spawnAt - this.loginAt : this.spawnAt - this.connectStartedAt;
       this.connection.event('spawn', `position=${this.position.x},${this.position.y},${this.position.z} respawned=${respawned}`);
@@ -1245,6 +1254,29 @@ class RealBot extends BotAdapter {
       this.logger.info(`[${this.name}] ${firstSpawn ? 'spawned' : 'respawned'} at ${this.position.x},${this.position.y},${this.position.z}`);
       for (const waiter of [...this._spawnWaiters]) waiter.resolve({ ok: true, spawned: true, authenticated: this.authenticated });
       this._spawnWaiters.clear();
+    });
+    // Mineflayer emits blockUpdate(oldBlock, newBlock) for every server-side
+    // block change, including other players' placements, explosions and fluid
+    // flow. Invalidate the cached coordinate immediately instead of serving a
+    // stale block for the rest of the session.
+    bot.on('blockUpdate', (oldBlock, newBlock) => {
+      if (!owns()) return;
+      const position = (newBlock && newBlock.position) || (oldBlock && oldBlock.position);
+      if (position) this._invalidateBlock(position);
+      else this._blockCache.clear();
+    });
+    bot.on('chunkColumnLoad', (point) => {
+      if (!owns()) return;
+      this._invalidateColumn(point);
+    });
+    bot.on('chunkColumnUnload', (point) => {
+      if (!owns()) return;
+      this._invalidateColumn(point);
+    });
+    bot.on('game', () => {
+      if (!owns()) return;
+      // Dimension changes reuse the same coordinates for different terrain.
+      this._blockCache.clear();
     });
     bot.on('forcedMove', () => {
       if (this.bot !== bot) return;
@@ -2218,16 +2250,62 @@ class RealBot extends BotAdapter {
 
   _blockAt(pos) {
     if (!this.bot || !this.bot.world || !this.bot.entity) return null;
-    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return null;
-    const k = `${pos.x},${pos.y},${pos.z}`;
+    if (!pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y)) || !Number.isFinite(Number(pos.z))) return null;
+    // Mineflayer addresses blocks on the integer grid. The cache must use the
+    // same normalized key: a controller asking for {x: 12.7, y: 64.2} and one
+    // asking for {x: 12, y: 64} are reading the same block. The old raw key let
+    // both entries coexist, so invalidating one never invalidated the other.
+    const x = Math.floor(Number(pos.x));
+    const y = Math.floor(Number(pos.y));
+    const z = Math.floor(Number(pos.z));
+    const k = `${x},${y},${z}`;
     if (this._blockCache.has(k)) return this._blockCache.get(k);
-    const block = this.bot.blockAt(this._vec3(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z)));
+    let block = null;
+    try { block = this.bot.blockAt(this._vec3(x, y, z)); } catch (_) { block = null; }
+    // A missing chunk or a transient world-read failure is unknown, not air.
+    // Never cache null: the chunk can load a tick later, and the old cache kept
+    // returning that first miss for the rest of the session.
+    if (!block) return null;
     if (this._blockCache.size > 4000) this._blockCache.clear();
     this._blockCache.set(k, block);
     return block;
   }
 
+  _invalidateBlock(pos) {
+    if (!pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y)) || !Number.isFinite(Number(pos.z))) return false;
+    return this._blockCache.delete(`${Math.floor(Number(pos.x))},${Math.floor(Number(pos.y))},${Math.floor(Number(pos.z))}`);
+  }
+
+  _invalidateColumn(point) {
+    if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.z))) {
+      this._blockCache.clear();
+      return;
+    }
+    const cx = Math.floor(Number(point.x) / 16);
+    const cz = Math.floor(Number(point.z) / 16);
+    for (const key of [...this._blockCache.keys()]) {
+      const [x, , z] = key.split(',').map(Number);
+      if (Math.floor(x / 16) === cx && Math.floor(z / 16) === cz) this._blockCache.delete(key);
+    }
+  }
+
+  /** Wait briefly for the server's block update, then return the last read. */
+  async _waitForBlock(pos, predicate, timeoutMs = 750) {
+    const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+    let block = null;
+    for (;;) {
+      this._invalidateBlock(pos);
+      block = this._blockAt(pos);
+      if (predicate(block)) return block;
+      if (Date.now() >= deadline) return block;
+      await sleep(75);
+    }
+  }
+
   getBlock(pos) {
+    if (!pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y)) || !Number.isFinite(Number(pos.z))) {
+      return { name: 'unloaded', properties: {}, position: null };
+    }
     const block = this._blockAt(pos);
     // An unloaded chunk is unknown, not air. Reporting it as air would let a
     // build engine plan placements against terrain it has never seen.
@@ -2393,6 +2471,7 @@ class RealBot extends BotAdapter {
     if (check) return check;
     this._syncInventory();
     const equipped = [];
+    const failed = [];
     const destinations = { head: 'head', torso: 'torso', legs: 'legs', feet: 'feet' };
     const armorSlot = { head: 5, torso: 6, legs: 7, feet: 8 };
     for (const piece of pieces || []) {
@@ -2400,14 +2479,23 @@ class RealBot extends BotAdapter {
       const currentlyWorn = this.bot.inventory.slots && this.bot.inventory.slots[armorSlot[piece.slot]];
       if (currentlyWorn && currentlyWorn.name === piece.name) { equipped.push(piece.name); continue; }
       const item = this._findItem(piece.name, { includeEquipped: true });
-      if (!item) continue;
+      if (!item) { failed.push({ item: piece.name, error: 'not in inventory' }); continue; }
       try {
         await this.bot.equip(item, destinations[piece.slot] || 'torso');
         equipped.push(piece.name);
-      } catch (_) { /* leave the slot unchanged rather than dropping gear */ }
+      } catch (err) {
+        // Leave the slot unchanged rather than dropping gear, but surface the
+        // failure so the caller can report partial armour instead of success.
+        failed.push({ item: piece.name, error: err.message || 'server rejected the equip' });
+      }
     }
     this._syncInventory();
-    return { ok: equipped.length > 0, pieces: equipped };
+    return {
+      ok: equipped.length > 0,
+      pieces: equipped,
+      failed,
+      ...(equipped.length || !failed.length ? {} : { error: failed.map((entry) => `${entry.item}: ${entry.error}`).join('; ') })
+    };
   }
 
   recordCombatEvent(event) {
@@ -2461,7 +2549,11 @@ class RealBot extends BotAdapter {
     if (!choice) return { ok: false, error: `no ${category} available` };
     const item = this._findItem(choice.name);
     if (!item) return { ok: false, error: `no ${choice.name} in inventory` };
-    await this.bot.equip(item, 'hand');
+    try {
+      await this.bot.equip(item, 'hand');
+    } catch (err) {
+      return { ok: false, tool: choice.name, error: err.message || 'server rejected the equip' };
+    }
     this._updateEquipmentFromBot();
     return { ok: true, tool: choice.name };
   }
@@ -2531,12 +2623,30 @@ class RealBot extends BotAdapter {
     if (destination === 'off-hand' && this.getOffhand() === name) return { ok: true, already: true, item: name };
     const item = this._findItem(name, { includeEquipped: true });
     if (!item) return { ok: false, error: `no ${name}` };
-    await this.bot.equip(item, destination);
+    try {
+      await this.bot.equip(item, destination);
+    } catch (err) {
+      return { ok: false, item: name, error: err.message || 'server rejected the equip' };
+    }
     this._syncInventory();
     return { ok: true, item: name };
   }
 
   countItem(name) { return this.inventory[name] || 0; }
+
+  /** Positive inventory changes since a copied snapshot. */
+  _inventoryDelta(before) {
+    const out = {};
+    for (const [name, count] of Object.entries(this.inventory || {})) {
+      const gained = Number(count || 0) - Number((before && before[name]) || 0);
+      if (gained > 0) out[name] = gained;
+    }
+    return out;
+  }
+
+  _deltaTotal(delta) {
+    return Object.values(delta || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+  }
 
   // ------------------------------------------------------------------
   // Movement and interaction
@@ -2708,13 +2818,16 @@ class RealBot extends BotAdapter {
     const check = this._assertReady();
     if (check) return check;
     const block = this._blockAt(pos);
-    if (!block || block.name === 'air') return { ok: false, error: 'already air' };
+    if (!block) return { ok: false, error: 'chunk not loaded' };
+    if (EMPTY_BLOCKS.has(block.name)) return { ok: false, error: 'already air' };
     if (FLUID_BLOCKS.has(block.name)) return { ok: false, error: 'refusing to dig liquid' };
     if (!block.diggable) return { ok: false, error: `not diggable: ${block.name}` };
     if (distance(this.position, pos) > 5) {
       const move = await this.goTo(pos, { range: 4, timeoutMs });
       if (move.ok === false) return { ok: false, error: move.error || 'cannot reach block' };
     }
+    this._syncInventory();
+    const beforeInventory = { ...this.inventory };
     const category = /_log$|_wood$|_planks$|_fence$|_door$/.test(block.name) ? 'axe' : 'pickaxe';
     await this.equipBestTool(category);
     try {
@@ -2722,10 +2835,20 @@ class RealBot extends BotAdapter {
     } catch (err) {
       return { ok: false, error: err.message };
     }
-    this._blockCache.delete(`${pos.x},${pos.y},${pos.z}`);
-    this.stats.dug++;
+    // dig() resolving is not proof that the server removed the block. Wait for
+    // the authoritative block update; a cancelled or rejected dig used to be
+    // reported as a verified drop of an empty object.
+    const after = await this._waitForBlock(pos, (current) => Boolean(current) && (current.name !== block.name || FLUID_BLOCKS.has(current.name)), Math.min(750, Math.max(200, Number(timeoutMs) / 4)));
+    if (!after) {
+      return { ok: false, error: 'chunk unloaded before removal could be confirmed', block: block.name };
+    }
+    if (after.name === block.name) {
+      return { ok: false, error: `server did not confirm that ${block.name} was removed`, block: block.name };
+    }
     this._syncInventory();
-    return { ok: true, block: block.name, drops: {} };
+    const drops = this._inventoryDelta(beforeInventory);
+    this.stats.dug++;
+    return { ok: true, block: block.name, drops, dropCount: this._deltaTotal(drops), verified: true };
   }
 
   async placeBlock(pos, itemName, { descriptor = null, strategy = null } = {}) {
@@ -2734,20 +2857,29 @@ class RealBot extends BotAdapter {
     const item = this._findItem(itemName);
     if (!item) return { ok: false, error: `no ${itemName}` };
     const target = this._blockAt(pos);
+    if (!target) return { ok: false, error: 'chunk not loaded' };
+    if ((itemName === 'water_bucket' && target.name === 'water') || (itemName === 'lava_bucket' && target.name === 'lava')) {
+      return { ok: true, position: { ...pos }, item: itemName, alreadyPresent: true };
+    }
     // A door's upper half or a bed's head is created by the server when its
-    // companion is placed. Treat an already-correct target as success.
-    if (target && target.name !== 'air' && target.name !== 'water') {
+    // companion is placed. Treat an already-correct target as success — but
+    // only when it actually matches. The old untyped fallback returned success
+    // for any non-air block, so a build step could "place" stone into dirt.
+    if (!EMPTY_BLOCKS.has(target.name) && target.name !== 'water') {
       let properties = {};
       try { properties = typeof target.getProperties === 'function' ? target.getProperties() : {}; } catch (err) { properties = {}; }
-      const matches = !descriptor || (target.name === descriptor.name
-        && Object.entries(descriptor.properties || {}).every(([key, value]) => String(properties[key]) === String(value)));
+      const matches = descriptor
+        ? (target.name === descriptor.name
+          && Object.entries(descriptor.properties || {}).every(([key, value]) => String(properties[key]) === String(value)))
+        : (target.name === itemName || (itemName === 'water_bucket' && target.name === 'water')
+          || (itemName === 'lava_bucket' && target.name === 'lava'));
       if (matches) return { ok: true, position: { ...pos }, item: itemName, alreadyPresent: true };
       return { ok: false, error: 'space occupied' };
     }
     const offsets = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
     let references = offsets.map(([dx, dy, dz]) => ({ dx, dy, dz }))
       .map((entry) => ({ ...entry, block: this._blockAt({ x: pos.x + entry.dx, y: pos.y + entry.dy, z: pos.z + entry.dz }) }))
-      .filter((entry) => entry.block && entry.block.name !== 'air' && entry.block.boundingBox === 'block');
+      .filter((entry) => entry.block && !EMPTY_BLOCKS.has(entry.block.name) && entry.block.boundingBox === 'block');
     if (strategy && Array.isArray(strategy.attach)) {
       const [dx, dy, dz] = strategy.attach;
       references.sort((a, b) => (Math.abs(a.dx - dx) + Math.abs(a.dy - dy) + Math.abs(a.dz - dz))
@@ -2771,10 +2903,29 @@ class RealBot extends BotAdapter {
         await this.bot.equip(item, 'hand');
         const face = this._vec3(-reference.dx, -reference.dy, -reference.dz);
         await this._withTimeout(this.bot.placeBlock(reference.block, face), 5000, 'server did not confirm the placement');
-        this._blockCache.delete(`${pos.x},${pos.y},${pos.z}`);
+        // placeBlock() resolving is not proof that the target changed. Read
+        // the block back and require the expected state before counting it;
+        // the server may reject the placement (protection, lag, bad face).
+        const expectedFluid = itemName === 'water_bucket' ? 'water' : itemName === 'lava_bucket' ? 'lava' : null;
+        const placed = await this._waitForBlock(pos, (current) => {
+          if (!current || EMPTY_BLOCKS.has(current.name) || current.name === 'unloaded') return false;
+          // A bucket legitimately produces a fluid; an ordinary block must not
+          // leave the water/lava that was already in the target cell.
+          if (expectedFluid) return current.name === expectedFluid;
+          if (FLUID_BLOCKS.has(current.name)) return false;
+          if (!descriptor) return true;
+          let properties = {};
+          try { properties = typeof current.getProperties === 'function' ? current.getProperties() : {}; } catch (_) { properties = {}; }
+          return current.name === descriptor.name
+            && Object.entries(descriptor.properties || {}).every(([key, value]) => String(properties[key]) === String(value));
+        }, 750);
+        if (!placed || !placed.name || placed.name === 'air' || placed.name === 'unloaded') {
+          lastError = 'server did not confirm the placement';
+          continue;
+        }
         this.stats.placed++;
         this._syncInventory();
-        return { ok: true, position: { ...pos }, item: itemName };
+        return { ok: true, position: { ...pos }, item: itemName, block: placed.name, verified: true };
       } catch (err) {
         lastError = err.message;
       }
@@ -2915,7 +3066,7 @@ class RealBot extends BotAdapter {
     const check = this._assertReady();
     if (check) return check;
     const block = this._blockAt(pos);
-    if (!block) return { ok: false, error: 'no block there' };
+    if (!block) return { ok: false, error: 'chunk not loaded' };
     let window;
     try {
       window = await this.bot.openContainer(block);
@@ -2923,39 +3074,91 @@ class RealBot extends BotAdapter {
       return { ok: false, error: err.message };
     }
     const self = this;
+    let closed = false;
+    const readItems = () => {
+      const out = {};
+      try {
+        for (const item of window.containerItems()) out[item.name] = (out[item.name] || 0) + item.count;
+      } catch (_) { /* a closed window is snapshotted by the last successful read */ }
+      return out;
+    };
+    let lastItems = readItems();
+    const snapshot = () => ({ ...lastItems });
     return {
       ok: true,
       position: { ...pos },
-      items: () => {
-        const out = {};
-        for (const item of window.containerItems()) out[item.name] = (out[item.name] || 0) + item.count;
-        return out;
-      },
+      get closed() { return closed; },
+      items: snapshot,
       withdraw: async (itemName, count = 1) => {
-        const matches = window.containerItems().filter((i) => i.name === itemName);
-        let remaining = count;
-        for (const item of matches) {
-          if (remaining <= 0) break;
-          const take = Math.min(item.count, remaining);
-          await window.withdraw(item.type, null, take);
-          remaining -= take;
+        if (closed) return { ok: false, error: 'container is closed' };
+        const before = self.countItem(itemName);
+        let error = null;
+        try {
+          const matches = window.containerItems().filter((i) => i.name === itemName);
+          let remaining = Math.max(1, Number(count) || 1);
+          for (const item of matches) {
+            if (remaining <= 0) break;
+            const take = Math.min(item.count, remaining);
+            await window.withdraw(item.type, null, take);
+            remaining -= take;
+          }
+        } catch (err) {
+          error = err.message;
         }
-        self._syncInventory();
-        return remaining < count ? { ok: true, item: itemName, count: count - remaining } : { ok: false, error: 'not in container' };
+        // The requested count is not evidence. Measure the inventory change;
+        // the old code reported the whole request as withdrawn even when the
+        // server rejected it or the inventory was full. Inventory updates trail
+        // the container click, so poll briefly before calling it a failure.
+        let gained = 0;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          self._syncInventory();
+          gained = Math.max(0, self.countItem(itemName) - before);
+          if (gained > 0) break;
+          await sleep(75);
+        }
+        lastItems = readItems();
+        const requested = Math.max(1, Number(count) || 1);
+        if (gained <= 0) return { ok: false, error: error || 'no item was withdrawn', item: itemName, count: 0 };
+        return { ok: true, item: itemName, count: gained, requested, partial: gained < requested, error: error || undefined };
       },
       deposit: async (itemName, count = 1) => {
-        const matches = self.bot.inventory.items().filter((i) => i.name === itemName);
-        let remaining = count;
-        for (const item of matches) {
-          if (remaining <= 0) break;
-          const put = Math.min(item.count, remaining);
-          await window.deposit(item.type, null, put);
-          remaining -= put;
+        if (closed) return { ok: false, error: 'container is closed' };
+        const before = self.countItem(itemName);
+        let error = null;
+        try {
+          const matches = self.bot.inventory.items().filter((i) => i.name === itemName);
+          let remaining = Math.max(1, Number(count) || 1);
+          for (const item of matches) {
+            if (remaining <= 0) break;
+            const put = Math.min(item.count, remaining);
+            await window.deposit(item.type, null, put);
+            remaining -= put;
+          }
+        } catch (err) {
+          error = err.message;
         }
-        self._syncInventory();
-        return remaining < count ? { ok: true, item: itemName, count: count - remaining } : { ok: false, error: 'not in inventory' };
+        // Deposits are measured the same way: no inventory decrease means no
+        // item actually entered the container.
+        let removed = 0;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          self._syncInventory();
+          removed = Math.max(0, before - self.countItem(itemName));
+          if (removed > 0) break;
+          await sleep(75);
+        }
+        lastItems = readItems();
+        const requested = Math.max(1, Number(count) || 1);
+        if (removed <= 0) return { ok: false, error: error || 'no item was deposited', item: itemName, count: 0 };
+        return { ok: true, item: itemName, count: removed, requested, partial: removed < requested, error: error || undefined };
       },
-      close: async () => { try { window.close(); } catch (_) { /* already closed */ } return { ok: true }; }
+      close: async () => {
+        if (!closed) {
+          lastItems = readItems();
+          closed = true;
+          try { window.close(); } catch (_) { /* already closed */ }
+        }
+        return { ok: true, items: snapshot() };
+      }
     };
   }
 
@@ -2966,10 +3169,23 @@ class RealBot extends BotAdapter {
     if (check) return check;
     const item = this._findItem(itemName);
     if (!item) return { ok: false, error: 'not held' };
-    const toss = Math.min(count, item.count);
-    await this.bot.toss(item.type, null, toss);
-    this._syncInventory();
-    return { ok: true, item: itemName, count: toss };
+    const before = this.countItem(itemName);
+    try {
+      await this.bot.toss(item.type, null, Math.min(count, item.count));
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    // The toss packet is client -> server; the inventory correction arrives a
+    // tick or two later. Poll briefly before declaring the drop unconfirmed.
+    let dropped = 0;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      this._syncInventory();
+      dropped = Math.max(0, before - this.countItem(itemName));
+      if (dropped > 0) break;
+      await sleep(75);
+    }
+    if (dropped <= 0) return { ok: false, error: 'server did not confirm the toss', item: itemName, count: 0 };
+    return { ok: true, item: itemName, count: dropped, requested: Math.min(count, item.count) };
   }
 
   /** Drop only a short allow-list of junk; combat gear, totems, food and valuables are never touched. */
@@ -3033,14 +3249,36 @@ class RealBot extends BotAdapter {
     // Item entities spawn on the server tick after the block breaks. Give that
     // tick a chance to arrive before scanning, or a real harvest looks empty.
     await sleep(120);
-    let collected = 0;
-    const items = Object.values(this.bot.entities || {}).filter((e) => e.name === 'item' && distance(e.position, this.position) <= radius);
+    this._syncInventory();
+    const beforeInventory = { ...this.inventory };
+    const items = Object.values(this.bot.entities || {}).filter((e) => {
+      if (!e || e.name !== 'item' || !e.position) return false;
+      return [e.position.x, e.position.y, e.position.z].every((value) => Number.isFinite(Number(value)))
+        && distance(e.position, this.position) <= radius;
+    });
+    const approached = [];
     for (const entity of items) {
       const move = await this.goTo(entity.position, { range: 1, timeoutMs: 6000 });
-      if (move.ok) collected++;
+      approached.push({ id: entity.id, ok: move.ok !== false, error: move.error });
+      // Reaching the item is not the same as owning it. Wait briefly for the
+      // pickup packet so the inventory delta below is meaningful.
+      if (move.ok !== false) await sleep(80);
     }
     this._syncInventory();
-    return { ok: true, collected };
+    const gained = this._inventoryDelta(beforeInventory);
+    const collected = this._deltaTotal(gained);
+    // A path success used to be counted as a pickup. Report only items that
+    // actually entered the inventory; if item entities were present but
+    // nothing was gained, say so instead of claiming success.
+    const noPickup = items.length > 0 && collected === 0;
+    return {
+      ok: !noPickup,
+      collected,
+      items: gained,
+      approached: approached.filter((entry) => entry.ok).length,
+      candidates: items.length,
+      error: noPickup ? 'no dropped item entered the inventory' : undefined
+    };
   }
 
   async craft(itemName, count = 1) {
@@ -3049,19 +3287,35 @@ class RealBot extends BotAdapter {
     const mcData = require('minecraft-data')(this.bot.version);
     const item = mcData.itemsByName[itemName];
     if (!item) return { ok: false, error: `unknown item ${itemName}` };
-    const recipes = this.bot.recipesFor(item.id, null, 1, null);
-    if (!recipes.length) {
-      const table = this.bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 6 });
-      if (!table) return { ok: false, error: `no recipe available for ${itemName}` };
-      const tableRecipes = this.bot.recipesFor(item.id, null, 1, table);
-      if (!tableRecipes.length) return { ok: false, error: `no recipe available for ${itemName}` };
-      await this.bot.craft(tableRecipes[0], count, table);
-    } else {
-      await this.bot.craft(recipes[0], count, null);
-    }
-    this.stats.crafted++;
     this._syncInventory();
-    return { ok: true, item: itemName, count };
+    const before = this.countItem(itemName);
+    let recipes = [];
+    try { recipes = this.bot.recipesFor(item.id, null, 1, null) || []; } catch (_) { recipes = []; }
+    try {
+      if (!recipes.length) {
+        const table = this.bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 6 });
+        if (!table) return { ok: false, error: `no recipe available for ${itemName}` };
+        const tableRecipes = this.bot.recipesFor(item.id, null, 1, table) || [];
+        if (!tableRecipes.length) return { ok: false, error: `no recipe available for ${itemName}` };
+        await this.bot.craft(tableRecipes[0], count, table);
+      } else {
+        await this.bot.craft(recipes[0], count, null);
+      }
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    // The crafting operation completing is not proof of the output stack.
+    // Report the measured gain; a rejected craft must not look successful.
+    let produced = 0;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      this._syncInventory();
+      produced = Math.max(0, this.countItem(itemName) - before);
+      if (produced > 0) break;
+      await sleep(100);
+    }
+    if (produced <= 0) return { ok: false, error: `server did not confirm the crafted ${itemName}`, item: itemName, count: 0 };
+    this.stats.crafted++;
+    return { ok: true, item: itemName, count: produced, requested: Math.max(1, Number(count) || 1), verified: true };
   }
 
   async smelt(input, count = 1) {
@@ -3074,22 +3328,48 @@ class RealBot extends BotAdapter {
     if (!inputItem) return { ok: false, error: `no ${input}` };
     const furnaceBlock = this.bot.findBlock({ matching: [mcData.blocksByName.furnace.id, mcData.blocksByName.blast_furnace.id, mcData.blocksByName.smoker.id], maxDistance: 6 });
     if (!furnaceBlock) return { ok: false, error: 'no furnace nearby' };
-    const window = await this.bot.openFurnace(furnaceBlock);
+    this._syncInventory();
+    const beforeInventory = { ...this.inventory };
+    let window;
+    try {
+      window = await this.bot.openFurnace(furnaceBlock);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    let error = null;
     try {
       if (typeof window.putInput === 'function') {
         await window.putInput(inputItem.type, null, Math.min(count, inputItem.count));
         await window.putFuel(fuel.type, null, Math.min(fuel.count, Math.max(1, Math.ceil(count / 8))));
       } else {
-        return { ok: false, error: 'furnace window does not expose input slots' };
+        error = 'furnace window does not expose input slots';
       }
-      await new Promise((resolve) => setTimeout(resolve, Math.min(12000, 1200 + count * 900)));
-      const output = window.outputItem ? window.outputItem() : null;
-      if (output && typeof window.takeOutput === 'function') await window.takeOutput();
+      if (!error) {
+        // Poll the output slot rather than sleeping a fixed guess. A slow
+        // server tick or a partially fuelled batch used to be reported as a
+        // successful smelt without any ingot ever leaving the furnace.
+        const deadline = Date.now() + Math.min(15000, 1500 + Math.max(1, Number(count) || 1) * 1000);
+        let output = null;
+        while (Date.now() < deadline) {
+          try { output = window.outputItem ? window.outputItem() : null; } catch (_) { output = null; }
+          if (output) break;
+          await sleep(250);
+        }
+        if (!output) error = 'furnace produced no output before the timeout';
+        else if (typeof window.takeOutput === 'function') await window.takeOutput();
+        else error = 'furnace window does not expose takeOutput';
+      }
+    } catch (err) {
+      error = err.message;
     } finally {
       try { window.close(); } catch (_) { /* closed */ }
     }
     this._syncInventory();
-    return { ok: true, input, count };
+    const gained = this._inventoryDelta(beforeInventory);
+    const produced = this._deltaTotal(gained);
+    if (error) return { ok: false, error, input, produced: gained, count: produced };
+    if (produced <= 0) return { ok: false, error: 'server did not confirm the smelted output', input, produced: {}, count: 0 };
+    return { ok: true, input, count: produced, requested: Math.max(1, Number(count) || 1), produced: gained, verified: true };
   }
 
   async useShield(on) {
