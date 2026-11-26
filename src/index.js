@@ -93,6 +93,7 @@ async function main() {
   const started = await runtime.start();
   if (started.dashboard) {
     process.stdout.write(`\n  Dashboard: http://127.0.0.1:${started.dashboard.port}  (bound ${started.dashboard.host}:${started.dashboard.port})\n`);
+    if (started.dashboard.build) process.stdout.write(`  Build: ${started.dashboard.build.buildId}\n`);
     process.stdout.write('  Live preview uses the sandbox proxy; the server accepts the forwarded host.\n');
     if (!config.dashboard.token) process.stdout.write(`  Control plane auth: ${config.dashboard.allowInsecure ? 'explicitly disabled for this trusted preview' : 'loopback only'}.\n`);
     process.stdout.write('\n');

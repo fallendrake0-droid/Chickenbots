@@ -218,8 +218,10 @@ function profileSummary(bot, actions, team, name) {
                 ['Deaths', num(bot.deaths || 0)],
                 ['Join skin', (() => {
                   const skin = bot.joinSkin;
-                  if (!skin || !skin.enabled) return badge('Disabled', 'neutral');
+                  if (!skin) return badge('Not reported', 'neutral');
+                  if (!skin.enabled) return badge('Disabled', 'neutral');
                   if (skin.sent) return badge(`Applied ${new Date(skin.at).toLocaleTimeString()}`, 'ok');
+                  if (skin.result && skin.result.ok === false) return badge('Command failed', 'danger');
                   return badge('Pending after spawn', 'info');
                 })()]
               ], { htmlValues: true });
@@ -767,7 +769,7 @@ export const connectionsPage = {
                     ['Last failure', c.failure ? esc(`${c.failure.code} in ${c.failure.stage}: ${c.failure.error}`) : '—'],
                     ['Retry', retry ? `attempt ${num(retry.attempt || 0)}${retry.nextRetryAt ? ` · next in ${duration(Math.max(0, retry.nextRetryAt - Date.now()))}` : ''}${retry.lastError ? ` · ${esc(String(retry.lastError).slice(0, 120))}` : ''}` : '—'],
                     ['Last disconnect', last ? esc(`${last.reason} · ${last.state} · spawned=${last.spawned} auth=${last.authenticated} · ${new Date(last.at).toLocaleTimeString()}`) : '—'],
-                    ['Join skin', row.joinSkin ? (row.joinSkin.sent ? `sent ${esc(row.joinSkin.command || '')} · ${new Date(row.joinSkin.at).toLocaleTimeString()}` : row.joinSkin.enabled ? `pending (${esc(row.joinSkin.command || '')}, ${num(row.joinSkin.delayMs)}ms after ready)` : 'disabled') : 'not reported']
+                    ['Join skin', row.joinSkin ? (row.joinSkin.sent ? `sent ${esc(row.joinSkin.command || '')} · ${new Date(row.joinSkin.at).toLocaleTimeString()}` : row.joinSkin.result && row.joinSkin.result.ok === false ? `failed · ${esc(row.joinSkin.result.error || 'unknown error')}` : row.joinSkin.enabled ? `pending (${esc(row.joinSkin.command || '')}, ${num(row.joinSkin.delayMs)}ms after ready)` : 'disabled') : 'not reported']
                   ])}
                   <div class="timeline" style="margin-top:8px">
                     ${timeline.map((entry) => `<div class="activity-item"><span class="activity-icon">${icon('chevron-right')}</span><div class="activity-main"><div>${esc(entry.kind === 'state' ? `${entry.from || '—'} → ${entry.to}` : entry.kind === 'stage' ? `stage: ${entry.stage}` : entry.kind === 'event' ? `event: ${entry.event}` : entry.kind)}</div><div class="mono">${esc(new Date(entry.at).toLocaleTimeString())}${entry.detail ? ` · ${esc(entry.detail)}` : ''}</div></div></div>`).join('') || '<div class="muted small">No lifecycle events recorded.</div>'}

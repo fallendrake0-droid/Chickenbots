@@ -217,3 +217,19 @@ test('mine validates the target and returns an honest empty result for an unknow
     await runtime.shutdown('test');
   }
 });
+
+test('the dashboard can stop mining for one bot without touching the fleet', async () => {
+  const { createRuntime } = require('../src/runtime');
+  const runtime = await createRuntime({ simulate: true, dashboard: false, connect: false });
+  try {
+    const target = [...runtime.services.bots.keys()][0];
+    const stopped = await runtime.commands.execute(`mine ${target} stop`, { source: 'cli' });
+    assert.equal(stopped.ok, true, JSON.stringify(stopped.result || stopped).slice(0, 500));
+    assert.equal(stopped.result.stopped, true);
+    assert.equal(stopped.result.bot, target);
+    const status = runtime.services.actions.get(target).mining.status();
+    assert.equal(status.stopped, true);
+  } finally {
+    await runtime.shutdown('test');
+  }
+});

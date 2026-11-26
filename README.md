@@ -378,6 +378,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_SPAWN_TIMEOUT_MS` | `45000` | spawn stage timeout |
 | `MC_KEEPALIVE_MS` | `60000` | client-side no-packet watchdog passed to Mineflayer. The library still sends the reply itself; the reconnect supervisor owns recovery |
 | `MC_STALE_AFTER_MS` | `45000` | a spawned bot with no inbound packet this long is reported as `No packets`; it stays **online** in the current snapshot but the supervisor force-closes and reconnects the zombie socket |
+| `MC_SKIN_ON_JOIN` / `MC_SKIN_COMMAND` / `MC_SKIN_DELAY_MS` | `true` / `/skin uH3WR2v0ti0uTHJ` / `1500` | send one cosmetic skin command per ready session, after spawn and password auth. Non-fatal; shown on bot profiles and Connections |
 | `MC_REJOIN_DELAY_MS` | `5000` | hold-down before the first rejoin after a real session ends; the reconnect supervisor and throttle queue still apply |
 | `MC_SIMULATE` | `false` | run the deterministic simulator |
 | `DASHBOARD_PORT` | `3000` | dashboard port |
@@ -494,7 +495,7 @@ node src/cli.js --simulate "task list"
 
 ## Dashboard
 
-A modular operations console served from `src/dashboard/public/` with 39 routed pages, grouped so
+A modular operations console served from `src/dashboard/public/` with 40 routed views, grouped so
 that related tasks sit together rather than in one long tab strip:
 
 * **Overview** – fleet summary, live vitals chart, activity feed and objectives.
@@ -513,7 +514,10 @@ that related tasks sit together rather than in one long tab strip:
 * **Gameplay** – survival, inventory, mining, excavation, woodcutting, farming, fishing,
   exploration and sleep. The Woodcutting section shows per-bot role, axe, verified log/sapling
   counts, reservations, support requests and catalogue data, with live scan, chop, store, relocate,
-  plant, stop, role-assignment and support actions. Every value comes from the runtime snapshot.
+  plant, stop, role-assignment and support actions. Mining shows per-bot pickaxe tier and work
+  zone, sums the `oresMined` map correctly, exposes the cached status-scan age, lists sampled ores
+  with distance and supports both a typed deep target (`diamond`, `stone`, …) and a per-bot stop.
+  Every value comes from the runtime snapshot.
 * **Combat Operations** – combat overview and live engagement log, team roles/focus/retreat,
   per-bot equipment and durability, totem/supply ledger, explicit PvP targets, protection list and
   arena configuration.
@@ -522,6 +526,14 @@ that related tasks sit together rather than in one long tab strip:
 * **Legacy construction** – home base, builder, schematic library (filters, pagination, isometric
   preview), build projects and project history.
 * **System** – task manager, logs/diagnostics and settings.
+
+Every shell response carries `X-Chickenbots-Build` and a content-derived build id
+(`<version>+<git7>.<frontend12>.<backend12>`). HTML is served `no-store`; asset URLs are rewritten
+at serve time to `?v=<frontend hash>` (including nested ES-module imports) and served `immutable`
+only for the current hash. `/api/build` and **Settings → Build & version** expose both hashes and
+both build ids, and the shell raises a reload banner if the loaded module graph no longer matches
+the backend. There is no service worker, so a reload cannot resurrect a stale app shell. A typed
+deep link such as `/players` boots the shell for a known route; unknown paths still return 404.
 
 The shell is loaded per route (`js/app.js` + `js/router.js`) and hydrated from `/api/state`, `/api/logs`,
 `/api/commands`, `/api/settings` and `/api/schematics`. A single SSE feed (`/api/events`) drives live

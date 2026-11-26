@@ -416,6 +416,7 @@ class TeamRuntime {
     if (this.dashboard) {
       dashboardInfo = await this.dashboard.start();
       this.logger.info(`dashboard listening on http://${dashboardInfo.host}:${dashboardInfo.port}`);
+      if (dashboardInfo.build) this.logger.info(`dashboard build ${dashboardInfo.build.buildId} (frontend ${dashboardInfo.build.frontendHash}, backend ${dashboardInfo.build.backendHash})`);
     }
     // Keep the one-shot startup cost (manifest/custom store/status warm-up)
     // visible without letting its few samples decide the routine p99 for the

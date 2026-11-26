@@ -92,10 +92,21 @@ test('dashboard serves a no-store shell, immutable hashed assets and bounded dee
     const deepLink = await httpGet(port, '/players');
     assert.equal(deepLink.status, 200);
     assert.match(deepLink.body, /Chickenbots/);
+    assert.match(deepLink.body, new RegExp(`href="/css/tokens\\.css\\?v=${build.frontendHash}"`));
     assert.match(deepLink.headers['cache-control'], /no-store/);
 
-    assert.equal((await httpGet(port, '/nope')).status, 404);
-    assert.equal((await httpGet(port, '/api/nope')).status, 404);
+    const nestedDeepLink = await httpGet(port, '/bots/________');
+    assert.equal(nestedDeepLink.status, 200);
+    assert.match(nestedDeepLink.body, new RegExp(`src="/js/app\\.js\\?v=${build.frontendHash}"`));
+
+    const missingPage = await httpGet(port, '/nope');
+    assert.equal(missingPage.status, 404);
+    assert.match(missingPage.body, /Page not found/);
+    assert.match(missingPage.headers['cache-control'], /no-store/);
+    const missingApi = await httpGet(port, '/api/nope');
+    assert.equal(missingApi.status, 404);
+    assert.equal(JSON.parse(missingApi.body).ok, false);
+    assert.match(missingApi.headers['cache-control'], /no-store/);
   } finally {
     await dash.stop();
     await runtime.shutdown('test');

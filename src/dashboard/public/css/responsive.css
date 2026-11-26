@@ -55,7 +55,9 @@
   .modal--wide { width: 100%; }
   .notifications-panel { top: calc(var(--topbar-height) + 6px); right: 8px; left: 8px; width: auto; }
   .command-palette { padding-top: 7vh; }
-  .command-trigger { display: none; }
+  /* Keep the palette reachable on touch devices: this is now an icon-only
+     button after the 1080px breakpoint, not a full search field. */
+  .command-trigger { display: inline-flex; }
   .inventory-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
   .bot-vitals { grid-template-columns: 1fr 1fr; }
   .table th, .table td { padding-left: 9px; padding-right: 9px; }
@@ -84,4 +86,13 @@
   .sidebar, .topbar, .toast-stack, .modal-root, .command-palette, .notifications-panel { display: none !important; }
   .workspace { margin-left: 0; }
   body { background: #fff; color: #000; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

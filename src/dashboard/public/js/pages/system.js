@@ -454,6 +454,7 @@ export const settingsPage = {
                 ['Port', esc(settings.server.port || '—'), true],
                 ['Protocol version', esc(settings.server.version || '—'), true],
                 ['Authentication mode', esc(settings.server.auth || 'offline')],
+                ['Join skin', settings.joinSkin && settings.joinSkin.enabled ? esc(`${settings.joinSkin.command} · ${num(settings.joinSkin.delayMs)}ms after ready`) : badge('Disabled', 'neutral')],
                 ['Dashboard bind', esc(`${settings.dashboard.host || '—'}:${settings.dashboard.port || '—'}`), true],
                 ['Control-plane auth', settings.security && settings.security.tokenRequired ? 'Token required' : 'No token (local demo only)']
               ])}
@@ -521,9 +522,9 @@ export const settingsPage = {
           <section class="card">
             <div class="card-header"><div class="card-title">${icon('monitor')} Browser preferences</div></div>
             <div class="card-body">
-              <div class="setting-row"><div><div class="setting-label">Sidebar collapsed by default</div><div class="setting-desc">Stored locally in this browser.</div></div><button class="switch${prefs.sidebarCollapsed ? ' is-on' : ''}" type="button" role="switch" aria-checked="${prefs.sidebarCollapsed}" data-pref-toggle="sidebarCollapsed"><span></span></button></div>
-              <div class="setting-row"><div><div class="setting-label">Reduced motion</div><div class="setting-desc">Disable animated transitions in this browser.</div></div><button class="switch${prefs.reducedMotion ? ' is-on' : ''}" type="button" role="switch" aria-checked="${prefs.reducedMotion}" data-pref-toggle="reducedMotion"><span></span></button></div>
-              <div class="setting-row"><div><div class="setting-label">Compact density</div><div class="setting-desc">Tighter table rows and card spacing.</div></div><button class="switch${prefs.compact ? ' is-on' : ''}" type="button" role="switch" aria-checked="${prefs.compact}" data-pref-toggle="compact"><span></span></button></div>
+              <div class="setting-row"><div><div class="setting-label">Sidebar collapsed by default</div><div class="setting-desc">Stored locally in this browser.</div></div><button class="switch${prefs.sidebarCollapsed ? ' is-on' : ''}" type="button" role="switch" aria-checked="${Boolean(prefs.sidebarCollapsed)}" data-pref-toggle="sidebarCollapsed"><span></span></button></div>
+              <div class="setting-row"><div><div class="setting-label">Reduced motion</div><div class="setting-desc">Disable animated transitions in this browser.</div></div><button class="switch${prefs.reducedMotion ? ' is-on' : ''}" type="button" role="switch" aria-checked="${Boolean(prefs.reducedMotion)}" data-pref-toggle="reducedMotion"><span></span></button></div>
+              <div class="setting-row"><div><div class="setting-label">Compact density</div><div class="setting-desc">Tighter table rows and card spacing.</div></div><button class="switch${prefs.compact ? ' is-on' : ''}" type="button" role="switch" aria-checked="${Boolean(prefs.compact)}" data-pref-toggle="compact"><span></span></button></div>
               <p class="tiny muted" style="margin:10px 0 0">These preferences only affect this browser; they are not sent to the server.</p>
             </div>
           </section>

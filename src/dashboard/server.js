@@ -50,7 +50,10 @@ function dashboardBindProblem({ host, token, allowInsecure } = {}) {
 function createDashboard(services, { port = config.dashboard.port, host = config.dashboard.host } = {}) {
   const app = express();
   const build = buildInfo();
-  const versioned = (url) => `${url}${url.includes('?') ? '&' : '?'}v=${build.frontendHash}`;
+  // Absolute asset roots keep a nested deep link such as /bots/name from
+  // resolving css/... against /bots/. Hash routes still use the fragment.
+  const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+  const versioned = (url) => `/${url.replace(/^\.?\//, '')}?v=${build.frontendHash}`;
   app.disable('x-powered-by');
   app.set('trust proxy', false);
 
@@ -195,7 +198,6 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     if (!SHELL_ROUTES.has(segment)) return next();
     return renderIndex(req, res);
   });
-
   // Snapshot assembly takes a few tens of milliseconds. Keep only a very
   // short coalescing cache for concurrent callers, and always force a fresh
   // build for the state endpoint and the SSE stream: a stale "online" card is
@@ -338,6 +340,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       ok: true,
       settings: {
         server: { host: config.server.host, port: config.server.port, version: config.server.version, auth: config.server.auth, joinIntervalMs: config.server.joinIntervalMs, joinJitterMs: config.server.joinJitterMs, rejoinDelayMs: config.server.rejoinDelayMs },
+        joinSkin: { enabled: Boolean(config.server.skinOnJoin), command: config.server.skinOnJoin ? config.server.skinCommand : null, delayMs: config.server.skinDelayMs },
         authentication: {
           profile: config.server.authProfile,
           mode: config.server.authMode,
@@ -707,7 +710,6 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     });
   });
 
-  app.use((req, res) => res.status(404).json({ ok: false, error: 'not found' }));
   // Never return Express's default HTML stack trace (which includes local
   // filesystem paths) to a network client.
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
@@ -716,6 +718,25 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     if (status >= 500) services.logger?.error(`dashboard request failed: ${err.message}`);
     if (res.headersSent) return res.end();
     return res.status(status).json({ ok: false, error: message });
+  });
+
+  app.use((req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.path.startsWith('/api/')) return res.status(404).json({ ok: false, error: 'not found', path: req.path });
+    if (!req.accepts('html')) return res.status(404).type('text').send('Not found');
+    res.status(404).type('html').send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not found · Chickenbots</title>
+<meta name="chickenbots-build" content="${build.buildId}">
+<link rel="stylesheet" href="/css/tokens.css?v=${build.frontendHash}">
+<link rel="stylesheet" href="/css/components.css?v=${build.frontendHash}">
+</head><body style="display:grid;place-items:center;min-height:100vh">
+<main class="card" style="max-width:440px;margin:24px;padding:28px">
+  <div class="eyebrow">Chickenbots</div>
+  <h1 style="font-size:22px;margin:6px 0 4px">Page not found</h1>
+  <p class="muted" style="margin-bottom:18px">No dashboard view matches <span class="mono">${escapeHtml(req.path)}</span>.</p>
+  <a class="button button--primary" href="/">Return to overview</a>
+</main></body></html>`);
   });
 
   const bindProblem = dashboardBindProblem({ host, token: accessToken, allowInsecure: config.dashboard.allowInsecure });
@@ -735,7 +756,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
         server.once('error', reject);
         server.listen(port, host, () => {
           const address = server.address();
-          resolve({ ok: true, host: address.address, port: address.port, url: `http://${host}:${address.port}` });
+          resolve({ ok: true, host: address.address, port: address.port, url: `http://${host}:${address.port}`, build });
         });
       });
     },

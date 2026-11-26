@@ -868,7 +868,26 @@ function wireGlobalActions() {
   });
 }
 
+/**
+ * A typed URL such as /players or /bots/________ is served the shell by the
+ * backend so a refresh does not 404. Move that route into the hash before the
+ * first render, otherwise the operator would land on Overview and lose context.
+ */
+function adoptPathDeepLink() {
+  if (location.hash) return;
+  const segments = location.pathname.split('/').filter(Boolean);
+  if (!segments.length || (segments.length === 1 && segments[0] === 'index.html')) return;
+  let target = '/#/';
+  try {
+    target = `/#/${segments.map((segment) => encodeURIComponent(decodeURIComponent(segment))).join('/')}${location.search}`;
+  } catch (_) {
+    target = `/#/${segments.join('/')}${location.search}`;
+  }
+  try { history.replaceState(null, '', target); } catch (_) { /* history can be restricted */ }
+}
+
 function start() {
+  adoptPathDeepLink();
   cacheDom();
   buildShell();
   wireShell();

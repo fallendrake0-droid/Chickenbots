@@ -110,7 +110,7 @@ export const worldPage = {
           </section>
           <aside class="stack gap-4">
             <section class="card">
-              <div class="card-header"><div class="card-title">${icon('users')} Fleet</div><span class="tiny muted">${online.length}/${names.length}</span></div>
+              <div class="card-header"><div class="card-title">${icon('users')} Fleet</div><span class="tiny muted">${online}/${names.length}</span></div>
               <div class="card-body card-body--tight world-bot-list">
                 ${names.map((name) => {
                   const bot = bots().find((entry) => entry.name === name) || { name, online: false };
