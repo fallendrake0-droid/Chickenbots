@@ -51,6 +51,7 @@ const SAFE_INVOCATIONS = Object.freeze({
   guard: 'guard stop',
   duel: 'duel Alex',
   chop: 'chop stop',
+  woodcutting: 'woodcutting status',
   mine: 'mine all stop',
   farm: 'farm all status',
   fish: 'fish all stop',

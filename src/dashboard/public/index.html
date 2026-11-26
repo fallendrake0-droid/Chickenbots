@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <meta name="description" content="Chickenbots operations console — five autonomous Minecraft bots, one coordinated team." />
+  <meta name="description" content="Chickenbots operations console — a coordinated autonomous Minecraft fleet, with live telemetry and verified actions." />
   <title>Chickenbots · Operations</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0e13'/%3E%3Cpath d='M9 11h14v9a4 4 0 0 1-4 4h-6a4 4 0 0 1-4-4z' fill='%2339b8a5'/%3E%3Ccircle cx='13' cy='15' r='1.6' fill='%230b0e13'/%3E%3Ccircle cx='19' cy='15' r='1.6' fill='%230b0e13'/%3E%3Cpath d='M13 20h6' stroke='%230b0e13' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="css/tokens.css" />
@@ -44,6 +44,10 @@
           <span class="status-dot status-dot--muted" aria-hidden="true"></span>
           <span>Waiting for data</span>
         </div>
+        <a class="sidebar-build" id="build-badge" href="#/settings" title="Build and version diagnostics">
+          <span class="icon" data-icon="git-branch" aria-hidden="true"></span>
+          <span id="build-label">build checking…</span>
+        </a>
         <button class="sidebar-collapse" id="sidebar-collapse" type="button" aria-label="Collapse sidebar" aria-expanded="true">
           <span class="icon" data-icon="chevron-left" aria-hidden="true"></span>
           <span class="sidebar-collapse-label">Collapse</span>

@@ -38,7 +38,7 @@ export default {
           <div>
             <div class="eyebrow">Operations overview</div>
             <h1>Welcome to Chickenbots</h1>
-            <p>Ten autonomous bots, one coordinated team. This is the live operational picture.</p>
+            <p>${fleet.length || rosterNames.length} autonomous bots, one coordinated team. This is the live operational picture.</p>
             <div class="hero-meta">
               <span class="status">${icon('server')} ${esc(server.host || 'server not configured')}:${esc(server.port || '—')}</span>
               <span class="status">${modeBadge}</span>
@@ -98,7 +98,7 @@ export default {
         <div class="section grid grid--main-side">
           <div>
             ${sectionHead('Fleet overview', {
-              subtitle: 'All five fixed usernames, with their current activity and vitals.',
+              subtitle: 'Every configured username, with its current activity and vitals.',
               actions: `<a class="button button--sm" href="#/bots">All bots ${icon('arrow-right')}</a>`
             })}
             <div class="grid grid--bots">

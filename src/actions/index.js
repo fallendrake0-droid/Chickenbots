@@ -63,6 +63,7 @@ class BotActions {
     this._escapeCursor = 0;
     this.survival = new SurvivalController({ bot, memory, logger: this.logger });
     this.combat = new CombatController({ bot, team, combatTeam, memory, logger: this.logger, comms, pvp: config.autonomy.pvp, pve: config.autonomy.pve });
+    this.combat.playerRegistry = players;
     this.reservations = reservations || new ResourceReservations();
     this.players = new PlayerController({ bot, registry: players, combat: this.combat, logger: this.logger });
     this.mining = new MiningController({
@@ -76,6 +77,8 @@ class BotActions {
     this.fishing = new FishingController({ bot, memory, ledger, logger: this.logger });
     this.exploration = new ExplorationController({ bot, memory, home: this.home, logger: this.logger, teamIndex: index });
     this.inventory = new InventoryManager({ bot, ledger, memory, logger: this.logger, home: this.home });
+    this.woodcutting.inventory = this.inventory;
+    this.woodcutting.combat = this.combat;
     this.farming.inventory = this.inventory;
     // The tool bootstrap needs to craft/place and, if wood is missing, chop.
     this.mining.attachHelpers({ inventory: this.inventory, woodcutting: this.woodcutting });

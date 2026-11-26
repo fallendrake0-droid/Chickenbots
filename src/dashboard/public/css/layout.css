@@ -336,3 +336,20 @@ button.fleet-chip { font-family: var(--font-mono); font-size: 11px; }
 .nav-group.is-collapsed .nav-group-items { display: none; }
 body.sidebar-collapsed .nav-group-items { display: block; }
 body.sidebar-collapsed .nav-group.is-collapsed .nav-group-items { display: block; }
+
+.sidebar-build {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+.sidebar-build:hover { color: var(--text-secondary); background: var(--surface); }
+.sidebar-build .icon { width: 12px; height: 12px; }
+.sidebar-collapsed .sidebar-build { justify-content: center; padding-inline: 0; }
+.sidebar-collapsed .sidebar-build #build-label { display: none; }
+.global-banner { margin-bottom: var(--space-4); }

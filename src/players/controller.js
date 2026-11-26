@@ -44,14 +44,55 @@ class PlayerController {
     this.lastMoveAt = 0;
     this.lastDrop = null;
     this.lastMessage = null;
-    this.stats = { follows: 0, guards: 0, drops: 0, delivered: 0, messages: 0, defences: 0 };
+    this.offlineSince = null;
+    this.observing = null;
+    this.stats = { follows: 0, guards: 0, escorts: 0, observations: 0, drops: 0, delivered: 0, messages: 0, defences: 0, autoStops: 0 };
   }
 
   isActive() { return Boolean(this.mode && this.target); }
 
-  observe() {
-    if (this.registry) this.registry.observeBot(this.bot);
-    return this.registry ? this.registry.list({ limit: 200 }) : [];
+  /**
+   * With no argument this is the original discovery scan. With a name it starts
+   * a passive OBSERVE watch: the bot keeps its distance and reports presence,
+   * but never paths to a remembered coordinate or attacks the player.
+   */
+  observe(name = null) {
+    if (name === null || name === undefined || name === '') {
+      if (this.registry) this.registry.observeBot(this.bot);
+      return this.registry ? this.registry.list({ limit: 200 }) : [];
+    }
+    const target = this._target(name);
+    if (!target.ok) return target;
+    this.mode = 'OBSERVE';
+    this.target = target.name;
+    this.followDistance = Math.max(4, this.followDistance);
+    this.observing = { since: Date.now(), lastPosition: null };
+    this.stats.observations++;
+    this._syncActivity();
+    this._note(`observe ${target.name}`);
+    return { ok: true, bot: this.bot.name, mode: this.mode, target: this.target, visible: Boolean(target.entity) };
+  }
+
+  watch(name) { return this.observe(name); }
+
+  unwatch(name = null) {
+    if (this.mode !== 'OBSERVE') return { ok: true, stopped: false, already: true, mode: this.mode };
+    const wanted = name == null ? null : cleanName(name);
+    if (wanted && wanted.toLowerCase() !== String(this.target || '').toLowerCase()) {
+      return { ok: true, stopped: false, already: true, mode: this.mode, target: this.target };
+    }
+    const previous = this.target;
+    this.mode = null;
+    this.target = null;
+    this.observing = null;
+    this._syncActivity();
+    this._note(`unwatch ${previous}`);
+    return { ok: true, stopped: true, previousTarget: previous };
+  }
+
+  _syncActivity() {
+    if (!this.registry || typeof this.registry.setActivity !== 'function') return;
+    this.registry.setActivity(this.bot.name, this.isActive() ? { mode: this.mode, target: this.target } : null);
   }
 
   _note(action, error = null) {
@@ -68,18 +109,26 @@ class PlayerController {
     try {
       list = typeof this.bot.entitiesNear === 'function' ? this.bot.entitiesNear(64) : [];
     } catch (_) { return null; }
-    return list.find((entity) => (entity.username || entity.name) === cleaned) || null;
+    const wanted = cleaned.toLowerCase();
+    return list.find((entity) => String(entity.username || entity.name || '').toLowerCase() === wanted) || null;
   }
 
   _target(name) {
     // A command can arrive between entity updates; refresh this bot's sightings
     // before rejecting a player the fleet has in fact just seen.
     if (this.registry) this.registry.observeBot(this.bot);
+    const raw = String(name || '').trim();
+    if (BOT_NAMES.some((bot) => bot.toLowerCase() === raw.toLowerCase())) {
+      return { ok: false, code: 'TEAMMATE', error: `${raw} is a team bot, not a player` };
+    }
     const cleaned = cleanName(name);
     if (!cleaned) return { ok: false, code: 'INVALID_NAME', error: `invalid player name '${name}'` };
-    if (BOT_NAMES.includes(cleaned)) return { ok: false, code: 'TEAMMATE', error: `${cleaned} is a team bot, not a player` };
     const entry = this.registry ? this.registry.get(cleaned) : null;
     if (!entry) return { ok: false, code: 'PLAYER_NOT_SEEN', error: `${cleaned} has not been seen by the fleet` };
+    const row = this.registry && typeof this.registry.getRow === 'function' ? this.registry.getRow(cleaned) : null;
+    if (row && row.online === false) {
+      return { ok: false, code: 'PLAYER_OFFLINE', error: `${entry.name} is offline` };
+    }
     const entity = this._entity(cleaned);
     return { ok: true, name: cleaned, entry, entity };
   }
@@ -93,7 +142,9 @@ class PlayerController {
     this.followDistance = dist;
     // Two follow controllers chasing two goals would fight for the pathfinder.
     if (this.combat && this.combat.mode === 'FOLLOW' && typeof this.combat.stopFollow === 'function') this.combat.stopFollow();
+    this.offlineSince = null;
     this.stats.follows++;
+    this._syncActivity();
     this._note(`follow ${target.name}`);
     return { ok: true, bot: this.bot.name, mode: this.mode, target: this.target, distance: dist, visible: Boolean(target.entity) };
   }
@@ -106,9 +157,34 @@ class PlayerController {
     if (this.combat && this.combat.mode === 'FOLLOW' && typeof this.combat.stopFollow === 'function') this.combat.stopFollow();
     this.guardRadius = Math.max(3, Math.min(16, Number(radius) || GUARD_RADIUS));
     this.followDistance = Math.max(1, Math.min(8, Number(distance) || FOLLOW_DISTANCE));
+    this.offlineSince = null;
     this.stats.guards++;
+    this._syncActivity();
     this._note(`guard ${target.name}`);
     return { ok: true, bot: this.bot.name, mode: this.mode, target: this.target, radius: this.guardRadius, distance: this.followDistance, visible: Boolean(target.entity) };
+  }
+
+  /**
+   * Escort is deliberately more than a renamed guard: it follows a moving
+   * player at a close distance and defends them on the way. The mode is kept
+   * distinct in status so unfollow and stop can leave it intact.
+   */
+  escort(name, { distance = 2, radius = 10 } = {}) {
+    const target = this._target(name);
+    if (!target.ok) return target;
+    this.mode = 'ESCORT';
+    this.target = target.name;
+    this.followDistance = Math.max(1, Math.min(4, Number(distance) || 2));
+    this.guardRadius = Math.max(4, Math.min(16, Number(radius) || 10));
+    this.offlineSince = null;
+    if (this.combat && this.combat.mode === 'FOLLOW' && typeof this.combat.stopFollow === 'function') this.combat.stopFollow();
+    this.stats.escorts++;
+    this._syncActivity();
+    this._note(`escort ${target.name}`);
+    return {
+      ok: true, bot: this.bot.name, mode: this.mode, target: this.target,
+      radius: this.guardRadius, distance: this.followDistance, visible: Boolean(target.entity)
+    };
   }
 
   stop() {
@@ -118,6 +194,9 @@ class PlayerController {
     if (typeof this.bot.cancelMotion === 'function') {
       try { this.bot.cancelMotion('player watch stopped'); } catch (_) { /* optional */ }
     }
+    this.observing = null;
+    this.offlineSince = null;
+    this._syncActivity();
     this._note('stop');
     return { ok: true, bot: this.bot.name, stopped: true, previous };
   }
@@ -139,7 +218,7 @@ class PlayerController {
         mode: this.mode, target: this.target
       };
     }
-    if (wanted && this.target !== wanted) {
+    if (wanted && this.target.toLowerCase() !== wanted.toLowerCase()) {
       return {
         ok: true, bot: this.bot.name, active: false, stopped: false, already: true,
         mode: this.mode, target: this.target, skippedTarget: wanted
@@ -153,6 +232,7 @@ class PlayerController {
     if (typeof this.bot.cancelMotion === 'function') {
       try { this.bot.cancelMotion('player unfollowed'); } catch (_) { /* optional */ }
     }
+    this._syncActivity();
     this._note(`unfollow ${previousTarget}`);
     return {
       ok: true, bot: this.bot.name, active: false, stopped: true,
@@ -174,18 +254,47 @@ class PlayerController {
 
   async tick() {
     if (!this.isActive()) return { ok: true, active: false, status: this.status() };
-    const seen = this.registry ? this.registry.get(this.target) : null;
+    if (!this.bot.position) return { ok: true, active: true, visible: false, error: 'bot has no position', status: this.status() };
+    const seen = this.registry ? this.registry.getRow(this.target) : null;
     const entity = this._entity(this.target);
     if (!entity) {
       // The directory keeps a last-known position, but walking to a stale
       // position is worse than waiting: report invisibility and stay put.
-      const online = Boolean(seen && Date.now() - seen.lastSeen <= 15000);
-      return { ok: true, active: true, visible: false, online, target: this.target, mode: this.mode, status: this.status() };
+      const online = Boolean(seen && seen.online);
+      if (!online) {
+        if (!this.offlineSince) this.offlineSince = Date.now();
+        // A real disconnect must cancel a watch, not leave a bot frozen in a
+        // mode forever. One minute allows ordinary chunk unloads to recover.
+        if (Date.now() - this.offlineSince >= 60000) {
+          const previous = `${this.mode}:${this.target}`;
+          this.mode = null;
+          this.target = null;
+          this.observing = null;
+          this.offlineSince = null;
+          this.stats.autoStops++;
+          this._syncActivity();
+          this._note('auto-stop: target offline', `${previous} target was offline for 60s`);
+          return { ok: true, active: false, visible: false, online: false, autoStopped: true, previous, status: this.status() };
+        }
+      } else {
+        this.offlineSince = null;
+      }
+      return {
+        ok: true, active: true, visible: false, online, target: this.target, mode: this.mode,
+        positionFresh: Boolean(seen && seen.positionFresh), status: this.status()
+      };
     }
+    this.offlineSince = null;
     const dist = Math.hypot(entity.position.x - this.bot.position.x, entity.position.y - this.bot.position.y, entity.position.z - this.bot.position.z);
-    if (this.mode === 'GUARD' && this.combat) {
+    if (this.mode === 'OBSERVE') {
+      if (this.observing) this.observing.lastPosition = seen && seen.position ? { ...seen.position } : { ...entity.position };
+      return { ok: true, active: true, visible: true, target: this.target, mode: this.mode, distance: dist, observation: true, status: this.status() };
+    }
+    if ((this.mode === 'GUARD' || this.mode === 'ESCORT') && this.combat) {
       const threats = (typeof this.bot.entitiesNear === 'function' ? this.bot.entitiesNear(this.guardRadius, entity.position) : [])
-        .filter((candidate) => isHostile(candidate))
+        .filter((candidate) => isHostile(candidate)
+          || (Boolean(candidate && (candidate.username || candidate.type === 'player'))
+            && this.combat.pvp && this.combat.pvp.isAuthorized(candidate)))
         .sort((a, b) => Math.hypot(a.position.x - entity.position.x, a.position.z - entity.position.z)
           - Math.hypot(b.position.x - entity.position.x, b.position.z - entity.position.z));
       if (threats.length && Number(this.bot.health) > 6) {
@@ -193,14 +302,14 @@ class PlayerController {
         const reach = Math.hypot(threat.position.x - this.bot.position.x, threat.position.y - this.bot.position.y, threat.position.z - this.bot.position.z);
         if (reach > 3.5) {
           const approach = await this.bot.goNear(threat, 2, {
-            timeoutMs: 6000, priority: 'operator', owner: `player-guard:${this.target}`
+            timeoutMs: 6000, priority: 'operator', owner: `player-${this.mode.toLowerCase()}:${this.target}`
           });
           if (approach && approach.ok === false) this.lastError = approach.error || 'could not reach a threat near the player';
         }
         const attack = await this.combat.attackEntity(threat);
         if (attack && attack.ok) {
           this.stats.defences++;
-          this._note(`guard defence ${threats[0].name || threats[0].type}`);
+          this._note(`${this.mode.toLowerCase()} defence ${threats[0].name || threats[0].type}`);
           return { ok: true, active: true, visible: true, target: this.target, mode: this.mode, defence: attack, distance: dist, status: this.status() };
         }
         if (attack && attack.ok === false) this.lastError = attack.error || 'guard attack refused';
@@ -382,7 +491,9 @@ class PlayerController {
   }
 
   status() {
-    const seen = this.target && this.registry ? this.registry.get(this.target) : null;
+    const seen = this.target && this.registry && typeof this.registry.getRow === 'function'
+      ? this.registry.getRow(this.target)
+      : (this.target && this.registry ? this.registry.get(this.target) : null);
     return {
       bot: this.bot.name,
       mode: this.mode,
@@ -391,7 +502,13 @@ class PlayerController {
       distance: this.followDistance,
       guardRadius: this.guardRadius,
       visible: Boolean(this.target && this._entity(this.target)),
-      targetOnline: Boolean(seen && Date.now() - seen.lastSeen <= 15000),
+      targetOnline: Boolean(seen && seen.online !== undefined ? seen.online : seen && Date.now() - seen.lastSeen <= 15000),
+      presence: seen ? seen.presence || null : null,
+      positionFresh: seen ? Boolean(seen.positionFresh) : false,
+      dimension: seen ? seen.dimension || null : null,
+      targetPosition: seen && seen.position ? { ...seen.position } : null,
+      offlineSince: this.offlineSince,
+      watching: Boolean(this.observing),
       lastAction: this.lastAction,
       lastActionAt: this.lastActionAt,
       lastError: this.lastError,

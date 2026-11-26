@@ -10,7 +10,7 @@ const { createRuntime } = require('../src/runtime');
 test('every registered command resolves, answers --help and has a real safe invocation', async () => {
   const report = await auditCommands({ logger: new Logger({ level: 'error' }) });
   assert.equal(report.ok, true, report.failures.map((row) => `${row.name}: ${row.execution && row.execution.result && row.execution.result.error}`).join('; '));
-  assert.equal(report.total, 48);
+  assert.equal(report.total, 49);
   assert.ok(report.covered >= 46, `only ${report.covered}/${report.total} commands were exercised`);
   const stop = report.rows.find((row) => row.name === 'stop');
   assert.equal(stop.status, 'SKIPPED', 'stop is the only command that must not run during the audit');

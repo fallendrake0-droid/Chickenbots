@@ -3,6 +3,19 @@ import { botOnline } from './botStatus.js';
 import { configureRoster, roster } from './utils.js';
 
 const PREFS_KEY = 'chickenbots.prefs.v1';
+
+function meta(name) {
+  if (typeof document === 'undefined') return null;
+  const element = document.querySelector(`meta[name="${name}"]`);
+  return element ? element.getAttribute('content') : null;
+}
+
+/** Identity injected into the shell that loaded this JavaScript. */
+export const frontendBuild = Object.freeze({
+  buildId: meta('chickenbots-build'),
+  frontendHash: meta('chickenbots-frontend'),
+  backendHash: meta('chickenbots-backend')
+});
 const SAMPLE_LIMIT = 80;
 const LOG_LIMIT = 400;
 
@@ -28,6 +41,7 @@ export const state = {
   commandHistory: [],
   taskTypes: [],
   settings: null,
+  build: null,
   logs: [],
   logSeq: 0,
   logStats: null,
@@ -68,8 +82,8 @@ function setConnection(mode, detail) {
 export async function init() {
   if (state.started) return;
   state.started = true;
-  const [stateResult, commandsResult, settingsResult] = await Promise.allSettled([
-    api.state(), api.commands(), api.settings()
+  const [stateResult, commandsResult, settingsResult, buildResult] = await Promise.allSettled([
+    api.state(), api.commands(), api.settings(), api.buildInfo()
   ]);
   if (stateResult.status === 'fulfilled') applySnapshot(stateResult.value.state);
   else setStateError(stateResult.reason);
@@ -82,6 +96,7 @@ export async function init() {
     state.settings = settingsResult.value.settings;
     configureRoster(state.settings && state.settings.roster);
   }
+  if (buildResult.status === 'fulfilled') state.build = buildResult.value.build || null;
   state.loading = false;
   emit('init');
   connectEvents();

@@ -179,6 +179,13 @@ class MiningController {
       zone: this.zone(),
       reservations: this.reservations ? this.reservations.status() : null,
       stats: { ...this.stats },
+      scan: {
+        at: this._statusCache.at,
+        radius: 5,
+        ttlMs: ttl,
+        capped: true,
+        note: 'status sampling is cached and radius-limited; command scans use the full 24-block radius'
+      },
       nearbyOres: this._statusCache.ores.map((o) => ({ name: o.name, position: { x: o.x, y: o.y, z: o.z }, distance: Math.round(distance(position, o)) }))
     };
   }

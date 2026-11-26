@@ -38,6 +38,8 @@ class CombatController {
     this.comms = comms;
     this.logger = logger || new Logger({ level: 'warn' });
     this.pvp = new PvpPolicy({ enabled: Boolean(pvp), targets: pvpTargets, protectedPlayers, teamNames: config.team.names });
+    this.playerRegistry = null;
+    this.defending = null;
     this.mode = COMBAT_MODES.includes(String(mode).toUpperCase()) ? String(mode).toUpperCase() : 'BALANCED';
     this.state = 'IDLE';
     this.stateSince = Date.now();
@@ -131,17 +133,84 @@ class CombatController {
   setPvp(enabled) {
     const body = this.pvp.setEnabled(enabled);
     if (enabled) this.armed = true;
+    else {
+      // Disabling PvP must cancel an engagement already in progress; otherwise
+      // an attack loop keeps hitting a target after the operator revoked it.
+      this.stop();
+      if (this.target && isPlayer(this.target)) this.target = null;
+    }
     return body;
   }
 
-  addTarget(name) { return this.pvp.addTarget(name); }
-  removeTarget(name) { return this.pvp.removeTarget(name); }
+  _playerValidation(player, { explicit = true, defending = false } = {}) {
+    this._refreshDefence();
+    const row = this.playerRegistry && typeof this.playerRegistry.getRow === 'function'
+      ? this.playerRegistry.getRow(player && (player.username || player.name))
+      : null;
+    const botDimension = this.bot.dimension || (this.bot.game && this.bot.game.dimension) || null;
+    return this.pvp.canEngage(player, {
+      position: this.bot.position,
+      serverPvp: this.serverPvp,
+      explicit,
+      defending: defending || this._isDefending(player),
+      // The entity handed to attackEntity / selected by assess is live. The
+      // registry contributes UUID/dimension but cannot make a visible player
+      // look stale just because another bot's cache is older.
+      online: true,
+      positionFresh: true,
+      dimension: row ? row.dimension : null,
+      botDimension
+    });
+  }
+
+  /** Turn a real recent attack from an authorised player into defensive evidence. */
+  _refreshDefence() {
+    const attacker = this.bot.lastAttacker;
+    if (!attacker || !attacker.name) return false;
+    const at = Number(this.bot.lastDamageAt) || 0;
+    if (!at || Date.now() - at > 30000) return false;
+    const name = String(attacker.name).toLowerCase();
+    if (!this.pvp.targets.has(name)) return false;
+    if (attacker.type && attacker.type !== 'player' && attacker.type !== 'human') return false;
+    this.noteDefence(name);
+    return true;
+  }
+
+  addTarget(name) {
+    const added = this.pvp.addTarget(name);
+    if (added.ok && this.playerRegistry) this.playerRegistry.attachPolicy(this.pvp);
+    return added;
+  }
+  removeTarget(name) {
+    const removed = this.pvp.removeTarget(name);
+    const key = String(name || '').toLowerCase();
+    if (removed.ok && removed.removed && this.target && isPlayer(this.target)
+      && String(this.target.username || this.target.name || '').toLowerCase() === key) {
+      this.stop();
+      this.target = null;
+    }
+    return removed;
+  }
   protect(name) { return this.pvp.protect(name); }
   unprotect(name) { return this.pvp.unprotect(name); }
+  trust(name) { return this.pvp.trust(name); }
+  untrust(name) { return this.pvp.untrust(name); }
+  noteDefence(name) {
+    if (!name) return;
+    this.defending = { name: String(name).toLowerCase(), at: Date.now() };
+  }
+  _isDefending(player) {
+    if (!this.defending) return false;
+    if (Date.now() - this.defending.at > 30000) { this.defending = null; return false; }
+    return this.defending.name === String((player && (player.username || player.name)) || '').toLowerCase();
+  }
 
   /** Hostile/authorised entities only. Teammates and neutrals are filtered out. */
   assess(radius = 16, { commitFocus = true, record = true, budgetMs = 0 } = {}) {
     if (record) this.stats.threatAssessments++;
+    // Defensive mode needs evidence before assessment decides who is a valid
+    // threat. A fresh hit from a named player is that evidence.
+    this._refreshDefence();
     const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
     let scanned = 0;
     let budgetExceeded = false;
@@ -576,7 +645,7 @@ class CombatController {
       };
     }
     if (isPlayer(target)) {
-      const validation = this.pvp.canEngage(target, { position: this.bot.position, serverPvp: this.serverPvp });
+      const validation = this._playerValidation(target, { explicit: true, defending: this._isDefending(target) });
       if (!validation.ok) {
         this._setState('IDLE', validation.error);
         return { action: 'defend', ok: false, error: validation.error, code: validation.code, state: this.state, results: [] };
@@ -877,7 +946,7 @@ class CombatController {
     const name = entity.name || entity.type || '';
     if (isPlayer(entity)) {
       if (!this.pvp.enabled) return { ok: false, error: 'PvP is disabled; ordinary players are never auto-attacked' };
-      const validation = this.pvp.canEngage(entity, { position: this.bot.position, serverPvp: this.serverPvp });
+      const validation = this._playerValidation(entity, { explicit: true, defending: this._isDefending(entity) });
       if (!validation.ok) return { ok: false, error: validation.error, code: validation.code };
       const attack = await this.bot.attack(entity, { authorizedPlayer: true, pvpAuthorized: true });
       if (attack.ok) {

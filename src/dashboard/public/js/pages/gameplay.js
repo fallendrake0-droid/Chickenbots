@@ -291,63 +291,108 @@ export const inventoryPage = {
   }
 };
 
+function minedEntries(row) {
+  const value = row && row.oresMined;
+  if (!value) return [];
+  if (typeof value === 'number') return [['ore', value]];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'object') return Object.entries(value).map(([name, count]) => [name, Number(count) || 0]);
+  return [];
+}
+
+function minedTotal(row) {
+  return minedEntries(row).reduce((total, [, count]) => total + (Number(count) || 0), 0);
+}
+
+function pickaxeText(pickaxe) {
+  if (!pickaxe) return '—';
+  const name = typeof pickaxe === 'string' ? pickaxe : pickaxe.name;
+  const tier = typeof pickaxe === 'object' ? pickaxe.tier : null;
+  return `${humanize(name || 'unknown')}${tier !== null && tier !== undefined ? ` · T${tier}` : ''}`;
+}
+
+function miningTargets(ores) {
+  const common = ['diamond', 'iron', 'gold', 'redstone', 'lapis', 'emerald', 'coal', 'copper', 'quartz', 'ancient_debris', 'stone', 'deepslate', 'obsidian'];
+  return [...new Set([...[...ores].sort(), ...common])];
+}
+
 export const miningPage = {
   title: 'Mining',
   render() {
     const rows = perBot('mining');
-    const ores = new Set();
-    for (const row of rows) for (const ore of row.nearbyOres || []) ores.add(ore.name);
-    const mined = sum(rows, (row) => row.oresMined || 0);
+    const oreTotals = new Map();
+    for (const row of rows) {
+      for (const [name, count] of minedEntries(row)) oreTotals.set(name, (oreTotals.get(name) || 0) + count);
+    }
+    const totalMined = [...oreTotals.values()].reduce((total, count) => total + count, 0);
     const nearby = sum(rows, (row) => (row.nearbyOres || []).length);
+    const stopped = rows.filter((row) => row.stopped).length;
+    const reserved = sum(rows, (row) => (row.reservations && row.reservations.count) || 0);
+    const scannedAt = rows.reduce((latest, row) => Math.max(latest, (row.scan && row.scan.at) || 0), 0);
+    const oreNames = [...new Set(rows.flatMap((row) => (row.nearbyOres || []).map((ore) => ore.name)))];
+    const nearest = rows
+      .flatMap((row) => (row.nearbyOres || []).map((ore) => ({ ...ore, bot: row.bot })))
+      .sort((left, right) => (left.distance || 0) - (right.distance || 0))[0] || null;
     return `
       <div class="page">
         ${pageHeader({
-          eyebrow: 'Gameplay', title: 'Mining', description: 'Scan nearby ores and mine them with the bot’s best pickaxe. Targets come from a live world scan, not a static list.',
-          actions: `<button class="button button--primary" type="button" data-command="mine">${icon('pickaxe')} Mine leader</button>`
+          eyebrow: 'Gameplay', title: 'Mining', description: 'Mine exposed ore or bootstrap a missing pickaxe tier. Deep targets are reached by safe shafts; every target is constrained to the shared work zone.',
+          actions: `<button class="button" type="button" data-command="mine stop" data-danger="true" data-confirm-title="Stop mining" data-confirm-message="Stop every active mining job?">${icon('square')} Stop all</button><button class="button button--primary" type="button" data-command="mine">${icon('pickaxe')} Mine leader</button>`
         })}
         <div class="grid grid--stats">
-          ${statCard({ label: 'Ores mined', value: num(mined), iconName: 'pickaxe', tone: 'accent', context: 'Lifetime counter across the fleet' })}
-          ${statCard({ label: 'Nearby ores', value: num(nearby), iconName: 'gem', tone: 'info', context: 'Within each bot’s scan radius' })}
-          ${statCard({ label: 'Bots scanning', value: num(rows.length), iconName: 'radar', tone: 'neutral', context: 'Mining action status sources' })}
-          ${statCard({ label: 'Best pickaxe', value: esc(bestTier(rows)), iconName: 'wrench', tone: 'success', context: 'Highest tier reported; durability is not exposed by the adapter' })}
+          ${statCard({ label: 'Ores mined', value: num(totalMined), iconName: 'pickaxe', tone: totalMined ? 'accent' : 'neutral', context: `${num(oreTotals.size)} ore types across ${num(rows.length)} reporting bots` })}
+          ${statCard({ label: 'Nearby sampled', value: num(nearby), iconName: 'gem', tone: nearby ? 'info' : 'neutral', context: scannedAt ? `Cached status scan · ${timeAgo(scannedAt)}` : 'No status scan has run yet' })}
+          ${statCard({ label: 'Jobs stopped', value: `${num(stopped)}<small> / ${num(rows.length)}</small>`, iconName: 'square', tone: stopped ? 'warning' : 'success', context: 'Stopped jobs resume only when mining is issued again' })}
+          ${statCard({ label: 'Ore reservations', value: num(reserved), iconName: 'scan', tone: reserved ? 'info' : 'neutral', context: 'Short fleet-wide leases on concrete targets' })}
         </div>
         <div class="grid grid--main-side">
           <section class="card">
-            <div class="card-header"><div class="card-title">${icon('target')} Mine nearby</div></div>
+            <div class="card-header"><div class="card-title">${icon('target')} Start mining</div><span class="badge badge--outline">Work-zone confined</span></div>
             <div class="card-body">
-              <form data-mining-form class="form-grid form-grid--3">
+              <form data-mining-form class="form-grid form-grid--2">
                 ${selectBots('mine-bot')}
-                <div class="field"><label class="field-label" for="mine-ore">Ore target</label>
-                  <select class="select" id="mine-ore"><option value="">Nearest ores (auto)</option>${[...ores].sort().map((ore) => `<option value="${esc(ore)}">${esc(humanize(ore))}</option>`).join('')}</select>
+                <div class="field"><label class="field-label" for="mine-target">Ore or block</label>
+                  <input class="input" id="mine-target" name="target" list="mine-targets" placeholder="Auto — nearest exposed ore" autocomplete="off" spellcheck="false">
+                  <datalist id="mine-targets">${miningTargets(oreNames).map((target) => `<option value="${esc(target)}"></option>`).join('')}</datalist>
+                  <div class="field-hint">Leave blank to mine the nearest exposed ores. Named ores use the deep path and verify that an ore was actually removed.</div>
                 </div>
-                <div class="field"><label class="field-label" for="mine-radius">Scan radius</label><input class="input" id="mine-radius" type="number" value="24" min="4" max="32" readonly title="Backend mineNearby uses a 24 block radius"></div>
-                <div class="field field--full"><div class="tiny muted">The backend scans a 24-block radius and mines up to 8 ores per invocation. Selecting a specific ore requires it to be present in the live scan.</div></div>
+                <div class="field field--full"><div class="tiny muted">${icon('scan')} Command scans use a 24-block radius and up to 8 targets. The telemetry card samples a 5-block radius with a per-bot cache so a snapshot cannot stall the tick loop.</div></div>
                 <div class="field field--full"><button class="button button--primary" type="submit">${icon('pickaxe')} Start mining</button></div>
               </form>
             </div>
           </section>
           <aside class="card">
-            <div class="card-header"><div class="card-title">${icon('gem')} Detected ores</div></div>
+            <div class="card-header"><div class="card-title">${icon('gem')} Detected ores</div><span class="tiny muted">${num(nearby)} sampled</span></div>
             <div class="card-body card-body--tight">
-              ${ores.size ? [...ores].sort().slice(0, 14).map((ore) => `<div class="list-item"><span class="list-icon">${icon('gem')}</span><div class="list-main"><div class="list-title">${esc(humanize(ore))}</div><div class="list-sub">in live scan</div></div></div>`).join('') : '<div class="muted small" style="padding:8px">No ores detected in the current scans.</div>'}
+              ${oreNames.length ? oreNames.sort().slice(0, 14).map((ore) => {
+                const samples = rows.flatMap((row) => (row.nearbyOres || []).filter((entry) => entry.name === ore));
+                const closest = samples.sort((left, right) => (left.distance || 0) - (right.distance || 0))[0];
+                return `<div class="list-item"><span class="list-icon">${icon('gem')}</span><div class="list-main"><div class="list-title">${esc(humanize(ore))}</div><div class="list-sub">${num(samples.length)} sampled${closest ? ` · closest ${num(closest.distance)} blocks` : ''}</div></div></div>`;
+              }).join('') : '<div class="muted small" style="padding:8px">No ores detected in the cached status scans.</div>'}
+              ${nearest ? `<div class="callout callout--info" style="margin:10px">${icon('map-pin')}<div><strong>${esc(humanize(nearest.name))}</strong> at ${num(nearest.distance)} blocks from <span class="mono">${esc(nearest.bot)}</span>.</div></div>` : ''}
             </div>
           </aside>
         </div>
         <section class="card" style="margin-top:16px">
-          <div class="card-header"><div class="card-title">${icon('pickaxe')} Mining status</div></div>
+          <div class="card-header"><div class="card-title">${icon('pickaxe')} Mining status</div><span class="tiny muted">${scannedAt ? `scan ${timeAgo(scannedAt)}` : 'awaiting telemetry'}</span></div>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>Bot</th><th>Pickaxe</th><th>Position</th><th>Ores mined</th><th>Nearby</th><th>Top ores</th><th>Counters</th><th>Actions</th></tr></thead>
-              <tbody>${rows.length ? rows.map((row) => `<tr>
-                <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}">${esc(row.bot)}</a></td>
-                <td class="tiny">${esc(row.pickaxe ? humanize(row.pickaxe.name || row.pickaxe) : '—')}</td>
-                <td class="mono tiny">${row.position ? `${row.position.x}, ${row.position.y}, ${row.position.z}` : '—'}</td>
-                <td class="mono">${num(row.oresMined)}</td>
-                <td class="mono">${num((row.nearbyOres || []).length)}</td>
-                <td class="tiny">${esc((row.nearbyOres || []).slice(0, 3).map((ore) => ore.name).join(', ') || '—')}</td>
-                <td class="tiny">${Object.entries(row.stats || {}).slice(0, 3).map(([key, value]) => `${esc(humanize(key))} ${num(value)}`).join(' · ') || '—'}</td>
-                <td>${actionButton('Mine', `mine ${row.bot}`, 'pickaxe')}</td>
-              </tr>`).join('') : `<tr><td colspan="8">${emptyState('No mining status', 'Mining telemetry will appear when the action starts reporting.', 'pickaxe')}</td></tr>`}</tbody>
+              <thead><tr><th>Bot</th><th>State</th><th>Pickaxe</th><th>Work zone</th><th>Mined</th><th>Sampled nearby</th><th>Reservations</th><th>Actions</th></tr></thead>
+              <tbody>${rows.length ? rows.map((row) => {
+                const entries = minedEntries(row).sort((left, right) => right[1] - left[1]);
+                const rowNearby = row.nearbyOres || [];
+                const zone = row.zone || {};
+                return `<tr>
+                  <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}">${esc(row.bot)}</a><div class="mono tiny muted">${row.position ? `${num(row.position.x)}, ${num(row.position.y)}, ${num(row.position.z)}` : 'position unknown'}</div></td>
+                  <td>${row.stopped ? badge('Stopped', 'warn') : badge('Ready', 'ok')}</td>
+                  <td class="tiny">${esc(pickaxeText(row.pickaxe))}</td>
+                  <td class="tiny">${zone.enabled === false ? badge('Disabled', 'neutral') : esc(zone.label || '—')}${row.stats ? `<div class="muted">${Object.entries(row.stats).slice(0, 2).map(([key, value]) => `${esc(humanize(key))} ${num(value)}`).join(' · ')}</div>` : ''}</td>
+                  <td class="mono">${num(minedTotal(row))}${entries.length ? `<div class="tiny muted">${entries.slice(0, 2).map(([name, count]) => `${esc(humanize(name))} ${num(count)}`).join(' · ')}</div>` : ''}</td>
+                  <td class="mono">${num(rowNearby.length)}${rowNearby.length ? `<div class="tiny muted">${rowNearby.slice(0, 2).map((ore) => `${esc(humanize(ore.name))} ${num(ore.distance)}m`).join(' · ')}</div>` : ''}</td>
+                  <td class="tiny">${row.reservations ? `${num(row.reservations.count)} held · ${num(row.reservations.stats && row.reservations.stats.rejected)} conflicts` : '—'}</td>
+                  <td><div class="row gap-1">${actionButton('Mine', `mine ${row.bot}`, 'pickaxe')}${row.stopped ? '' : actionButton('Stop', `mine ${row.bot} stop`, 'square')}</div></td>
+                </tr>`;
+              }).join('') : `<tr><td colspan="8">${emptyState('No mining status', 'Mining telemetry will appear when the action starts reporting.', 'pickaxe')}</td></tr>`}</tbody>
             </table>
           </div>
         </section>
@@ -360,11 +405,11 @@ export const miningPage = {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const bot = form.querySelector('#mine-bot').value;
-      const ore = form.querySelector('#mine-ore').value;
+      const target = form.querySelector('#mine-target').value.trim();
       const button = form.querySelector('button[type="submit"]');
       setButtonLoading(button, true);
       try {
-        const result = await runCommand(`mine ${bot}${ore ? ` ${ore}` : ''}`);
+        const result = await runCommand(`mine ${bot}${target ? ` ${target}` : ''}`);
         const message = resultMessage(result);
         toast({ type: message.type, title: message.title, message: message.message });
       } catch (err) {
@@ -375,15 +420,6 @@ export const miningPage = {
     });
   }
 };
-
-function bestTier(rows) {
-  let best = null;
-  for (const row of rows) {
-    const tier = row.pickaxe && (row.pickaxe.tier ?? row.pickaxe);
-    if (typeof tier === 'number' && (!best || tier > best)) best = tier;
-  }
-  return best === null ? '—' : `Tier ${best}`;
-}
 
 function miningLogs() {
   const logs = state.logs.filter((log) => log.scope === 'mining' || /mine| ore/i.test(log.msg)).slice(-8).reverse();
@@ -645,7 +681,7 @@ export const fishingPage = {
           ${statCard({ label: 'Fish caught', value: num(totalCaught), iconName: 'fish', tone: totalCaught ? 'success' : 'neutral', context: 'Inventory-confirmed catches' })}
           ${statCard({ label: 'Casts', value: num(casts), iconName: 'target', tone: 'accent', context: 'Lifetime cast attempts' })}
           ${statCard({ label: 'Empty casts', value: num(failed), iconName: 'alert', tone: failed ? 'warning' : 'neutral', context: 'No catch, no water or no rod' })}
-          ${statCard({ label: 'Rods ready', value: `${rows.filter((row) => row.rod).length}<small> / ${rows.length || 10}</small>`, iconName: 'package', tone: rows.some((row) => row.rod) ? 'info' : 'warning', context: 'Bots holding a fishing rod' })}
+          ${statCard({ label: 'Rods ready', value: `${rows.filter((row) => row.rod).length}<small> / ${rows.length || botNames().length}</small>`, iconName: 'package', tone: rows.some((row) => row.rod) ? 'info' : 'warning', context: 'Bots holding a fishing rod' })}
         </div>
         <section class="card">
           <div class="card-header"><div class="card-title">${icon('fish')} Shore status</div><span class="tiny muted">${rows.length} bots</span></div>
@@ -704,37 +740,155 @@ export const woodcuttingPage = {
   title: 'Woodcutting',
   render() {
     const rows = perBot('woodcutting');
+    const team = (state.snapshot && state.snapshot.woodcuttingTeam) || null;
+    const catalog = (state.snapshot && state.snapshot.woodcuttingCatalog) || [];
+    const taskTrees = sum(rows, (row) => (row.task && row.task.treesChopped) || 0);
+    const lifeTrees = sum(rows, (row) => (row.lifetime && row.lifetime.treesChopped) || (row.stats && row.stats.treesChopped) || 0);
+    const taskLogs = sum(rows, (row) => (row.task && row.task.logsCollected) || 0);
+    const lifeLogs = sum(rows, (row) => (row.lifetime && row.lifetime.logsCollected) || (row.stats && row.stats.logsCollected) || 0);
+    const stored = sum(rows, (row) => (row.lifetime && row.lifetime.stored) || 0);
+    const openSupport = (team && team.openSupport) || [];
     return `
       <div class="page">
         ${pageHeader({
-          eyebrow: 'Gameplay', title: 'Woodcutting', description: 'Log stocks, sapling reserves and replanting across the fleet. Each run chops nearby trees and replants where possible.',
-          actions: `<button class="button button--primary" type="button" data-fleet-command="chop">${icon('axe')} Chop all</button>`
+          eyebrow: 'Gameplay', title: 'Woodcutting', description: 'Version-aware tree identification, verified chopping, species-correct replanting, storage and fleet roles. Counters are split between the current task and the process lifetime.',
+          actions: `<button class="button button--primary" type="button" data-command="chop">${icon('axe')} Chop all</button><button class="button" type="button" data-wood-scan="${esc((rows[0] && rows[0].bot) || '')}">${icon('scan')} Scan trees</button><button class="button" type="button" data-command="woodcutting plant all">${icon('sprout')} Plant</button><button class="button button--danger-ghost" type="button" data-command="woodcutting stop" data-danger="true" data-confirm-title="Stop woodcutting" data-confirm-message="Stop chopping on every bot? Verified logs already collected are kept.">${icon('stop')} Stop all</button>`
         })}
         <div class="grid grid--stats">
-          ${statCard({ label: 'Logs collected', value: num(sum(rows, (row) => row.logs || 0)), iconName: 'axe', tone: 'accent', context: 'Current log stock across inventories' })}
-          ${statCard({ label: 'Saplings', value: num(sum(rows, (row) => row.saplings || 0)), iconName: 'sprout', tone: 'success', context: 'Available for replanting' })}
-          ${statCard({ label: 'Trees chopped', value: num(sum(rows, (row) => row.treesChopped || 0)), iconName: 'trees', tone: 'neutral', context: 'Lifetime counter' })}
-          ${statCard({ label: 'Replanted', value: num(sum(rows, (row) => row.replanted || 0)), iconName: 'leaf', tone: 'success', context: 'Saplings placed by the action' })}
+          ${statCard({ label: 'Logs held', value: num(sum(rows, (row) => row.logs || 0)), iconName: 'axe', tone: 'accent', context: 'Live inventory across the fleet' })}
+          ${statCard({ label: 'Saplings', value: num(sum(rows, (row) => row.saplings || 0)), iconName: 'sprout', tone: 'success', context: 'Available for species-correct replanting' })}
+          ${statCard({ label: 'Task trees', value: num(taskTrees), iconName: 'trees', tone: 'info', context: 'Verified in the current task window' })}
+          ${statCard({ label: 'Lifetime trees', value: num(lifeTrees), iconName: 'trees', tone: 'neutral', context: 'Verified removals since process start' })}
+          ${statCard({ label: 'Task logs', value: num(taskLogs), iconName: 'package', tone: 'info', context: `Lifetime ${num(lifeLogs)} verified log drops` })}
+          ${statCard({ label: 'Stored / support', value: `${num(stored)}<small> / ${num(openSupport.length)}</small>`, iconName: 'boxes', tone: openSupport.length ? 'warn' : 'success', context: 'Logs deposited at real storage · open support requests' })}
         </div>
         <section class="card">
-          <div class="card-header"><div class="card-title">${icon('axe')} Woodcutting status</div><span class="tiny muted">${rows.length} bots</span></div>
+          <div class="card-header"><div class="card-title">${icon('axe')} Woodcutting status</div><span class="tiny muted">${rows.length} bots · ${num(openSupport.length)} open support</span></div>
           <div class="table-wrap"><table class="table">
-            <thead><tr><th>Bot</th><th>Axe</th><th>Logs</th><th>Saplings</th><th>Reserve target</th><th>Trees chopped</th><th>Replanted</th><th>Counters</th><th>Actions</th></tr></thead>
-            <tbody>${rows.length ? rows.map((row) => `<tr>
-              <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}">${esc(row.bot)}</a></td>
-              <td class="tiny">${esc(row.axe ? humanize(row.axe.name || row.axe) : '—')}</td>
-              <td class="mono">${num(row.logs)}</td>
-              <td class="mono">${num(row.saplings)}</td>
-              <td class="mono">${row.reserveTarget ?? '—'}</td>
-              <td class="mono">${num(row.treesChopped)}</td>
-              <td class="mono">${num(row.replanted)}</td>
-              <td class="tiny">${Object.entries(row.stats || {}).slice(0, 3).map(([key, value]) => `${esc(humanize(key))} ${num(value)}`).join(' · ') || '—'}</td>
-              <td>${actionButton('Chop', `chop ${row.bot}`, 'axe')}</td>
-            </tr>`).join('') : `<tr><td colspan="9">${emptyState('No woodcutting status', 'The action has not reported yet.', 'axe')}</td></tr>`}</tbody>
+            <thead><tr><th>Bot</th><th>Role</th><th>Axe</th><th>Logs</th><th>Saplings</th><th>Task</th><th>Lifetime</th><th>Last tree</th><th>Actions</th></tr></thead>
+            <tbody>${rows.length ? rows.map((row) => {
+              const task = row.task || {};
+              const life = row.lifetime || row.stats || {};
+              const tree = row.lastTree;
+              return `<tr>
+                <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}">${esc(row.bot)}</a>${row.stopped ? ` ${badge('Stopped', 'warn')}` : ''}</td>
+                <td>${badge(row.role || 'CHOPPER', row.role === 'CHOPPER' ? 'neutral' : 'info')}</td>
+                <td class="tiny">${esc(row.axe ? humanize(row.axe.name || row.axe) : 'hand')}${row.axe && row.axe.durability !== undefined && row.axe.durability !== null ? `<br><span class="muted">${num(row.axe.durability)}${row.axe.maxDurability ? ` / ${num(row.axe.maxDurability)}` : ''}</span>` : ''}</td>
+                <td class="mono">${num(row.logs)}</td>
+                <td class="mono">${num(row.saplings)}</td>
+                <td class="tiny">${num(task.treesChopped || 0)} trees<br>${num(task.logsCollected || 0)} logs<br>${num(task.replanted || 0)} planted</td>
+                <td class="tiny">${num(life.treesChopped || 0)} trees<br>${num(life.logsCollected || 0)} logs<br>${num(life.stored || 0)} stored</td>
+                <td class="tiny">${tree ? `${esc(humanize(tree.type || 'tree'))}<br>${num(tree.chopped)} logs · ${esc(tree.footprint || '')}<br><span class="muted">${tree.confidence !== undefined ? `${Math.round(tree.confidence * 100)}% confidence` : ''}</span>` : '—'}</td>
+                <td><div class="row row--wrap">
+                  ${actionButton('Chop', `woodcutting chop ${row.bot}`, 'axe')}
+                  <button class="button button--sm" type="button" data-wood-scan="${esc(row.bot)}">${icon('scan')} Scan</button>
+                  ${actionButton('Plant', `woodcutting plant ${row.bot}`, 'sprout')}
+                  ${actionButton('Store', `woodcutting store ${row.bot}`, 'boxes')}
+                  ${actionButton('Relocate', `woodcutting relocate ${row.bot}`, 'compass')}
+                  ${actionButton('Stop', `woodcutting stop ${row.bot}`, 'stop', { danger: true, confirmTitle: 'Stop this bot', confirmMessage: `Stop woodcutting on ${row.bot}?` })}
+                </div></td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="9">${emptyState('No woodcutting status', 'The action has not reported yet.', 'axe')}</td></tr>`}</tbody>
           </table></div>
         </section>
-        <div class="callout callout--info">${icon('info')}<div>Replanting is attempted automatically for every harvested tree when saplings are available. Sapling counts above come from live inventories.</div></div>
+        <div class="grid grid--2" style="align-items:start;gap:16px;margin-top:16px">
+          <section class="card">
+            <div class="card-header"><div class="card-title">${icon('users')} Fleet roles</div><span class="tiny muted">${team ? Object.entries(team.byRole || {}).map(([role, count]) => `${esc(humanize(role))} ${num(count)}`).join(' · ') : 'No team state'}</span></div>
+            <div class="card-body">
+              <p class="muted">CHOPPER harvests, SCOUT explores farther, HAULER deposits logs, PLANTER plants spare saplings, GUARD keeps a defensive watch. Roles change support behaviour, never verification.</p>
+              <form class="row row--wrap" data-wood-role>
+                <select class="select select--sm" name="bot" aria-label="Woodcutting bot">${botNames().map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select>
+                <select class="select select--sm" name="role" aria-label="Woodcutting role">${['CHOPPER', 'SCOUT', 'HAULER', 'PLANTER', 'GUARD'].map((role) => `<option value="${role}">${humanize(role)}</option>`).join('')}</select>
+                <button class="button button--sm" type="submit">${icon('check')} Assign role</button>
+                <button class="button button--sm" type="button" data-command="woodcutting team auto">${icon('zap')} Auto-assign</button>
+              </form>
+              <div class="table-wrap" style="margin-top:10px"><table class="table"><thead><tr><th>Bot</th><th>Role</th><th>Task trees</th><th>Lifetime</th></tr></thead><tbody>
+                ${team && team.rows ? team.rows.map((row) => `<tr><td class="mono">${esc(row.bot)}</td><td>${badge(row.role, 'info')}</td><td class="mono">${num((row.task && row.task.treesChopped) || 0)}</td><td class="mono">${num(row.treesChopped || 0)}</td></tr>`).join('') : '<tr><td colspan="4" class="muted">No team rows.</td></tr>'}
+              </tbody></table></div>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-header"><div class="card-title">${icon('flag')} Support requests</div><span class="tiny muted">${num(openSupport.length)} open</span></div>
+            <div class="card-body">
+              ${openSupport.length ? openSupport.map((request) => `<div class="row row--between" style="gap:10px;margin-bottom:8px"><span class="tiny"><strong>${esc(request.bot || 'fleet')}</strong> · ${esc(request.kind)}${request.detail ? ` · ${esc(request.detail)}` : ''}</span><button class="button button--sm" type="button" data-command="woodcutting support fulfil ${esc(request.id)}">Fulfil</button></div>`).join('') : emptyState('No open support requests', 'Bots ask for help when a tree, axe or storage trip needs another pair of hands.', 'flag')}
+              <form class="row row--wrap" data-wood-support style="margin-top:10px">
+                <select class="select select--sm" name="bot" aria-label="Requesting bot">${botNames().map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select>
+                <input class="input input--sm" name="kind" placeholder="kind (axe/storage/tree)" maxlength="24">
+                <button class="button button--sm" type="submit">${icon('flag')} Request help</button>
+              </form>
+            </div>
+          </section>
+        </div>
+        <section class="card" style="margin-top:16px">
+          <div class="card-header"><div class="card-title">${icon('book-open')} Tree catalogue</div><span class="tiny muted">Version-aware · newer species are flagged when the server predates them</span></div>
+          <div class="card-body chips">
+            ${catalog.length ? catalog.map((entry) => `<span class="chip" title="${esc((entry.logs || []).join(', '))}">${esc(entry.label)} <span class="tiny muted">since ${esc(entry.since)} · ${entry.footprint === 2 ? '2x2' : '1x1'}${entry.supported ? '' : ' · newer than server'}</span></span>`).join('') : '<span class="muted">Catalogue unavailable.</span>'}
+          </div>
+        </section>
+        <div class="callout callout--info">${icon('info')}<div>Every harvested tree is confirmed block-by-block. A failed dig, an unreachable upper log or a full inventory is reported honestly instead of being counted as wood. Replanting uses the harvested species, including dark oak's 2x2 sapling rule.</div></div>
       </div>`;
+  },
+  mount(root) {
+    for (const button of root.querySelectorAll('[data-wood-scan]')) {
+      button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        const bot = button.dataset.woodScan || (botNames()[0] || '');
+        if (!bot) return;
+        setButtonLoading(button, true);
+        try {
+          const result = await runCommand(`woodcutting trees ${bot} 32`);
+          const payload = payloadOf(result);
+          const trees = payload.trees || [];
+          const message = trees.length
+            ? trees.slice(0, 4).map((tree) => `${humanize(tree.label || tree.type || 'tree')} at ${tree.base.x},${tree.base.y},${tree.base.z} · ${tree.count} logs · ${Math.round((tree.confidence || 0) * 100)}%`).join(' · ')
+            : (payload.error || 'No tree passed the confidence and work-zone checks in 32 blocks.');
+          toast({
+            type: trees.length ? 'success' : 'info',
+            title: `${trees.length} tree${trees.length === 1 ? '' : 's'} identified`,
+            message,
+            duration: 8000
+          });
+        } catch (err) {
+          toast({ type: 'error', title: 'Tree scan failed', message: err.message });
+        } finally {
+          setButtonLoading(button, false);
+        }
+      });
+    }
+    const roleForm = root.querySelector('[data-wood-role]');
+    if (roleForm) roleForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = new FormData(roleForm);
+      const button = roleForm.querySelector('button[type="submit"]');
+      setButtonLoading(button, true);
+      try {
+        const result = await runCommand(`woodcutting team assign ${data.get('bot')} ${data.get('role')}`);
+        const message = resultMessage(result);
+        toast({ type: message.type, title: message.title, message: message.message });
+      } catch (err) {
+        toast({ type: 'error', title: 'Role assignment failed', message: err.message });
+      } finally {
+        setButtonLoading(button, false);
+      }
+    });
+    const supportForm = root.querySelector('[data-wood-support]');
+    if (supportForm) supportForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = new FormData(supportForm);
+      const kind = String(data.get('kind') || 'HELP').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || 'HELP';
+      const button = supportForm.querySelector('button[type="submit"]');
+      setButtonLoading(button, true);
+      try {
+        const result = await runCommand(`woodcutting support request ${data.get('bot')} ${kind}`);
+        const message = resultMessage(result);
+        toast({ type: message.type, title: message.title, message: message.message });
+        supportForm.reset();
+      } catch (err) {
+        toast({ type: 'error', title: 'Support request failed', message: err.message });
+      } finally {
+        setButtonLoading(button, false);
+      }
+    });
   }
 };
 
@@ -754,7 +908,7 @@ export const farmingPage = {
           ${statCard({ label: 'Animals', value: num(sum(rows, (row) => row.animals || 0)), iconName: 'heart', tone: 'neutral', context: 'Nearby animals reported' })}
           ${statCard({ label: 'Harvested', value: num(sum(rows, (row) => (row.stats && row.stats.harvested) || 0)), iconName: 'wheat', tone: 'success', context: 'Lifetime harvest counter' })}
           ${statCard({ label: 'Replanted', value: num(sum(rows, (row) => (row.stats && row.stats.replanted) || 0)), iconName: 'leaf', tone: 'info', context: 'Successful replants after harvest' })}
-          ${statCard({ label: 'Offspring', value: num(sum(rows, (row) => (row.stats && row.stats.animalsBred) || 0)), iconName: 'heart', tone: 'success', context: 'Animal pairs bred' })}
+          ${statCard({ label: 'Breeds', value: num(sum(rows, (row) => (row.stats && row.stats.animalsBred) || 0)), iconName: 'heart', tone: 'success', context: 'Successful animal breeding operations' })}
         </div>
         <div class="grid grid--2">
           ${rows.length ? rows.map((row) => `<section class="card">

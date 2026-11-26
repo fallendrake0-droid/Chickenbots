@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('http');
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -10,6 +11,7 @@ const { toSpongeSchematic, toJSON } = require('../schematics/format');
 const { exportSchematic } = require('../building/schematicIO');
 const logStore = require('../logStore');
 const { worldSnapshot } = require('./worldView');
+const { buildInfo } = require('./buildInfo');
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
@@ -47,6 +49,8 @@ function dashboardBindProblem({ host, token, allowInsecure } = {}) {
  */
 function createDashboard(services, { port = config.dashboard.port, host = config.dashboard.host } = {}) {
   const app = express();
+  const build = buildInfo();
+  const versioned = (url) => `${url}${url.includes('?') ? '&' : '?'}v=${build.frontendHash}`;
   app.disable('x-powered-by');
   app.set('trust proxy', false);
 
@@ -78,6 +82,7 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     return match ? match[1] : '';
   };
   app.use((req, res, next) => {
+    res.setHeader('X-Chickenbots-Build', build.buildId);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
@@ -116,14 +121,80 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     next();
   });
   const publicDir = path.join(__dirname, 'public');
+  const indexFile = path.join(publicDir, 'index.html');
+
+  // The application shell is never cached. Every asset URL carries the content
+  // hash of the whole frontend, so a source change produces new module URLs
+  // instead of leaving old ES modules in the browser's module cache.
+  const renderIndex = (req, res) => {
+    try {
+      let html = fs.readFileSync(indexFile, 'utf8');
+      html = html.replace(/\b(href|src)="((?:\.\/)?(?:css|js)\/[^"?#]+)(?:\?[^"]*)?"/g, (match, attribute, url) => `${attribute}="${versioned(url)}"`);
+      html = html.replace('<head>', `<head>\n  <meta name="chickenbots-build" content="${build.buildId}" />\n  <meta name="chickenbots-frontend" content="${build.frontendHash}" />\n  <meta name="chickenbots-backend" content="${build.backendHash}" />`);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.type('html').send(html);
+    } catch (err) {
+      res.status(500).type('text').send(`dashboard shell unavailable: ${err.message}`);
+    }
+  };
+  app.get(['/', '/index.html'], renderIndex);
+
+  const assetFile = (urlPath) => {
+    let decoded;
+    try { decoded = decodeURIComponent(urlPath); } catch (_) { return null; }
+    const file = path.resolve(publicDir, `.${decoded.startsWith('/') ? '' : '/'}${decoded}`);
+    return file.startsWith(`${publicDir}${path.sep}`) ? file : null;
+  };
+  const sendVersionedAsset = (req, res, next, { rewriteModules = false } = {}) => {
+    const file = assetFile(req.path);
+    if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile()) return next();
+    try {
+      let body = fs.readFileSync(file);
+      if (rewriteModules) {
+        // ES modules cache by URL. Rewriting every relative import to the same
+        // content hash makes nested modules cache-safe as well.
+        body = body.toString('utf8').replace(/(['"])(\.{1,2}\/[^'"]+\.js)\1/g, (match, quote, target) => `${quote}${target}?v=${build.frontendHash}${quote}`);
+      }
+      const current = req.query.v === build.frontendHash;
+      res.setHeader('Cache-Control', current ? 'public, max-age=31536000, immutable' : 'no-cache');
+      res.type(rewriteModules ? 'application/javascript; charset=utf-8' : 'text/css; charset=utf-8');
+      res.send(body);
+    } catch (err) {
+      next(err);
+    }
+  };
+  app.get(/^\/js\/.*\.js$/, (req, res, next) => sendVersionedAsset(req, res, next, { rewriteModules: true }));
+  app.get(/^\/css\/.*\.css$/, (req, res, next) => sendVersionedAsset(req, res, next));
   app.use(express.static(publicDir, {
-    index: 'index.html',
+    index: false,
     setHeaders(res, file) {
-      // A running dashboard is frequently updated during commissioning; force
-      // browsers to revalidate JS/CSS/HTML instead of showing an old roster.
+      // Unversioned fallbacks and the HTML shell must revalidate. Versioned
+      // JS/CSS is served above with an immutable one-year policy.
       if (/\.(?:html|js|css)$/i.test(file)) res.setHeader('Cache-Control', 'no-cache');
     }
   }));
+  // Hash-routed views use `#/route`, so the browser never requests those
+  // paths during navigation. A refresh on a typed-in deep link such as
+  // `/players` should still boot the shell, but a genuinely unknown path must
+  // stay a 404. Keep this list aligned with NAV_GROUPS in public/js/router.js.
+  const SHELL_ROUTES = new Set([
+    'overview', 'world', 'activity', 'notifications',
+    'bots', 'players', 'team', 'profiles', 'connections',
+    'survival', 'inventory', 'mining', 'excavation', 'woodcutting', 'farming',
+    'fishing', 'exploration', 'sleep',
+    'combat', 'combat-team', 'combat-gear', 'combat-supplies', 'combat-targets',
+    'operations', 'builder-projects', 'site-survey', 'site-prep', 'lighting',
+    'material-plan', 'warehouse', 'crew', 'qa', 'home', 'building', 'builder',
+    'schematics', 'projects', 'history', 'tasks', 'logs', 'settings'
+  ]);
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path === '/healthz' || req.path.includes('.')) return next();
+    const segment = req.path.split('/').filter(Boolean)[0] || '';
+    if (!SHELL_ROUTES.has(segment)) return next();
+    return renderIndex(req, res);
+  });
 
   // Snapshot assembly takes a few tens of milliseconds. Keep only a very
   // short coalescing cache for concurrent callers, and always force a fresh
@@ -224,7 +295,11 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   };
 
   app.get('/healthz', (req, res) => {
-    res.json({ ok: true, uptimeMs: process.uptime() * 1000, mode: services.mode || 'live' });
+    res.json({ ok: true, uptimeMs: process.uptime() * 1000, mode: services.mode || 'live', build });
+  });
+
+  app.get('/api/build', (req, res) => {
+    res.json({ ok: true, build: { ...build, uptimeMs: process.uptime() * 1000, mode: services.mode || 'live' } });
   });
 
   app.get('/api/state', (req, res) => {

@@ -160,8 +160,10 @@ tests/                      team, excavation, construction, schematics, builder,
   gathers wood/stone, mines iron and coal, smelts three ingots, crafts the iron pick, then mines the
   diamond. The same gate covers `mine stone`, `mine obsidian`, `mine ancient_debris` and every other
   catalogued target; success still means a block was actually removed.
-* Woodcutting chops trunks bottom-up, clears attached leaves, collects saplings and replants on the
-  original soil. Fleet-wide tree/ore leases mean two bots never walk to the same trunk or vein;
+* Woodcutting chops trunks bottom-up from the nearest reachable layer, tries adjacent stances,
+  clears attached leaves, collects saplings and replants on the original soil. Every removal and
+  inventory gain is verified rather than inferred. Fleet-wide tree/ore leases mean two bots never
+  walk to the same trunk or vein;
   expired leases are released on disconnect. All tree and mining targets are confined to a shared
   **100x100 work zone centred on home** (`WORK_ZONE_SIZE`), so a bot cannot chase a tree out of the
   area and get lost. The bot returns to the zone before scanning and reports `OUTSIDE_WORK_ZONE`
@@ -224,7 +226,7 @@ Commands (all real state):
 combat [status|on|off|start|stop|mode <TEAM_FIGHT|DEFENSIVE|GUARD|FOLLOW|ARENA|BOSS|ESCORT|RETREAT>|guard x y z|duel <player>|rescue|heal]
 pve [on|off|status]            pvp [on|off|status]         target [add|remove|protect|unprotect|clear|list] <player>
 follow <bot|player> [distance] | follow stop
-players [list|near [radius]|info <player>|following [bot|all]|watches [bot|all]|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
+players [list [category]|near [radius]|info <player>|history <player>|events|refresh|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|observe <player> [bot|all]|unwatch [player] [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>|note <player> <text>|tag <player> <tag>|untag <player> <tag>|forget <player>|pvp [status|on|off]|mode <EXPLICIT|ARENA|DEFENSIVE>|target [add|remove|list] [player]|protect|trust|unprotect|untrust <player>|arena [list|on [radius] [name]|add <name> <x1 y1 z1 x2 y2 z2>|remove <name>|clear]]
 gear [status|optimise|durability|progression|layout] [bot]         totem [status|reserve [n]|refill]
 food [status] [bot]            potions [status] [bot]        guard x y z [bot] | guard stop
 duel <player> confirm          arena on [radius] | arena off
@@ -422,6 +424,9 @@ inventory [bot]                eat [bot]                       sleep [bot|all|au
 survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
 auto <eat|healing|armour|tools|crafting|shield|weapon|totem|potions|food> [on|off] [bot|all]
 mine [bot|all] [ore|block|stop]   chop [bot|all] [species|stop]   farm [bot|all] [plant [crop] [count]|maintain|status|crop|animals|stop]
+woodcutting [status|stats|trees [type] [radius]|chop [type]|store|relocate|plant|stop] [bot|all]
+woodcutting team [status|auto|assign <bot> <CHOPPER|SCOUT|HAULER|PLANTER|GUARD>]
+woodcutting support [request <kind> [count]|fulfil <id>] [bot|all]   woodcutting catalog [version]
 fish [bot|all] [casts]          fish stop [bot|all]            eat [bot|all]
 batch <bot|all> <action> [args] then <action> [args] ...   # sequential, per-bot results
 bot all <action>                # one command tasks every gameplay-ready bot
@@ -430,7 +435,7 @@ defend [bot|stop]              explore [bot] [steps] | explore stop [bot|all]
 combat [status|on|off|start|stop|mode|guard|duel|rescue]   pve [on|off|status]   pvp [on|off|status]
 target [add|remove|protect|unprotect|clear|list] <player>                   arena on [radius]|off
 follow <bot|player> [distance] | follow stop
-players [list|near [radius]|info <player>|following [bot|all]|watches [bot|all]|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text> [--bot <bot>]|greet <player>]
+players [list [category]|near [radius]|info <player>|history <player>|events|refresh|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|observe <player> [bot|all]|unwatch [player] [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>|note <player> <text>|tag <player> <tag>|untag <player> <tag>|forget <player>|pvp [status|on|off]|mode <EXPLICIT|ARENA|DEFENSIVE>|target [add|remove|list] [player]|protect|trust|unprotect|untrust <player>|arena [list|on [radius] [name]|add <name> <x1 y1 z1 x2 y2 z2>|remove <name>|clear]]
 gear [status|optimise|durability|progression|layout] [bot]    totem [status|reserve [n]|refill]   food|potions [status] [bot]
 guard x y z [bot] | guard stop             duel <player> confirm
 team combat [status|on|off|retreat|regroup|rescue|heal|attack <player>]
@@ -498,12 +503,17 @@ that related tasks sit together rather than in one long tab strip:
   FPS/frame/triangle/draw-call instrumentation and a 2D fallback when WebGL is unavailable.
 * **Activity** – live activity, notifications and logs.
 * **Fleet** – all bots, **Players**, team board, profiles and connection management. The Players
-  page lists every player any bot has seen (plus server-list players with no position yet) and
-  offers follow, unfollow, guard, escort, come, greet, give-item, drop-loot and message controls.
-  A dedicated **Following players** section lists every active follow with a per-row Unfollow
-  button and an Unfollow all action; unfollow clears only follow watches, never guard or escort.
+  page lists every player any bot has seen (plus server-list players with no position yet), with
+  presence/movement freshness, UUID-backed renames, notes, tags and history. Follow, unfollow,
+  guard, escort, observe/unwatch, come, greet, give-item, drop-loot and message controls are live.
+  The PvP policy panel edits the explicit target list, protection/trust and arena bounds, and
+  selects EXPLICIT, ARENA or DEFENSIVE mode. A dedicated **Following players & watches** section
+  lists active follows, guards, escorts and passive observations with per-row cancel actions;
+  unfollow clears only follow watches, never guard or escort.
 * **Gameplay** – survival, inventory, mining, excavation, woodcutting, farming, fishing,
-  exploration and sleep.
+  exploration and sleep. The Woodcutting section shows per-bot role, axe, verified log/sapling
+  counts, reservations, support requests and catalogue data, with live scan, chop, store, relocate,
+  plant, stop, role-assignment and support actions. Every value comes from the runtime snapshot.
 * **Combat Operations** – combat overview and live engagement log, team roles/focus/retreat,
   per-bot equipment and durability, totem/supply ledger, explicit PvP targets, protection list and
   arena configuration.

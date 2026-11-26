@@ -153,6 +153,11 @@ const config = {
     // installed mineflayer/minecraft-protocol pair supports. 'auto' pings the
     // server and negotiates, which is the safe default.
     auth: env('MC_AUTH', 'offline'),
+    // Cosmetic join command. The fleet applies the operator-selected skin after
+    // spawn+authentication, never before the session is actually ready.
+    skinOnJoin: envBool('MC_SKIN_ON_JOIN', true),
+    skinCommand: env('MC_SKIN_COMMAND', '/skin uH3WR2v0ti0uTHJ'),
+    skinDelayMs: envInt('MC_SKIN_DELAY_MS', 1500),
     // Each connection stage has its own budget. A single 45s timeout could not
     // distinguish a dead TCP connect from a server that accepts the socket but
     // never finishes login, spawn or AuthMe, which made the join queue opaque.

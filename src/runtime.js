@@ -23,6 +23,7 @@ const { RealBot } = require('./bot/realBot');
 const { isThrottleError, isJoinStallError, reconnectDelay, staggerDelay, sleep } = require('./bot/connection');
 const { JoinScheduler } = require('./bot/joinScheduler');
 const { resolveServerVersion } = require('./bot/serverVersion');
+const { WoodcuttingTeam } = require('./woodcutting/team');
 const { connectionStatus } = require('./bot/status');
 const { FleetCongestion } = require('./navigation/congestion');
 
@@ -242,6 +243,24 @@ class TeamRuntime {
       actions.updateHome(this.home);
       this.ledger.updateBotInventory(bot.name, bot.inventory);
     }
+    // Player trust/target state is team-wide, not five drifting copies. Every
+    // controller shares one policy instance so removing a target or protecting
+    // a player takes effect everywhere immediately.
+    const sharedPvp = this.actions.list()[0] ? this.actions.list()[0].combat.pvp : null;
+    if (sharedPvp) {
+      for (const actions of this.actions.list()) {
+        actions.combat.pvp = sharedPvp;
+        actions.combat.playerRegistry = this.players;
+      }
+      this.players.attachPolicy(sharedPvp);
+    }
+    this.woodcuttingTeam = new WoodcuttingTeam({
+      controllers: this.actions.list().map((actions) => actions.woodcutting),
+      reservations: this.reservations
+    });
+    const woodVersion = this.serverVersion || (config.building && config.building.minecraftVersion !== 'auto'
+      ? config.building.minecraftVersion : null);
+    for (const actions of this.actions.list()) actions.woodcutting.setVersion(woodVersion);
     this.memory.setHome({ position: this.home, setAt: Date.now() });
     // Region excavation is outside the action task loop, so give it the same
     // home-chest overflow handler as the normal mining/chopping assignments.
@@ -270,6 +289,7 @@ class TeamRuntime {
       taskBoard: this.board, ledger: this.ledger, comms: this.comms, excavation: this.excavation,
       library: this.library, bots: this.bots, actions: this.actions, builders: this.builders,
       construction: this.construction, combatTeam: this.combatTeam, players: this.players,
+      woodcuttingTeam: this.woodcuttingTeam,
       imported: this.imported, world: this.world, runtime: this
     };
     this.services = services;

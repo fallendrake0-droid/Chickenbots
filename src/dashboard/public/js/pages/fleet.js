@@ -34,7 +34,7 @@ export const botsPage = {
           </div>
         </div>
         <div class="grid grid--stats">
-          ${statCard({ label: 'Online', value: `${online.length}<small> / ${fleet.length || 10}</small>`, iconName: 'wifi', tone: fleet.length && online.length === fleet.length ? 'success' : online.length ? 'warning' : 'danger', context: `${fleet.filter((bot) => !botOnline(bot)).length} not online` })}
+          ${statCard({ label: 'Online', value: `${online.length}<small> / ${fleet.length || botNames().length}</small>`, iconName: 'wifi', tone: fleet.length && online.length === fleet.length ? 'success' : online.length ? 'warning' : 'danger', context: `${fleet.filter((bot) => !botOnline(bot)).length} not online` })}
           ${statCard({ label: 'Average health', value: `${avgHealth.toFixed(1)}<small>/20</small>`, iconName: 'heart', tone: avgHealth >= 16 ? 'success' : avgHealth >= 10 ? 'warning' : 'danger', progressValue: avgHealth, progressMax: 20 })}
           ${statCard({ label: 'Active tasks', value: num(tasksForAll().filter((task) => task.status === 'ACTIVE').length), iconName: 'clipboard', tone: 'accent', context: `${num(tasksForAll().filter((task) => task.claimedBy).length)} claimed` })}
           ${statCard({ label: 'Alerts', value: num((overview().alerts || []).length), iconName: 'alert', tone: (overview().alerts || []).length ? 'warning' : 'success', context: 'Derived from live bot and task state' })}
@@ -215,7 +215,13 @@ function profileSummary(bot, actions, team, name) {
                 ['Last packet', esc(lastPacket)],
                 ['Dimension', esc(bot.dimension || '—')],
                 ['Position', esc(positionText(bot.position)), true],
-                ['Deaths', num(bot.deaths || 0)]
+                ['Deaths', num(bot.deaths || 0)],
+                ['Join skin', (() => {
+                  const skin = bot.joinSkin;
+                  if (!skin || !skin.enabled) return badge('Disabled', 'neutral');
+                  if (skin.sent) return badge(`Applied ${new Date(skin.at).toLocaleTimeString()}`, 'ok');
+                  return badge('Pending after spawn', 'info');
+                })()]
               ], { htmlValues: true });
             })()}
             <div class="row gap-2" style="margin-top:12px">
@@ -588,7 +594,7 @@ export const teamPage = {
         })}
         <div class="grid grid--stats">
           ${statCard({ label: 'Leader', value: leader ? esc(leader) : 'Not elected', iconName: 'crown', tone: leader ? 'accent' : 'warning', context: `Formation ${esc(stateTeam.formation || '—')}` })}
-          ${statCard({ label: 'Team online', value: `${stateTeam.online ?? members.filter((m) => m.online).length}<small> / ${members.length || 10}</small>`, iconName: 'users', tone: members.length && (stateTeam.online ?? members.filter((m) => m.online).length) === members.length ? 'success' : 'warning', context: `${num(members.filter((m) => m.emergency).length)} emergencies` })}
+          ${statCard({ label: 'Team online', value: `${stateTeam.online ?? members.filter((m) => m.online).length}<small> / ${members.length || botNames().length}</small>`, iconName: 'users', tone: members.length && (stateTeam.online ?? members.filter((m) => m.online).length) === members.length ? 'success' : 'warning', context: `${num(members.filter((m) => m.emergency).length)} emergencies` })}
           ${statCard({ label: 'Task board', value: num(tasks.length), iconName: 'clipboard', tone: 'accent', context: `${num(counts.ACTIVE || 0)} active · ${num(counts.PENDING || 0)} pending · ${num(counts.FAILED || 0)} failed` })}
           ${statCard({ label: 'Locks / regions', value: `${num(stateTeam.separation ? Object.keys(stateTeam.separation).length : 0)}<small> sep</small>`, iconName: 'lock', tone: 'neutral', context: `${num((state.snapshot && state.snapshot.team && state.snapshot.team.locks || []).length)} locks · ${num((state.snapshot && state.snapshot.team && state.snapshot.team.deadlocks || []).length)} deadlocks` })}
         </div>
@@ -700,7 +706,7 @@ export const connectionsPage = {
         ${server.versionError ? `<div class="callout callout--danger">${icon('alert')}<div><strong>Server version unresolved.</strong> <span class="mono">${esc(server.versionError)}</span> No bot login sockets are opened until a valid version is resolved.</div></div>` : ''}
         <div class="callout callout--info">${icon('shield')}<div><strong>Connection gate.</strong> The runtime currently reports <span class="mono">${runtime.autonomyAllowed ? 'autonomy allowed' : 'autonomy gated'}</span>. Bots use <span class="mono">${esc(((config.server && config.server.joinIntervalMs) ?? 0) / 1000)}s</span> artificial join spacing, at <span class="mono">${esc(server.host || '—')}:${esc(server.port || '—')}</span> (${esc(server.resolvedVersion || server.version || 'version unknown')}). Reconnect and disconnect are real runtime actions.</div></div>
         <div class="grid grid--stats">
-          ${statCard({ label: 'Configured roster', value: num((config.roster || []).length || 10), iconName: 'users', tone: 'neutral', context: 'Fixed usernames from config' })}
+          ${statCard({ label: 'Configured roster', value: num((config.roster || []).length || botNames().length), iconName: 'users', tone: 'neutral', context: 'Fixed usernames from config' })}
           ${statCard({ label: 'Gameplay ready', value: `${num(rows.filter((bot) => bot.ready || bot.gameplayReady).length)}<small> / ${rows.length}</small>`, iconName: 'check-circle', tone: rows.length && rows.every((bot) => bot.ready || bot.gameplayReady) ? 'success' : 'warning', context: 'Online is counted separately from gameplay readiness' })}
           ${statCard({ label: 'Auth failures', value: num(rows.filter((bot) => bot.status === 'auth_failed').length), iconName: 'key', tone: rows.some((bot) => bot.status === 'auth_failed') ? 'warning' : 'success', context: 'Password rejected or timed out' })}
           ${statCard({ label: 'Errors reported', value: num(rows.filter((bot) => bot.lastError).length), iconName: 'alert', tone: rows.some((bot) => bot.lastError) ? 'danger' : 'success', context: 'Latest adapter error per bot' })}
@@ -760,7 +766,8 @@ export const connectionsPage = {
                     ['Last inbound', c.lastEventAgeMs != null ? `${duration(c.lastEventAgeMs)} ago` : '—'],
                     ['Last failure', c.failure ? esc(`${c.failure.code} in ${c.failure.stage}: ${c.failure.error}`) : '—'],
                     ['Retry', retry ? `attempt ${num(retry.attempt || 0)}${retry.nextRetryAt ? ` · next in ${duration(Math.max(0, retry.nextRetryAt - Date.now()))}` : ''}${retry.lastError ? ` · ${esc(String(retry.lastError).slice(0, 120))}` : ''}` : '—'],
-                    ['Last disconnect', last ? esc(`${last.reason} · ${last.state} · spawned=${last.spawned} auth=${last.authenticated} · ${new Date(last.at).toLocaleTimeString()}`) : '—']
+                    ['Last disconnect', last ? esc(`${last.reason} · ${last.state} · spawned=${last.spawned} auth=${last.authenticated} · ${new Date(last.at).toLocaleTimeString()}`) : '—'],
+                    ['Join skin', row.joinSkin ? (row.joinSkin.sent ? `sent ${esc(row.joinSkin.command || '')} · ${new Date(row.joinSkin.at).toLocaleTimeString()}` : row.joinSkin.enabled ? `pending (${esc(row.joinSkin.command || '')}, ${num(row.joinSkin.delayMs)}ms after ready)` : 'disabled') : 'not reported']
                   ])}
                   <div class="timeline" style="margin-top:8px">
                     ${timeline.map((entry) => `<div class="activity-item"><span class="activity-icon">${icon('chevron-right')}</span><div class="activity-main"><div>${esc(entry.kind === 'state' ? `${entry.from || '—'} → ${entry.to}` : entry.kind === 'stage' ? `stage: ${entry.stage}` : entry.kind === 'event' ? `event: ${entry.event}` : entry.kind)}</div><div class="mono">${esc(new Date(entry.at).toLocaleTimeString())}${entry.detail ? ` · ${esc(entry.detail)}` : ''}</div></div></div>`).join('') || '<div class="muted small">No lifecycle events recorded.</div>'}

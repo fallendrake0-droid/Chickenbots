@@ -44,6 +44,7 @@ async function request(path, { method = 'GET', body = null, timeoutMs = 25000 } 
 export const api = {
   state: () => request('/api/state'),
   health: () => request('/healthz', { timeoutMs: 5000 }),
+  buildInfo: () => request('/api/build', { timeoutMs: 5000 }),
   commands: () => request('/api/commands'),
   execute: (line, { confirm = false, operator = 'dashboard' } = {}) =>
     request('/api/command', { method: 'POST', body: { line, confirm, operator }, timeoutMs: 120000 }),

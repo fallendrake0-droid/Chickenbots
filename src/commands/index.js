@@ -16,6 +16,7 @@ const { normalizeMineTarget, isMineableTarget, isOreName, BLOCK_TIERS } = requir
 const { workZone } = require('../world/workZone');
 const { planRoute } = require('../navigation/planner');
 const { goalPosition } = require('../navigation/standability');
+const { catalogue } = require('../woodcutting/catalog');
 
 const TASK_TYPES = new Set([
   'CHOP_WOOD', 'MINE_ORE', 'MINE_BLOCK', 'FARM_CROP', 'FARM_ANIMAL', 'BUILD_BLOCK', 'BUILD_PHASE', 'EXCAVATE_REGION',
@@ -925,6 +926,10 @@ function registerAll(services, registry) {
       const named = isBotName(services, args[0]) ? args[0] : null;
       const requested = String(named ? args[1] || '' : args[0] || '').toLowerCase();
       const bot = pickBot(services, named);
+      // `mine <bot> stop` is the per-bot counterpart of `mine stop`. Without
+      // this, the dashboard's per-bot stop control would be interpreted as an
+      // ore target and fail validation.
+      if (requested === 'stop') return { ok: true, bot: bot.name, ...actionsFor(services, bot.name).mining.stop() };
       return runBotAction(services, bot, [bot.name, 'mine', ...(requested ? [requested] : [])], {});
     }
   });
@@ -958,6 +963,150 @@ function registerAll(services, registry) {
       if (requested === 'stop') return { ok: true, ...actionsFor(services, pickBot(services, named).name).woodcutting.stop() };
       const bot = pickBot(services, named);
       return runBotAction(services, bot, [bot.name, 'chop', ...(rest.length ? rest : [])], {});
+    }
+  });
+
+  registry.register({
+    name: 'woodcutting', aliases: ['forestry'], category: 'woodcutting',
+    summary: 'Manage the woodcutting system: catalogue, tree identification, roles, storage and support',
+    usage: 'woodcutting [status [bot|all]|trees [bot] [radius] [type]|catalog [version]|stats [bot|all]|chop [bot|all] [type]|plant [bot|all]|store [bot|all]|relocate [bot|all]|stop|team [status|assign <bot> <role>|auto]|support [status|request <bot> <kind> [detail]|fulfil <id>]]',
+    execute: async (args) => {
+      const sub = String(args[0] || 'status').toLowerCase();
+      const team = services.woodcuttingTeam;
+      const all = allActions(services);
+      const rows = () => all.map((actions) => actions.woodcutting.status());
+      const pick = (value) => {
+        if (value === undefined || value === null || value === '' || isFleetTarget(value)) return null;
+        return pickBot(services, value);
+      };
+      if (sub === 'status' || sub === 'stats') {
+        const bot = pick(args[1]);
+        const list = bot ? [actionsFor(services, bot.name).woodcutting.status()] : rows();
+        const lifetime = list.reduce((out, row) => {
+          for (const [key, value] of Object.entries(row.lifetime || row.stats || {})) {
+            if (typeof value === 'number') out[key] = (out[key] || 0) + value;
+          }
+          return out;
+        }, {});
+        return {
+          ok: true, command: `woodcutting ${sub}`, rows: list, lifetime,
+          team: team ? team.status() : null,
+          total: {
+            logs: list.reduce((sum, row) => sum + (row.logs || 0), 0),
+            saplings: list.reduce((sum, row) => sum + (row.saplings || 0), 0),
+            treesChopped: list.reduce((sum, row) => sum + (row.treesChopped || 0), 0),
+            replanted: list.reduce((sum, row) => sum + (row.replanted || 0), 0)
+          }
+        };
+      }
+      if (sub === 'catalog' || sub === 'species') {
+        const version = args[1] || (services.runtime && services.runtime.serverVersion) || null;
+        const list = catalogue({ version });
+        return { ok: true, command: 'woodcutting catalog', version, species: list };
+      }
+      if (sub === 'trees' || sub === 'scan') {
+        const named = args[1] && isBotName(services, args[1]) ? args[1] : null;
+        const actions = named ? actionsFor(services, named) : all[0];
+        if (!actions) throw new CommandError('no bot is available for a tree scan');
+        const rest = args.slice(named ? 2 : 1);
+        const numeric = rest.find((value) => /^\d+$/.test(String(value)));
+        const radius = numeric ? intArg(numeric, 'radius', { min: 4, max: 64 }) : 32;
+        const typeArg = rest.find((value) => !/^\d+$/.test(String(value)) && !isFleetTarget(value));
+        const trees = actions.woodcutting.findTrees({ radius, limit: 20, types: typeArg || null });
+        return {
+          ok: true, command: 'woodcutting trees', bot: actions.bot.name, radius,
+          type: typeArg || 'any', count: trees.length, trees,
+          zone: actions.woodcutting.zone()
+        };
+      }
+      if (sub === 'stop') {
+        if (args[1] !== undefined && !isFleetTarget(args[1]) && !isBotName(services, args[1])) {
+          throw new CommandError(`unknown bot or fleet target '${args[1]}'`);
+        }
+        const target = isBotName(services, args[1]) ? args[1] : null;
+        const results = (target ? [actionsFor(services, target)] : all).map((actions) => ({ bot: actions.bot.name, ...actions.woodcutting.stop() }));
+        return { ok: true, command: 'woodcutting stop', stopped: true, results };
+      }
+      if (sub === 'chop') {
+        const namedTarget = args[1] && (isFleetTarget(args[1]) || isBotName(services, args[1])) ? args[1] : null;
+        const types = args.slice(namedTarget ? 2 : 1).join(' ').trim();
+        const line = [types || 'any'];
+        if (namedTarget && isFleetTarget(namedTarget)) {
+          const fleet = await runFleetActions(services, 'all', (actions) => runBotAction(
+            services, actions.bot, [actions.bot.name, 'chop', ...line], {}
+          ));
+          const chopped = (fleet.results || []).reduce((sum, row) => sum + (Number(row.chopped) || 0), 0);
+          return {
+            ...fleet, command: 'woodcutting chop', chopped, verified: chopped > 0,
+            ok: fleet.ok && chopped > 0,
+            error: chopped > 0 ? undefined : (fleet.results || []).map((row) => row.error).filter(Boolean).join('; ') || 'no tree was chopped and verified'
+          };
+        }
+        const bot = pick(namedTarget);
+        const result = await runBotAction(services, bot, [bot.name, 'chop', ...line], {});
+        return { ...result, command: 'woodcutting chop', verified: Number(result.chopped) > 0 };
+      }
+      if (sub === 'plant') {
+        const target = args[1] && (isFleetTarget(args[1]) || isBotName(services, args[1])) ? args[1] : null;
+        if (target && isFleetTarget(target)) {
+          return runFleetActions(services, 'all', (actions) => actions.woodcutting.plantNearby({ limit: 3 }));
+        }
+        const bot = pick(target);
+        return { ok: true, bot: bot.name, ...(await actionsFor(services, bot.name).woodcutting.plantNearby({ limit: 6 })) };
+      }
+      if (sub === 'store') {
+        const target = args[1] && isBotName(services, args[1]) ? args[1] : null;
+        if (!target && isFleetTarget(args[1])) {
+          return runFleetActions(services, 'all', (actions) => actions.woodcutting.storeLoot());
+        }
+        const bot = pick(target || args[1]);
+        return {
+          ok: true, bot: bot.name,
+          ...(await withBotExclusive(services, bot, () => actionsFor(services, bot.name).woodcutting.storeLoot()))
+        };
+      }
+      if (sub === 'relocate') {
+        const bot = pick(args[1]);
+        const actions = bot ? actionsFor(services, bot.name) : all[0];
+        if (!actions) throw new CommandError('no bot is available');
+        return { ok: true, bot: actions.bot.name, ...(await actions.woodcutting.relocateForTrees()) };
+      }
+      if (sub === 'team') {
+        if (!team) throw new CommandError('woodcutting team coordinator unavailable');
+        const action = String(args[1] || 'status').toLowerCase();
+        if (action === 'status') return { ok: true, command: 'woodcutting team', ...team.status() };
+        if (action === 'auto') return { ok: true, command: 'woodcutting team auto', ...team.autoAssign({ reset: args[2] === 'reset' }) };
+        if (action === 'assign' || action === 'role') {
+          const bot = args[2];
+          const role = args[3];
+          if (!isBotName(services, bot) || !role) throw new CommandError('usage: woodcutting team assign <bot> <CHOPPER|SCOUT|HAULER|PLANTER|GUARD>');
+          const result = team.setRole(bot, role);
+          if (!result.ok) throw new CommandError(result.error);
+          return { ok: true, command: 'woodcutting team assign', ...result, team: team.status() };
+        }
+        throw new CommandError('usage: woodcutting team [status|assign <bot> <role>|auto]');
+      }
+      if (sub === 'support') {
+        if (!team) throw new CommandError('woodcutting team coordinator unavailable');
+        const action = String(args[1] || 'status').toLowerCase();
+        if (action === 'status') return { ok: true, command: 'woodcutting support', open: team.support({ status: 'open' }), recent: team.requests.slice(-10) };
+        if (action === 'request') {
+          const bot = args[2];
+          if (!isBotName(services, bot)) throw new CommandError('usage: woodcutting support request <bot> <kind> [detail]');
+          const kind = args[3] || 'HELP';
+          const detail = args.slice(4).join(' ') || null;
+          const actions = actionsFor(services, bot);
+          return { ok: true, command: 'woodcutting support request', ...actions.woodcutting.requestSupport({ kind, detail }) };
+        }
+        if (action === 'fulfil' || action === 'fulfill') {
+          if (!args[2]) throw new CommandError('usage: woodcutting support fulfil <id>');
+          const result = team.fulfil(args[2], args[3] || 'operator');
+          if (!result.ok) throw new CommandError(result.error);
+          return { ok: true, command: 'woodcutting support fulfil', ...result };
+        }
+        throw new CommandError('usage: woodcutting support [status|request <bot> <kind> [detail]|fulfil <id>]');
+      }
+      throw new CommandError(`unknown woodcutting action '${sub}'`);
     }
   });
 
@@ -2031,14 +2180,29 @@ function registerPlayers(registry, services) {
 
   registry.register({
     name: 'players', aliases: ['player'], category: 'players', maxArgs: 64,
-    summary: 'See real players, follow/unfollow, guard, escort, feed, give loot or message them',
-    usage: 'players [list|near [radius]|info <player>|following [bot|all]|watches [bot|all]|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>]',
+    summary: 'Player directory, presence, teams/trust, follow/escort/observe, gifts and messages',
+    usage: 'players [list [category]|near [radius]|info <player>|history <player>|events|refresh|follow <player> [bot|all] [distance]|escort <player> [bot|all]|guard <player> [bot|all] [radius]|observe <player> [bot|all]|unwatch [player] [bot|all]|unfollow [player] [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>|note <player> <text>|tag <player> <tag>|untag <player> <tag>|forget <player>|pvp [status|on|off]|mode <EXPLICIT|ARENA|DEFENSIVE>|target [add|remove|list] [player]|protect|trust|unprotect|untrust <player>]',
     execute: async (args) => {
       const sub = String(args[0] || 'list').toLowerCase();
       const directory = registryForPlayers();
       if (sub === 'list' || sub === 'status') {
+        const category = args[1] ? String(args[1]).toLowerCase() : null;
+        // Roster bots are not player-directory entries; use `team state` for those.
+        const categories = ['trusted', 'protected', 'target', 'neutral', 'unknown', 'staff'];
+        if (category && !categories.includes(category)) throw new CommandError(`unknown player category '${args[1]}'; use ${categories.join('|')}`);
         const status = directory.status();
-        return { ok: true, ...status, players: status.rows };
+        const rows = category ? directory.list({ limit: 200, category }) : status.rows;
+        return { ok: true, ...status, rows, players: rows, count: rows.length, filter: category };
+      }
+      if (sub === 'refresh' || sub === 'scan') {
+        const bots = [...services.bots.values()].filter((bot) => bot.connected !== false && bot.ready !== false);
+        for (const bot of bots) directory.observeBot(bot);
+        const status = directory.status();
+        return { ok: true, command: 'players refresh', scanned: bots.length, ...status, players: status.rows };
+      }
+      if (sub === 'events') {
+        const limit = args[1] === undefined ? 25 : intArg(args[1], 'limit', { min: 1, max: 200 });
+        return { ok: true, events: directory.recentEvents({ limit }), stats: directory.stats };
       }
       if (sub === 'near') {
         const radius = args[1] === undefined ? 64 : intArg(args[1], 'radius', { min: 1, max: 128 });
@@ -2049,8 +2213,127 @@ function registerPlayers(registry, services) {
         const name = validPlayer(args[1]);
         const entry = directory.get(name);
         if (!entry) throw new CommandError(`${name} has not been seen by the fleet`);
-        const watch = controllerTargets('all').map((controller) => controller.status()).filter((row) => row.target === name);
-        return { ok: true, player: directory.list({ limit: 200 }).find((row) => row.name === name) || null, watch };
+        const watch = controllerTargets('all').map((controller) => controller.status()).filter((row) => String(row.target || '').toLowerCase() === name.toLowerCase());
+        return {
+          ok: true, player: directory.getRow(name), watch,
+          history: directory.history(name, { limit: 25 })
+        };
+      }
+      if (sub === 'history') {
+        const name = validPlayer(args[1]);
+        if (args[2] !== undefined) throw new CommandError('usage: players history <player> [limit]');
+        const history = directory.history(name, { limit: 25 });
+        if (!history) throw new CommandError(`${name} has not been seen by the fleet`);
+        return { ok: true, ...history };
+      }
+      if (sub === 'note') {
+        const name = validPlayer(args[1]);
+        const text = args.slice(2).join(' ').trim();
+        if (!text) throw new CommandError('usage: players note <player> <text>');
+        return { command: 'players note', player: name, ...directory.note(name, text) };
+      }
+      if (sub === 'tag' || sub === 'untag') {
+        const name = validPlayer(args[1]);
+        if (!args[2]) throw new CommandError(`usage: players ${sub} <player> <tag>`);
+        if (args[3] !== undefined) throw new CommandError(`usage: players ${sub} <player> <tag>`);
+        return { command: `players ${sub}`, player: name, ...(sub === 'tag' ? directory.tag(name, args[2]) : directory.untag(name, args[2])) };
+      }
+      if (sub === 'forget' || sub === 'remove') {
+        const name = validPlayer(args[1]);
+        if (args[2] !== undefined) throw new CommandError('usage: players forget <player>');
+        const result = directory.forget(name);
+        return { command: 'players forget', player: name, ...result };
+      }
+      if (sub === 'pvp') {
+        const action = String(args[1] || 'status').toLowerCase();
+        const controller = targetActions(services, defaultTarget()).find((actions) => actions.combat);
+        if (!controller) throw new CommandError('combat controller unavailable');
+        if (action === 'status') {
+          return { ok: true, command: 'players pvp', pvp: controller.combat.pvp.status(), serverPvp: config.autonomy.serverPvp !== false };
+        }
+        if (!['on', 'off'].includes(action)) throw new CommandError('usage: players pvp [status|on|off]');
+        const results = targetActions(services, 'all').map((actions) => ({ bot: actions.bot.name, ...actions.combat.setPvp(action === 'on') }));
+        return { ok: true, command: `players pvp ${action}`, enabled: action === 'on', pvp: controller.combat.pvp.status(), results };
+      }
+      if (sub === 'mode') {
+        const mode = String(args[1] || '').toUpperCase();
+        if (!mode) throw new CommandError('usage: players mode <EXPLICIT|ARENA|DEFENSIVE>');
+        const controllers = targetActions(services, 'all').filter((actions) => actions.combat);
+        if (!controllers.length) throw new CommandError('combat controller unavailable');
+        const results = controllers.map((actions) => ({ bot: actions.bot.name, ...actions.combat.pvp.setMode(mode) }));
+        if (results.every((row) => row.ok === false)) throw new CommandError(results[0].error || `unknown targeting mode ${mode}`);
+        return { ok: true, command: 'players mode', mode, ...(controllers[0].combat.pvp.status()), results };
+      }
+      if (sub === 'target' || sub === 'targets') {
+        const action = ['add', 'remove', 'list'].includes(String(args[1] || '').toLowerCase()) ? String(args[1]).toLowerCase() : 'add';
+        const name = action === 'list' ? null : validPlayer(args[1] === action ? args[2] : args[1]);
+        if (action === 'list') {
+          const controller = targetActions(services, defaultTarget()).find((actions) => actions.combat);
+          return {
+            ok: true, command: 'players target list',
+            targets: controller ? controller.combat.pvp.list() : [],
+            protectedPlayers: controller ? controller.combat.pvp.listProtected() : [],
+            trustedPlayers: controller ? controller.combat.pvp.listTrusted() : []
+          };
+        }
+        const controllers = targetActions(services, 'all').filter((actions) => actions.combat);
+        const results = controllers.map((actions) => ({
+          bot: actions.bot.name,
+          ...(action === 'add' ? actions.combat.addTarget(name) : actions.combat.removeTarget(name))
+        }));
+        return { ok: results.every((row) => row.ok !== false), command: `players target ${action}`, action, name, targets: controllers[0] ? controllers[0].combat.pvp.list() : [], results };
+      }
+      if (sub === 'arena') {
+        const action = String(args[1] || 'list').toLowerCase();
+        const controllers = targetActions(services, 'all').filter((actions) => actions.combat);
+        if (!controllers.length) throw new CommandError('combat controller unavailable');
+        const policy = controllers[0].combat.pvp;
+        if (action === 'list' || action === 'status') {
+          return { ok: true, command: 'players arena', arenas: policy.listArenas(), mode: policy.mode };
+        }
+        if (action === 'off' || action === 'clear') {
+          const result = policy.clearArenas();
+          return { ok: true, command: 'players arena clear', ...result };
+        }
+        if (action === 'on') {
+          const radius = intArg(args[2] === undefined ? 24 : args[2], 'radius', { min: 4, max: 128 });
+          const home = services.runtime ? services.runtime.home : { x: 0, y: 64, z: 0 };
+          const result = policy.addArena({
+            name: args[3] || 'home-arena', enabled: true,
+            min: { x: home.x - radius, y: home.y - 16, z: home.z - radius },
+            max: { x: home.x + radius, y: home.y + 32, z: home.z + radius }
+          });
+          if (!result.ok) throw new CommandError(result.error);
+          return { ok: true, command: 'players arena on', radius, ...result };
+        }
+        if (action === 'add') {
+          const name = args[2] && /^[A-Za-z0-9_-]{1,48}$/.test(args[2]) ? args[2] : null;
+          if (!name) throw new CommandError('usage: players arena add <name> <x1> <y1> <z1> <x2> <y2> <z2>');
+          if (args.length < 9) throw new CommandError('usage: players arena add <name> <x1> <y1> <z1> <x2> <y2> <z2>');
+          const result = policy.addArena({
+            name,
+            min: { x: intArg(args[3], 'x1'), y: intArg(args[4], 'y1', { min: -64, max: 320 }), z: intArg(args[5], 'z1') },
+            max: { x: intArg(args[6], 'x2'), y: intArg(args[7], 'y2', { min: -64, max: 320 }), z: intArg(args[8], 'z2') }
+          });
+          if (!result.ok) throw new CommandError(result.error);
+          return { ok: true, command: 'players arena add', ...result };
+        }
+        if (action === 'remove' || action === 'delete') {
+          if (!args[2]) throw new CommandError('usage: players arena remove <name>');
+          return { ok: true, command: 'players arena remove', ...policy.removeArena(args[2]) };
+        }
+        throw new CommandError('usage: players arena [list|on [radius] [name]|add <name> <x1 y1 z1 x2 y2 z2>|remove <name>|clear]');
+      }
+      if (sub === 'protect' || sub === 'unprotect' || sub === 'trust' || sub === 'untrust') {
+        const name = validPlayer(args[1]);
+        if (args[2] !== undefined) throw new CommandError(`usage: players ${sub} <player>`);
+        const controllers = targetActions(services, 'all').filter((actions) => actions.combat);
+        const results = controllers.map((actions) => ({ bot: actions.bot.name, ...actions.combat[sub](name) }));
+        return {
+          ok: results.every((row) => row.ok !== false), command: `players ${sub}`, name, results,
+          protectedPlayers: controllers[0] ? controllers[0].combat.pvp.listProtected() : [],
+          trustedPlayers: controllers[0] ? controllers[0].combat.pvp.listTrusted() : []
+        };
       }
       if (sub === 'following' || sub === 'watches') {
         if (args[2] !== undefined) throw new CommandError(`usage: players ${sub} [bot|all]`);
@@ -2124,10 +2407,25 @@ function registerPlayers(registry, services) {
           command: `players ${sub}`, target: name,
           ...(await runFor(target, (actions) => {
             if (sub === 'guard') return actions.players.guard(name, { radius: value });
-            if (sub === 'escort') return actions.players.guard(name, { radius: 10, distance: 2 });
+            if (sub === 'escort') return actions.players.escort(name, { radius: value || 10, distance: 2 });
             return actions.players.follow(name, { distance: value });
           }))
         };
+      }
+      if (sub === 'observe' || sub === 'watch') {
+        if (args[3] !== undefined) throw new CommandError(`usage: players ${sub} <player> [bot|all]`);
+        if (args[2] !== undefined && !targetOrDefault(args[2])) throw new CommandError(`unknown bot or fleet target '${args[2]}'`);
+        const name = validPlayer(args[1]);
+        const target = targetOrDefault(args[2]) || defaultTarget();
+        return { command: `players ${sub}`, target: name, ...(await runFor(target, (actions) => actions.players.observe(name))) };
+      }
+      if (sub === 'unwatch') {
+        if (args[3] !== undefined) throw new CommandError('usage: players unwatch [player] [bot|all]');
+        if (args[2] !== undefined && !targetOrDefault(args[2])) throw new CommandError(`unknown bot or fleet target '${args[2]}'`);
+        const name = args[1] === undefined || isFleetTarget(args[1]) ? null : validPlayer(args[1]);
+        const target = targetOrDefault(name ? args[2] : args[1]) || defaultTarget();
+        const results = targetActions(services, target).map((actions) => ({ bot: actions.bot.name, ...(actions.players ? actions.players.unwatch(name) : { ok: false, error: 'player controller unavailable' }) }));
+        return { ok: results.every((row) => row.ok !== false), command: 'players unwatch', target, stopped: results.filter((row) => row.stopped).length, results };
       }
       if (sub === 'come') {
         if (args[3] !== undefined) throw new CommandError('usage: players come <player> [bot|all]');

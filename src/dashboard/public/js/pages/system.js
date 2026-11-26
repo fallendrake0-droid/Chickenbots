@@ -1,4 +1,4 @@
-import { state, prefs, savePrefs, notifications, unreadNotifications, markNotificationsRead, fetchLogs } from '../store.js';
+import { state, prefs, savePrefs, notifications, unreadNotifications, markNotificationsRead, fetchLogs, frontendBuild } from '../store.js';
 import { icon } from '../icons.js';
 import { esc, num, formatTime, formatDateTime, timeAgo, duration, humanize, download } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, sectionHead, statCard, toast } from '../ui.js';
@@ -408,6 +408,8 @@ export const settingsPage = {
     const combat = (state.snapshot && state.snapshot.combat) || [];
     const pveEnabled = combat.length ? combat.every((entry) => entry.pveEnabled !== false) : settings.pve !== false;
     const pvpEnabled = settings.pvp === true;
+    const build = state.build || {};
+    const buildMatches = Boolean(build.buildId && frontendBuild.buildId && build.buildId === frontendBuild.buildId);
     const routineEnabled = (feature) => survival.length ? survival.every((entry) => !entry.features || entry.features[feature] !== false) : true;
     return `
       <div class="page">
@@ -415,6 +417,34 @@ export const settingsPage = {
           eyebrow: 'System', title: 'Settings', description: 'Runtime configuration reported by the backend. Values marked read-only are owned by the server process and its config file.',
           actions: `<a class="button" href="#/logs">${icon('list')} Diagnostics</a>`
         })}
+        <section class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">${icon('git-branch')} Build &amp; version ${buildMatches ? badge('Frontend matches backend', 'ok', { dot: true }) : badge('Build mismatch — reload', 'danger', { dot: true })}</div>
+            <div class="row gap-2"><code class="mono tiny">/api/build</code><button class="button button--sm" type="button" data-reload-app>${icon('refresh')} Reload latest</button></div>
+          </div>
+          <div class="card-body">
+            <div class="grid grid--2">
+              <div>${kvRows([
+                ['Application version', esc(build.appVersion || '—'), true],
+                ['Git revision', esc(build.gitShort || 'not available'), true],
+                ['Backend build', esc(build.backendHash || '—'), true],
+                ['Server build id', esc(build.buildId || '—'), true],
+                ['Server started / built', build.builtAt ? esc(formatDateTime(build.builtAt)) : '—', true],
+                ['Node runtime', esc(build.node || '—'), true]
+              ])}</div>
+              <div>${kvRows([
+                ['Shell build id', esc(frontendBuild.buildId || 'not injected'), true],
+                ['Frontend asset hash', esc(frontendBuild.frontendHash || build.frontendHash || '—'), true],
+                ['Backend asset hash at load', esc(frontendBuild.backendHash || '—'), true],
+                ['Asset mode', 'Content-hashed URLs; HTML no-store', true],
+                ['Live API cache', 'no-store on every /api response', true],
+                ['Service worker', 'not installed (no stale PWA cache)', true]
+              ])}
+              <div class="callout callout--${buildMatches ? 'info' : 'warn'}" style="margin-top:10px">${icon(buildMatches ? 'check-circle' : 'alert')}<div>${buildMatches ? 'This page and the running backend report the same build id.' : 'The shell that loaded this page is older than the backend. Reload to replace the cached module graph; the versioned URLs will then match.'}</div></div>
+              </div>
+            </div>
+          </div>
+        </section>
         <div class="grid grid--2">
           <section class="card">
             <div class="card-header"><div class="card-title">${icon('server')} Server</div>${badge(state.snapshot && state.snapshot.mode === 'live' ? 'Live' : 'Simulation', 'info')}</div>

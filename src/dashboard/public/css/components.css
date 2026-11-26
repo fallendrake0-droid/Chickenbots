@@ -36,7 +36,22 @@
   padding: var(--space-4);
   position: relative;
   overflow: hidden;
+  transition: border-color var(--duration), transform var(--duration), box-shadow var(--duration);
 }
+.stat-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.26), transparent);
+  pointer-events: none;
+}
+.stat-card[data-tone="accent"]::before { background: linear-gradient(90deg, transparent, var(--accent-border), transparent); }
+.stat-card[data-tone="success"]::before { background: linear-gradient(90deg, transparent, rgba(53, 183, 121, 0.55), transparent); }
+.stat-card[data-tone="warning"]::before { background: linear-gradient(90deg, transparent, rgba(229, 169, 71, 0.55), transparent); }
+.stat-card[data-tone="danger"]::before { background: linear-gradient(90deg, transparent, rgba(224, 91, 104, 0.55), transparent); }
+.stat-card[data-tone="info"]::before { background: linear-gradient(90deg, transparent, rgba(89, 152, 232, 0.55), transparent); }
+.stat-card:hover { border-color: var(--border); transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .stat-top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .stat-label { font-size: var(--text-xs); color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 550; }
 .stat-icon {
@@ -117,7 +132,11 @@
 .status-dot--danger { background: var(--danger); box-shadow: 0 0 0 3px rgba(224, 91, 104, 0.1); }
 .status-dot--info { background: var(--info); }
 .status-dot--muted { background: var(--grey); }
-.status-dot--pulse { animation: none; }
+.status-dot--pulse { animation: status-pulse 2.8s ease-out infinite; }
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(53, 183, 121, 0.1); }
+  45% { box-shadow: 0 0 0 6px rgba(53, 183, 121, 0.02); }
+}
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }

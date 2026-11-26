@@ -401,6 +401,8 @@
 .palette-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .palette-label { font-size: var(--text-sm); font-weight: 550; }
 .palette-meta { font-size: 10.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-usage { font-size: 10px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-row .palette-main { gap: 3px; }
 .palette-key { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
 .palette-section { padding: 8px 9px 3px; font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); }
 .palette-empty { padding: 22px; text-align: center; color: var(--text-muted); font-size: var(--text-sm); }

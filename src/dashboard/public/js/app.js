@@ -4,7 +4,7 @@ import { openModal, isModalOpen, confirmDialog, toast, resultMessage, setButtonL
 import {
   init, state, prefs, savePrefs, subscribe, unreadNotifications, notifications,
   markNotificationsRead, botNames, serverInfo, fleetHealth, runCommand, runBotAction, runQueueAction,
-  fetchLogs, refreshCommands, payloadOf
+  fetchLogs, refreshCommands, payloadOf, frontendBuild
 } from './store.js';
 import { resolveRoute, renderNav, NAV_ITEMS } from './router.js';
 import { openAssignDialog, openPriorityDialog, openCreateDialog, openObjectiveDialog, findTask } from './taskActions.js';
@@ -16,7 +16,7 @@ let pending = false;
 let lastLiveRender = 0;
 
 function cacheDom() {
-  for (const id of ['app', 'sidebar', 'nav', 'sidebar-status', 'sidebar-collapse', 'menu-toggle', 'sidebar-backdrop', 'breadcrumbs', 'server-host', 'server-status', 'fleet-count', 'notifications-toggle', 'notification-dot', 'notifications-panel', 'command-trigger', 'view', 'main', 'toasts', 'modal-root']) {
+  for (const id of ['app', 'sidebar', 'nav', 'sidebar-status', 'sidebar-collapse', 'menu-toggle', 'sidebar-backdrop', 'breadcrumbs', 'server-host', 'server-status', 'fleet-count', 'notifications-toggle', 'notification-dot', 'notifications-panel', 'command-trigger', 'view', 'main', 'toasts', 'modal-root', 'build-badge', 'build-label']) {
     dom[id] = document.getElementById(id);
   }
 }
@@ -99,10 +99,48 @@ function updateChrome(route) {
   const sidebar = dom['sidebar-status'];
   if (sidebar) {
     const tone = state.connection === 'live' ? 'ok' : state.connection === 'offline' ? 'danger' : 'warn';
-    sidebar.innerHTML = `<span class="status-dot status-dot--${tone}${tone === 'ok' ? ' status-dot--pulse' : ''}"></span><span>${esc(state.connection === 'live' ? `Live · ${fleet.online}/${fleet.total} online` : state.connectionDetail)}</span>`;
+    const freshness = state.lastStateAt ? ` · updated ${timeAgo(state.lastStateAt)}` : '';
+    sidebar.innerHTML = `<span class="status-dot status-dot--${tone}${tone === 'ok' ? ' status-dot--pulse' : ''}"></span><span>${esc(state.connection === 'live' ? `Live · ${fleet.online}/${fleet.total} online${freshness}` : state.connectionDetail)}</span>`;
+    sidebar.title = state.connection === 'live' ? `Telemetry received ${state.lastStateAt ? new Date(state.lastStateAt).toLocaleTimeString() : 'never'}` : (state.connectionDetail || 'Telemetry unavailable');
+  }
+  const build = state.build;
+  if (dom['build-label']) {
+    const label = build
+      ? `${build.gitShort || 'nogit'} · ${String(build.frontendHash || '').slice(0, 7)}`
+      : `${String(frontendBuild.buildId || 'loading').split('+')[0]} · checking`;
+    dom['build-label'].textContent = label;
+  }
+  if (dom['build-badge'] && build) {
+    dom['build-badge'].title = `Frontend ${build.frontendHash} · backend ${build.backendHash} · built ${new Date(build.builtAt).toLocaleString()}`;
   }
   document.title = `${route.label} · Chickenbots`;
   updateBanner();
+  updateBuildBanner();
+}
+
+/**
+ * A shell cached before asset fingerprinting can pair an old meta build with a
+ * new backend. Make that visible instead of silently letting the tab operate on
+ * mismatched interfaces.
+ */
+function updateBuildBanner() {
+  const main = dom.main;
+  if (!main) return;
+  const backend = state.build;
+  const current = document.getElementById('build-banner');
+  const mismatched = Boolean(backend && frontendBuild.buildId && backend.buildId !== frontendBuild.buildId);
+  if (!mismatched) {
+    if (current) current.remove();
+    return;
+  }
+  if (!current) {
+    const banner = document.createElement('div');
+    banner.id = 'build-banner';
+    banner.className = 'callout callout--warn global-banner';
+    banner.setAttribute('role', 'alert');
+    banner.innerHTML = `${icon('alert')}<div><strong>Dashboard build changed.</strong> This tab loaded <span class="mono">${esc(frontendBuild.buildId || 'unknown')}</span>, but the server is serving <span class="mono">${esc(backend.buildId)}</span>. <button class="button button--sm" type="button" data-reload-app>Reload latest</button></div>`;
+    main.insertBefore(banner, document.getElementById('view'));
+  }
 }
 
 function updateBanner() {
@@ -543,7 +581,12 @@ function toggleNotifications() {
 
 function openPalette() {
   const navItems = NAV_ITEMS.map((item) => ({ type: 'nav', id: item.path, label: item.label, meta: item.group, icon: item.icon }));
-  const commandItems = state.commands.map((command) => ({ type: 'command', id: command.name, label: command.name, meta: command.summary || command.category, usage: command.usage, dangerous: command.dangerous, icon: 'terminal' }));
+  const commandItems = state.commands.map((command) => ({
+    type: 'command', id: command.name, label: command.name,
+    meta: command.summary || humanize(command.category || 'command'),
+    keywords: [command.category, ...(command.aliases || []), command.usage].filter(Boolean).join(' '),
+    usage: command.usage, dangerous: command.dangerous, icon: 'terminal'
+  }));
   let filtered = [];
   let index = 0;
   const close = openModal({
@@ -564,27 +607,43 @@ function openPalette() {
         closeFn();
         const name = text.trim().split(/\s+/)[0].toLowerCase();
         const meta = state.commands.find((command) => command.name === name || (command.aliases || []).includes(name));
+        if (meta) {
+          const recent = [meta.name, ...(Array.isArray(prefs.recentCommands) ? prefs.recentCommands : []).filter((entry) => entry !== meta.name)].slice(0, 6);
+          savePrefs({ recentCommands: recent });
+        }
         executeLine(text.trim(), meta && meta.dangerous ? { danger: true, confirmTitle: `Run ${name}`, confirmMessage: `Run “${text.trim()}”?` } : {})
           .catch((err) => notify('error', 'Command failed', err.message, 8000));
       };
       const renderList = () => {
         const query = input.value.trim().toLowerCase();
         const rank = (items, extra) => items
-          .map((item) => ({ item, score: fuzzyScore(`${item.label} ${item.meta} ${extra ? extra(item) : ''}`, query) }))
+          .map((item) => ({ item, score: fuzzyScore(`${item.label} ${item.meta} ${item.keywords || ''} ${extra ? extra(item) : ''}`, query) }))
           .filter((entry) => entry.score >= 0)
           .sort((left, right) => right.score - left.score)
           .map((entry) => entry.item);
-        const navMatches = rank(navItems).slice(0, 6);
-        const cmdMatches = rank(commandItems, (item) => item.usage || '').slice(0, 10);
+        const navMatches = rank(navItems).slice(0, 8);
+        const recentNames = Array.isArray(prefs.recentCommands) ? prefs.recentCommands : [];
+        const recentMatches = query ? [] : recentNames.map((name) => commandItems.find((item) => item.id === name)).filter(Boolean);
+        const cmdMatches = rank(commandItems, (item) => item.usage || '').filter((item) => !recentMatches.includes(item)).slice(0, 12);
         filtered = [];
         let html = '';
         if (query) {
           filtered.push({ type: 'run', id: input.value.trim() });
-          html += paletteRow({ type: 'run', label: `Run “${input.value.trim()}”`, meta: 'Send to the backend', icon: 'terminal', index: filtered.length - 1, active: index === filtered.length - 1 });
+          html += paletteRow({ type: 'run', label: `Run “${input.value.trim()}”`, meta: 'Send this exact line to the backend', icon: 'terminal', index: filtered.length - 1, active: index === filtered.length - 1 });
         }
-        for (const item of navMatches) {
-          filtered.push(item);
-          html += paletteRow({ ...item, index: filtered.length - 1, active: index === filtered.length - 1 });
+        if (recentMatches.length) {
+          html += `<div class="palette-section">Recent commands</div>`;
+          for (const item of recentMatches) {
+            filtered.push(item);
+            html += paletteRow({ ...item, index: filtered.length - 1, active: index === filtered.length - 1 });
+          }
+        }
+        if (navMatches.length) {
+          html += `<div class="palette-section">Pages</div>`;
+          for (const item of navMatches) {
+            filtered.push(item);
+            html += paletteRow({ ...item, index: filtered.length - 1, active: index === filtered.length - 1 });
+          }
         }
         if (cmdMatches.length) {
           html += `<div class="palette-section">Commands</div>`;
@@ -654,7 +713,7 @@ function fuzzyScore(text, query) {
 function paletteRow(item) {
   return `<button class="palette-row${item.active ? ' is-active' : ''}" type="button" role="option" aria-selected="${Boolean(item.active)}" data-palette-index="${item.index}">
     <span class="palette-icon">${icon(item.icon || 'chevron-right')}</span>
-    <span class="palette-main"><span class="palette-label">${esc(item.label)}</span><span class="palette-meta">${esc(item.meta || '')}</span></span>
+    <span class="palette-main"><span class="palette-label">${esc(item.label)}</span><span class="palette-meta">${esc(item.meta || '')}</span>${item.usage ? `<span class="palette-usage mono">${esc(item.usage)}</span>` : ''}</span>
     ${item.dangerous ? '<span class="badge badge--danger">dangerous</span>' : ''}
     ${item.type === 'nav' ? '<span class="palette-key">go</span>' : '<span class="palette-key">↵</span>'}
   </button>`;
@@ -800,6 +859,11 @@ function wireGlobalActions() {
     }
     if (event.target.closest('[data-refresh-view]')) {
       render({ force: true, routeChange: true });
+      return;
+    }
+    if (event.target.closest('[data-reload-app]')) {
+      event.preventDefault();
+      location.reload();
     }
   });
 }

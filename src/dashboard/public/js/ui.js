@@ -29,7 +29,7 @@ export function progress(value, max = 100, { tone = null, lg = false, sm = false
 export function statCard({ label, value, iconName = 'activity', tone = 'neutral', context = '', progressValue = null, progressMax = 100 }) {
   const iconClass = tone && tone !== 'neutral' ? ` stat-icon--${tone}` : '';
   return `
-    <div class="card stat-card">
+    <div class="card stat-card" data-tone="${esc(tone)}">
       <div class="stat-top">
         <span class="stat-label">${esc(label)}</span>
         <span class="stat-icon${iconClass}">${icon(iconName)}</span>

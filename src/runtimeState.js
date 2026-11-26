@@ -1,6 +1,7 @@
 'use strict';
 
 const { config } = require('./config');
+const { catalogue } = require('./woodcutting/catalog');
 const { validateLibrary } = require('./schematics/validate');
 const { connectionStatus } = require('./bot/status');
 
@@ -133,6 +134,7 @@ function statusSnapshot(services) {
   // throw during a cold `/api/state`; an empty section is the honest, safe
   // representation of "not reported yet".
   const controllerRows = (key) => actionStatus.map((status) => status && status[key]).filter(Boolean);
+  const woodcuttingRows = controllerRows('woodcutting');
   const online = summaries.filter((s) => s.online === true).length;
   const ready = summaries.filter((s) => s.gameplayReady === true).length;
   const alerts = buildAlerts(summaries, board, services, { excavationStatus, boardStats, deadlocks });
@@ -191,7 +193,9 @@ function statusSnapshot(services) {
       history: services.excavation ? services.excavation.history.slice(-15) : [],
       previews: services.excavation ? [...services.excavation.previews.values()].map((p) => ({ previewId: p.previewId, mode: p.mode, bounds: p.bounds, volume: p.volume, warnings: p.warnings, authorizationRequired: p.authorizationRequired })) : []
     },
-    woodcutting: controllerRows('woodcutting'),
+    woodcutting: woodcuttingRows,
+    woodcuttingTeam: services.woodcuttingTeam ? services.woodcuttingTeam.status({ rows: woodcuttingRows }) : null,
+    woodcuttingCatalog: catalogue({ version: runtime ? runtime.serverVersion : null }),
     farming: controllerRows('farming'),
     sleep: controllerRows('sleep'),
     fishing: controllerRows('fishing'),
@@ -312,7 +316,8 @@ function statusSnapshot(services) {
         safety: safetyByName.get(s.name) || null,
         keepAlive: s.keepAlive || null,
         ticker: s.ticker || null,
-        lastDisconnect: s.lastDisconnect || null
+        lastDisconnect: s.lastDisconnect || null,
+        joinSkin: s.joinSkin || null
       })),
       commands: services.commands ? services.commands.recent(20) : [],
       plugins: summaries.map((s) => ({

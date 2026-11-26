@@ -204,6 +204,10 @@ class RealBot extends BotAdapter {
     this._configurationAt = 0;
     this._spawnedThisSession = false;
     this._respawnPacketSeen = false;
+    this._joinSkinSent = false;
+    this._joinSkinAt = null;
+    this._joinSkinResult = null;
+    this._joinSkinTimer = null;
     this.lastDisconnectDumped = null;
     this._clientTicker = null;
     this._serverTickingState = null;
@@ -666,6 +670,13 @@ class RealBot extends BotAdapter {
       connected: this.connected,
       spawned: this.spawned,
       authenticated: this.authenticated,
+      joinSkin: {
+        enabled: Boolean(config.server.skinOnJoin && config.server.skinCommand),
+        command: config.server.skinCommand || null,
+        sent: this._joinSkinSent,
+        at: this._joinSkinAt,
+        result: this._joinSkinResult
+      },
       ready: this.ready,
       stageTimings: { ...this.stageTimings },
       keepAlive: { ...this._keepAlive },
@@ -906,6 +917,11 @@ class RealBot extends BotAdapter {
     this._configurationAt = 0;
     this._spawnedThisSession = false;
     this._respawnPacketSeen = false;
+    if (this._joinSkinTimer) { clearTimeout(this._joinSkinTimer); this._joinSkinTimer = null; }
+    this._joinSkinSent = false;
+    this._joinSkinAt = null;
+    this._joinSkinResult = null;
+    this._joinSkinTimer = null;
     this.lastDisconnectDumped = null;
     this._keepAlive = { received: 0, replies: 0, lastReceivedAt: 0, lastReplyAt: 0, maxGapMs: 0, warnings: 0, lastWarningAt: 0 };
     this.stageTimings = {
@@ -1083,7 +1099,45 @@ class RealBot extends BotAdapter {
     this.lastSessionEndedAt = 0;
     this.stageTimings.totalMs = this.now() - this.connectStartedAt;
     this._startAntiAfk();
+    this._scheduleJoinSkin();
     return result;
+  }
+
+  /**
+   * Send the configured cosmetic join command once per ready session. It is
+   * scheduled after authentication so an auth plugin cannot mistake /skin for
+   * a login attempt, and it never delays the connection pipeline.
+   */
+  _scheduleJoinSkin() {
+    if (this._joinSkinTimer) { clearTimeout(this._joinSkinTimer); this._joinSkinTimer = null; }
+    this._joinSkinSent = false;
+    this._joinSkinAt = null;
+    this._joinSkinResult = null;
+    if (!config.server.skinOnJoin || !config.server.skinCommand) return { ok: true, skipped: 'disabled' };
+    const delay = Math.max(0, Math.min(15000, Number(config.server.skinDelayMs) || 0));
+    this._joinSkinTimer = setTimeout(() => {
+      this._joinSkinTimer = null;
+      this._sendJoinSkin().catch((err) => {
+        this._joinSkinResult = { ok: false, error: err.message };
+        this.logger.warn(`[${this.name}] join skin failed: ${err.message}`);
+      });
+    }, delay);
+    if (this._joinSkinTimer.unref) this._joinSkinTimer.unref();
+    return { ok: true, scheduled: true, delayMs: delay };
+  }
+
+  async _sendJoinSkin() {
+    const command = String(config.server.skinCommand || '').trim();
+    if (!config.server.skinOnJoin || !command) return { ok: true, skipped: 'disabled' };
+    if (this._joinSkinSent) return { ok: true, already: true, command, sentAt: this._joinSkinAt };
+    if (!this.ready) return { ok: false, code: 'NOT_READY', error: 'bot is not ready for the join skin command' };
+    const sent = await this.say(command);
+    this._joinSkinSent = Boolean(sent && sent.ok !== false);
+    this._joinSkinAt = this.now();
+    this._joinSkinResult = { ok: this._joinSkinSent, command, at: this._joinSkinAt, error: sent && sent.error };
+    if (this._joinSkinSent) this.logger.info(`[${this.name}] applied join skin with ${command}`);
+    else this.logger.warn(`[${this.name}] join skin command was not sent: ${(sent && sent.error) || 'unknown error'}`);
+    return this._joinSkinResult;
   }
 
   /**
@@ -3620,6 +3674,14 @@ class RealBot extends BotAdapter {
       lastEventAt: this.lastEventAt,
       lastSessionEndedAt: this.lastSessionEndedAt,
       lastDisconnect: this.lastDisconnect,
+      joinSkin: {
+        enabled: Boolean(config.server.skinOnJoin && config.server.skinCommand),
+        command: config.server.skinCommand || null,
+        delayMs: config.server.skinDelayMs || 0,
+        sent: this._joinSkinSent,
+        at: this._joinSkinAt,
+        result: this._joinSkinResult
+      },
       connection: this._connectionSnapshot(),
       keepAlive: { ...this._keepAlive },
       ticker: this._clientTicker ? this._clientTicker.snapshot() : null,
