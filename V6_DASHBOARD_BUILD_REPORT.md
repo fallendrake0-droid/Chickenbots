@@ -144,6 +144,8 @@ A Chromium binary cannot be installed in this sandbox: Playwright's download
 from `cdn.playwright.dev` fails with `ECONNRESET`. Verification therefore uses
 HTTP-level assertions plus the happy-dom renderer, not a real browser paint.
 The live preview is the visual check. One pre-existing simulator warning
-remains: the first cold tree scan can block the event loop for ~3.3 s while the
-mock world generates columns; it is outside this cache/UI change and happens on
-first action, not dashboard requests.
+remains: simulator-only synchronous world scans and pathfinding can block the
+event loop for 3–26 s while the mock world generates columns (long actions were
+observed up to 29 s). It is outside this cache/UI change and happens during
+first-time world generation, not on dashboard page requests; after warm-up the
+same actions complete in under 200 ms.
