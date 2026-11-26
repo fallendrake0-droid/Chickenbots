@@ -22,6 +22,9 @@ class TeamMemory {
     this.now = now;
     this.observations = [];
     this.byId = new Map();
+    // Identity+status index. The old duplicate check scanned every observation
+    // on every report, making a full 4000-entry memory O(n^2) per observe.
+    this.byIdentity = new Map();
     this.facts = new Map();
     this.seq = 0;
     this.stats = { added: 0, updated: 0, expired: 0, rejected: 0 };
@@ -51,6 +54,32 @@ class TeamMemory {
     return `${obs.type}|${resource}|${Math.round(pos.x)}|${Math.round(pos.y)}|${Math.round(pos.z)}|${obs.dimension || 'overworld'}`;
   }
 
+  _identityKey(obs) {
+    return `${obs._identity || this._identity(obs)}|${obs.status || 'AVAILABLE'}`;
+  }
+
+  _index(obs) {
+    if (!obs) return;
+    const key = this._identityKey(obs);
+    obs._idKey = key;
+    this.byIdentity.set(key, obs);
+  }
+
+  _unindex(obs) {
+    if (!obs) return;
+    const key = obs._idKey || this._identityKey(obs);
+    if (this.byIdentity.get(key) === obs) this.byIdentity.delete(key);
+    delete obs._idKey;
+  }
+
+  _setStatus(obs, status) {
+    if (!obs) return false;
+    this._unindex(obs);
+    obs.status = status;
+    this._index(obs);
+    return true;
+  }
+
   observe(input) {
     const error = this._validate(input);
     if (error) { this.stats.rejected++; return { ok: false, error }; }
@@ -70,21 +99,24 @@ class TeamMemory {
       tags: Array.isArray(input.tags) ? input.tags.slice(0, 12) : []
     };
     const ident = this._identity(obs);
-    const existing = this.observations.find((o) => o._identity === ident && o.status === obs.status);
+    obs._identity = ident;
+    const existing = this.byIdentity.get(`${ident}|${obs.status}`);
     if (existing) {
       // More recent, more confident reports win; keep the reporter of record.
       if (obs.confidence >= existing.confidence) {
+        this._unindex(existing);
         Object.assign(existing, obs, { id: existing.id, _identity: ident });
         this.byId.set(existing.id, existing);
+        this._index(existing);
         this.stats.updated++;
         return { ok: true, observation: existing, updated: true };
       }
       this.stats.rejected++;
       return { ok: false, error: 'lower-confidence duplicate', observation: existing };
     }
-    obs._identity = ident;
     this.observations.push(obs);
     this.byId.set(obs.id, obs);
+    this._index(obs);
     this.stats.added++;
     this._enforceBounds();
     return { ok: true, observation: obs, updated: false };
@@ -92,17 +124,24 @@ class TeamMemory {
 
   _enforceBounds() {
     if (this.observations.length <= this.maxObservations) return;
-    // Drop expired first, then the oldest low-confidence entries.
+    // Drop expired first, then the oldest low-confidence entries. Trim the whole
+    // excess in one ranked pass; scanning the array once per removed entry made
+    // hitting the cap quadratic.
     this.expire();
-    while (this.observations.length > this.maxObservations) {
-      let victim = 0;
-      for (let i = 1; i < this.observations.length; i++) {
-        const a = this.observations[victim];
-        const b = this.observations[i];
-        if (b.confidence < a.confidence || (b.confidence === a.confidence && b.timestamp < a.timestamp)) victim = i;
-      }
-      const [removed] = this.observations.splice(victim, 1);
+    const excess = this.observations.length - this.maxObservations;
+    if (excess <= 0) return;
+    const ranked = this.observations
+      .map((obs, index) => ({ obs, index }))
+      .sort((a, b) => (a.obs.confidence - b.obs.confidence)
+        || (a.obs.timestamp - b.obs.timestamp)
+        || (a.index - b.index))
+      .slice(0, excess)
+      .map((entry) => entry.obs);
+    const drop = new Set(ranked);
+    this.observations = this.observations.filter((obs) => !drop.has(obs));
+    for (const removed of drop) {
       this.byId.delete(removed.id);
+      this._unindex(removed);
     }
   }
 
@@ -110,7 +149,7 @@ class TeamMemory {
     const before = this.observations.length;
     this.observations = this.observations.filter((o) => {
       const keep = o.expiresAt === null || o.expiresAt > at || o.status !== 'AVAILABLE';
-      if (!keep) this.byId.delete(o.id);
+      if (!keep) { this.byId.delete(o.id); this._unindex(o); }
       return keep;
     });
     const removed = before - this.observations.length;
@@ -160,8 +199,7 @@ class TeamMemory {
   setStatus(id, status) {
     const obs = this.byId.get(id);
     if (!obs) return false;
-    obs.status = status;
-    return true;
+    return this._setStatus(obs, status);
   }
 
   /**
@@ -174,7 +212,7 @@ class TeamMemory {
     if (!obs) return { ok: false, error: 'not found' };
     const now = this.now();
     if (obs.expiresAt !== null && obs.expiresAt <= now) {
-      obs.status = 'EXPIRED';
+      this._setStatus(obs, 'EXPIRED');
       return { ok: false, error: 'expired', observation: obs };
     }
     if (obs.status !== 'AVAILABLE') return { ok: false, error: `status ${obs.status}`, observation: obs };
@@ -183,7 +221,7 @@ class TeamMemory {
       return { ok: false, error: `verification failed: ${err.message}`, observation: obs };
     }
     if (!valid) {
-      obs.status = 'STALE';
+      this._setStatus(obs, 'STALE');
       return { ok: false, error: 'stale', observation: obs };
     }
     obs.confidence = Math.min(1, obs.confidence + 0.05);

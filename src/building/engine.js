@@ -106,8 +106,19 @@ function readWorldBlock(world, pos) {
   return descriptorFromWorld(block);
 }
 
+/**
+ * A chunk the client has not received yet is unknown, not air and not solid.
+ * Mixing the two would let a build float on a block nobody has observed, or
+ * report a permanent protection conflict for a chunk that merely loads late.
+ */
+const UNKNOWN_WORLD_NAMES = new Set(['unloaded', 'unknown', 'not_loaded', 'notloaded', 'void']);
+
+function isUnknownWorldName(name) {
+  return !name || UNKNOWN_WORLD_NAMES.has(String(name).toLowerCase());
+}
+
 function isSolidName(name) {
-  if (!name) return false;
+  if (isUnknownWorldName(name)) return false;
   return !['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'dead_bush', 'seagrass', 'tall_seagrass', 'snow'].includes(name);
 }
 
@@ -470,7 +481,33 @@ class BuildEngine {
       if (observed && matchesBlock(observed, block.desired)) return { ok: true, observed, attempts: attempt + 1 };
       if (attempt < attempts - 1 && this.confirmationDelayMs) await new Promise((resolve) => setTimeout(resolve, this.confirmationDelayMs));
     }
-    return { ok: false, observed, attempts };
+    return { ok: false, observed, unknown: !observed || isUnknownWorldName(observed.name), attempts };
+  }
+
+  /**
+   * Give an unloaded position a bounded chance to arrive. Moving the bot toward
+   * the block is the only legitimate way to make the server send its chunk; a
+   * build must never fabricate the block or call the missing chunk protected.
+   */
+  async _awaitWorld(bot, pos, attempts = this.confirmationAttempts, { move = true } = {}) {
+    let observed = readWorldBlock(this.world, pos);
+    if (observed && !isUnknownWorldName(observed.name)) return { ok: true, observed };
+    if (move && bot && typeof bot.goTo === 'function' && bot.position) {
+      const far = distance(bot.position, pos) > 4;
+      if (far || isUnknownWorldName(observed && observed.name)) {
+        try {
+          await bot.goTo(pos, { range: 3, timeoutMs: 8000 });
+        } catch (_) { /* movement failure is reported by the caller as waiting */ }
+      }
+    }
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      observed = readWorldBlock(this.world, pos);
+      if (observed && !isUnknownWorldName(observed.name)) return { ok: true, observed };
+      if (attempt < attempts - 1 && this.confirmationDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, this.confirmationDelayMs));
+      }
+    }
+    return { ok: false, observed };
   }
 
   _companion(block) {
@@ -556,11 +593,18 @@ class BuildEngine {
         this.stats.verified++;
         return { ok: true, status: STATUS.VERIFIED, position: pos, block: block.canonical, observed, attempts: block.attempts, alreadyPresent: true };
       }
-      if (!observed) {
-        block.status = STATUS.WAITING_FOR_WORLD_UPDATE;
-        block.lastError = `world returned no block state at ${pos.x},${pos.y},${pos.z}`;
-        this.stats.waiting++;
-        return { ok: false, status: STATUS.WAITING_FOR_WORLD_UPDATE, error: block.lastError, position: pos, retryable: true };
+      if (!observed || isUnknownWorldName(observed.name)) {
+        // Try one bounded load-and-read cycle before declaring the position
+        // unknown. The block is not air, so no support/material decision may be
+        // made from this read.
+        const ready = await this._awaitWorld(bot, pos, confirmAttempts);
+        observed = ready.observed;
+        if (!ready.ok) {
+          block.status = STATUS.WAITING_FOR_WORLD_UPDATE;
+          block.lastError = `world has not loaded ${pos.x},${pos.y},${pos.z} yet`;
+          this.stats.waiting++;
+          return { ok: false, status: STATUS.WAITING_FOR_WORLD_UPDATE, error: block.lastError, position: pos, retryable: true };
+        }
       }
       block.status = STATUS.READY;
       const supports = supportPositions(block);
@@ -569,8 +613,19 @@ class BuildEngine {
         // A bottom-layer block rests on the prepared ground, which is outside
         // the schematic bounding box. Site preparation owns that check.
         if (!this.byPosition.has(supportLocalKey) && support.y === 0 && support.x === block.x && support.z === block.z) continue;
-        const worldSupport = readWorldBlock(this.world, { x: pos.x + support.x - block.x, y: pos.y + support.y - block.y, z: pos.z + support.z - block.z });
-        if (!worldSupport || !isSolidName(worldSupport.name)) {
+        const supportPos = { x: pos.x + support.x - block.x, y: pos.y + support.y - block.y, z: pos.z + support.z - block.z };
+        let worldSupport = readWorldBlock(this.world, supportPos);
+        if (!worldSupport || isUnknownWorldName(worldSupport.name)) {
+          const ready = await this._awaitWorld(bot, supportPos, confirmAttempts, { move: false });
+          worldSupport = ready.observed;
+          if (!ready.ok) {
+            block.status = STATUS.WAITING_FOR_WORLD_UPDATE;
+            block.lastError = `support at ${supportPos.x},${supportPos.y},${supportPos.z} is in an unloaded chunk`;
+            this.stats.waiting++;
+            return { ok: false, status: STATUS.WAITING_FOR_WORLD_UPDATE, error: block.lastError, position: pos, retryable: true };
+          }
+        }
+        if (!isSolidName(worldSupport.name)) {
           block.status = STATUS.FAILED;
           block.lastError = `support missing at ${support.x},${support.y},${support.z}`;
           this.stats.supportMissing++;
@@ -664,6 +719,12 @@ class BuildEngine {
         return { ok: true, status: STATUS.VERIFIED, position: pos, block: block.canonical, observed: confirmed.observed, attempts: block.attempts, confirmations: confirmed.attempts };
       }
       block.observed = confirmed.observed;
+      if (confirmed.unknown) {
+        block.status = STATUS.WAITING_FOR_WORLD_UPDATE;
+        block.lastError = 'chunk unloaded before the placed block could be confirmed';
+        this.stats.waiting++;
+        return { ok: false, status: STATUS.WAITING_FOR_WORLD_UPDATE, error: block.lastError, position: pos, retryable: true };
+      }
       block.status = STATUS.RETRY_PENDING;
       block.lastError = observedMismatch(block, confirmed.observed);
       this.stats.stateMismatch++;
@@ -697,15 +758,19 @@ class BuildEngine {
     const plan = this.buildPlan();
     const results = [];
     let placed = 0;
+    let waiting = 0;
     for (const block of plan.blocks) {
       if (placed >= limit) break;
       const result = await this.place(block, bot, { acquire, retries });
       results.push(result);
       if (onBlock) onBlock(result);
       if (result.ok) placed++;
+      else if (result.status === STATUS.WAITING_FOR_WORLD_UPDATE) waiting++;
       if (!result.ok && [STATUS.FAILED, STATUS.REPAIR_REQUIRED].includes(result.status)) break;
     }
-    return { results, placed, summary: this.summary() };
+    // `waiting` is reported instead of being silently swallowed: a caller that
+    // sees no placements can distinguish a desynced chunk from a real failure.
+    return { results, placed, waiting, deferred: waiting > 0, summary: this.summary() };
   }
 
   // ------------------------------------------------------------------
@@ -715,6 +780,7 @@ class BuildEngine {
     const missing = [];
     const wrong = [];
     let placed = 0;
+    let unloadedCount = 0;
     for (const block of this.blocks) {
       const pos = this.worldPos(block);
       const observed = readWorldBlock(this.world, pos);
@@ -724,9 +790,10 @@ class BuildEngine {
         block.status = STATUS.VERIFIED;
         continue;
       }
-      if (!observed || observed.name === 'air') {
+      if (!observed || observed.name === 'air' || isUnknownWorldName(observed.name)) {
         block.status = STATUS.RETRY_PENDING;
-        missing.push({ x: pos.x, y: pos.y, z: pos.z, expected: block.canonical, found: observed ? observed.name : 'unloaded' });
+        if (!observed || isUnknownWorldName(observed.name)) unloadedCount++;
+        missing.push({ x: pos.x, y: pos.y, z: pos.z, expected: block.canonical, found: observed ? observed.name : 'unloaded', unloaded: !observed || isUnknownWorldName(observed.name) });
       } else {
         block.status = STATUS.REPAIR_REQUIRED;
         wrong.push({
@@ -745,6 +812,7 @@ class BuildEngine {
       missingCount: missing.length,
       wrongCount: wrong.length,
       extraCount: extras.length,
+      unloadedCount,
       percentComplete: this.blocks.length ? Number(((placed / this.blocks.length) * 100).toFixed(2)) : 100,
       missing: missing.slice(0, 100),
       wrong: wrong.slice(0, 100),
@@ -760,8 +828,8 @@ class BuildEngine {
   /** Cheap summary of the last explicit verification (for status streams). */
   auditSummary() {
     if (!this.lastAudit) return null;
-    const { verified, placed, total, missingCount, wrongCount, extraCount, percentComplete, checkedAt } = this.lastAudit;
-    return { verified, complete: verified, remaining: missingCount + wrongCount + extraCount, placed, total, missingCount, wrongCount, extraCount, percentComplete, checkedAt };
+    const { verified, placed, total, missingCount, wrongCount, extraCount, unloadedCount = 0, percentComplete, checkedAt } = this.lastAudit;
+    return { verified, complete: verified, remaining: missingCount + wrongCount + extraCount, placed, total, missingCount, wrongCount, extraCount, unloadedCount, percentComplete, checkedAt };
   }
 
   /** Auto-repair from a fresh diff. Never reports success from a dry run. */
@@ -813,7 +881,7 @@ class BuildEngine {
           if (extras.length >= max) return extras;
           const pos = { x: this.origin.x + x, y: this.origin.y + y, z: this.origin.z + z };
           const observed = readWorldBlock(this.world, pos);
-          if (!observed || observed.name === 'air' || observed.name === 'cave_air' || observed.name === 'water') continue;
+          if (!observed || isUnknownWorldName(observed.name) || observed.name === 'air' || observed.name === 'cave_air' || observed.name === 'water') continue;
           if (this.byPosition.has(`${x},${y},${z}`)) continue;
           // Ignore the natural ground directly below the build; it is not a
           // stray block and is handled by site preparation.
@@ -906,5 +974,5 @@ function observedMismatch(block, observed) {
 
 module.exports = {
   BuildEngine, STATUS, supportPositions, normalizeSchematic, readWorldBlock, descriptorFromWorld,
-  blockDescriptor, diffProperties, matchesBlock
+  blockDescriptor, diffProperties, matchesBlock, isUnknownWorldName, isSolidName
 };

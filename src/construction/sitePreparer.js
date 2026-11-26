@@ -17,8 +17,19 @@ function inBounds(pos, bounds, padding = 0) {
 }
 
 function botStandingOn(bot, pos) {
+  if (!bot || !bot.position || !pos) return false;
   const p = bot.position;
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return false;
   return Math.floor(p.x) === pos.x && Math.floor(p.z) === pos.z && Math.floor(p.y) - 1 === pos.y;
+}
+
+function isUnknownBlock(block) {
+  return !block || !block.name || ['unloaded', 'unknown', 'not_loaded'].includes(String(block.name).toLowerCase());
+}
+
+/** Yield between bounded batches so the dashboard/event loop stays responsive. */
+function yieldToLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function availableFill(bot, preferred = null) {
@@ -51,6 +62,28 @@ class SitePreparer {
 
   _botFor(index) { return this.bots[index % Math.max(1, this.bots.length)]; }
 
+  /**
+   * Pick a bot that is not standing on the column being worked. A bot may not
+   * dig the block under its own feet; skipping that column forever left the
+   * levelling phase permanently ACTIVE with zero actions.
+   */
+  async _workerFor(pos, index = 0) {
+    if (!this.bots.length) return null;
+    for (let i = 0; i < this.bots.length; i++) {
+      const candidate = this._botFor(index + i);
+      if (candidate && !botStandingOn(candidate, pos)) return candidate;
+    }
+    const bot = this._botFor(index);
+    if (!bot) return null;
+    // Single-bot team: step off the column, verify the move, then work it.
+    const stance = { x: pos.x + 2, y: pos.y + 1, z: pos.z };
+    try {
+      const moved = await bot.goTo(stance, { range: 1, timeoutMs: 6000 });
+      if (moved && moved.ok !== false && !botStandingOn(bot, pos)) return bot;
+    } catch (_) { /* report as unreachable below */ }
+    return null;
+  }
+
   _blockAt(pos) {
     if (this.world && typeof this.world.getBlock === 'function') return this.world.getBlock(pos);
     return this.bots[0] ? this.bots[0].getBlock(pos) : null;
@@ -70,6 +103,7 @@ class SitePreparer {
   previewClearance(bounds) {
     const counts = {};
     const positions = [];
+    let unknown = 0;
     for (let z = bounds.min.z; z <= bounds.max.z; z++) {
       for (let x = bounds.min.x; x <= bounds.max.x; x++) {
         const surface = Math.floor(this._surfaceAt(x, z));
@@ -79,13 +113,17 @@ class SitePreparer {
           if (kind === 'air' || kind === 'valuable' || kind === 'structure' || kind === 'liquid') continue;
           if (kind === 'terrain') continue;
           const block = this._blockAt(pos);
+          if (isUnknownBlock(block)) { unknown++; continue; }
           const key = `${kind}:${block.name}`;
           counts[key] = (counts[key] || 0) + 1;
           if (positions.length < 120) positions.push({ ...pos, kind, block: block.name });
         }
       }
     }
-    return { bounds, counts, positions, total: Object.values(counts).reduce((sum, count) => sum + count, 0) };
+    return {
+      bounds, counts, positions, unknown,
+      total: Object.values(counts).reduce((sum, count) => sum + count, 0)
+    };
   }
 
   /** Clear trees, vegetation and loose terrain above the foundation level. */
@@ -94,6 +132,8 @@ class SitePreparer {
     const yLimit = targetY !== null ? targetY : (level !== null ? level : bounds.max.y);
     const results = [];
     let actions = 0;
+    let scanned = 0;
+    let unknown = 0;
     // Trees first, through the real woodcutting controller (top-down + replant).
     const wood = new WoodcuttingController({ bot: this.bots[0], memory: this.memory, ledger: this.ledger, logger: this.logger });
     let trees = [];
@@ -115,17 +155,19 @@ class SitePreparer {
         const surface = Math.floor(this._surfaceAt(x, z));
         const top = Math.min(bounds.max.y, surface + 12);
         for (let y = top; y >= surface + 1 && actions < maxActions; y--) {
+          if ((scanned++ & 31) === 0) await yieldToLoop();
           if (y > yLimit + 6 && !CLEARABLE.test((this._blockAt({ x, y, z }) || {}).name || '')) continue;
           const pos = { x, y, z };
           const block = this._blockAt(pos);
-          if (!block || block.name === 'air' || block.name === 'cave_air') continue;
+          if (isUnknownBlock(block)) { unknown++; continue; }
+          if (block.name === 'air' || block.name === 'cave_air') continue;
           const kind = classifySiteBlock(block.name);
           if (kind === 'valuable' || kind === 'structure' || kind === 'liquid') {
             if (kind === 'valuable') this.stats.preserved++;
             continue;
           }
-          const bot = this._botFor(actions);
-          if (botStandingOn(bot, pos)) { results.push({ ok: false, action: 'clear', pos, error: 'refused to dig under bot' }); continue; }
+          const bot = await this._workerFor(pos, actions);
+          if (!bot) { results.push({ ok: false, action: 'clear', pos, error: 'no bot can leave the column being cleared' }); this.stats.failed++; continue; }
           const move = await bot.goTo(pos, { range: 4, timeoutMs: 12000 });
           if (move && move.ok === false) { results.push({ ok: false, action: 'clear', pos, bot: bot.name, error: move.error }); this.stats.failed++; continue; }
           const dig = await bot.digBlock(pos);
@@ -145,8 +187,9 @@ class SitePreparer {
     this.updateLedger();
     this.lastResults = results;
     return {
-      ok: results.every((result) => result.ok !== false),
+      ok: unknown === 0 && results.every((result) => result.ok !== false),
       actions,
+      unknown,
       trees: results.filter((result) => result.action === 'tree').length,
       cleared: this.stats.cleared,
       recovered: this._recovered(),
@@ -170,16 +213,20 @@ class SitePreparer {
     const results = [];
     let actions = 0;
     let hazards = 0;
+    let unknown = 0;
+    let scanned = 0;
     for (let y = Math.floor(topY); y >= Math.floor(bottomY) && actions < maxActions; y--) {
       for (let z = minZ; z <= maxZ && actions < maxActions; z++) {
         for (let x = minX; x <= maxX && actions < maxActions; x++) {
+          if ((scanned++ & 31) === 0) await yieldToLoop();
           const pos = { x, y, z };
           const block = this._blockAt(pos);
-          if (!block || block.name === 'air' || block.name === 'cave_air') continue;
+          if (isUnknownBlock(block)) { unknown++; continue; }
+          if (block.name === 'air' || block.name === 'cave_air') continue;
           if (LIQUIDS.has(block.name)) { hazards++; this.hazards.push({ pos, block: block.name, kind: 'liquid' }); continue; }
           if (VALUABLE.test(block.name) && (this.preserveOres || !allowOres)) { this.stats.preserved++; continue; }
-          const bot = this._botFor(actions);
-          if (botStandingOn(bot, pos)) { results.push({ ok: false, action: 'excavate', pos, error: 'refused to dig under bot' }); continue; }
+          const bot = await this._workerFor(pos, actions);
+          if (!bot) { results.push({ ok: false, action: 'excavate', pos, error: 'no bot can leave the column being excavated' }); this.stats.failed++; continue; }
           const move = await bot.goTo(pos, { range: 4, timeoutMs: 12000 });
           if (move && move.ok === false) { results.push({ ok: false, action: 'excavate', pos, error: move.error }); this.stats.failed++; continue; }
           const dig = await bot.digBlock(pos);
@@ -199,9 +246,10 @@ class SitePreparer {
     this.stats.hazards += hazards;
     this.updateLedger();
     return {
-      ok: hazards === 0 && results.every((result) => result.ok !== false),
+      ok: unknown === 0 && hazards === 0 && results.every((result) => result.ok !== false),
       actions,
       hazards,
+      unknown,
       hazardSamples: this.hazards.slice(-20),
       preserved: this.stats.preserved,
       results,
@@ -212,59 +260,120 @@ class SitePreparer {
   /** Cut/fill every surveyed column to one level. */
   async levelFootprint({ minX, maxX, minZ, maxZ, targetY, maxActions = 900, fillItem = null } = {}) {
     const results = [];
+    const y = Math.floor(targetY);
     let actions = 0;
     let cut = 0;
     let filled = 0;
-    const y = Math.floor(targetY);
+    let unknown = 0;
+    let scanned = 0;
+    let stoppedReason = null;
+    let consecutiveFailures = 0;
+    columns:
     for (let z = minZ; z <= maxZ && actions < maxActions; z++) {
       for (let x = minX; x <= maxX && actions < maxActions; x++) {
-        // Find the highest solid block within a bounded vertical window.
+        if ((scanned++ & 15) === 0) await yieldToLoop();
+        // Find the highest observed solid block within a bounded vertical window.
+        // Unknown reads are never treated as either air or solid.
         let top = null;
+        let columnUnknown = false;
         for (let probe = y + 3; probe >= y - 5; probe--) {
           const block = this._blockAt({ x, y: probe, z });
-          if (block && !['air', 'cave_air', 'water', 'lava', 'flowing_water', 'flowing_lava'].includes(block.name)) { top = probe; break; }
+          if (isUnknownBlock(block)) { columnUnknown = true; break; }
+          if (!['air', 'cave_air', 'water', 'lava', 'flowing_water', 'flowing_lava'].includes(block.name)) { top = probe; break; }
         }
+        if (columnUnknown) { unknown++; continue; }
         if (top === null) top = y - 1;
         if (top > y) {
           for (let dy = top; dy > y && actions < maxActions; dy--) {
             const pos = { x, y: dy, z };
-            const bot = this._botFor(actions);
-            if (botStandingOn(bot, pos)) continue;
             const block = this._blockAt(pos);
-            if (!block || block.name === 'air') continue;
-            if (VALUABLE.test(block.name) || LIQUIDS.has(block.name)) { this.stats.preserved++; this.hazards.push({ pos, block: block.name, kind: 'levelling' }); continue; }
+            if (isUnknownBlock(block)) { unknown++; break; }
+            if (block.name === 'air') continue;
+            if (VALUABLE.test(block.name) || LIQUIDS.has(block.name)) {
+              this.stats.preserved++;
+              this.hazards.push({ pos, block: block.name, kind: 'levelling' });
+              continue;
+            }
+            const bot = await this._workerFor(pos, actions);
+            if (!bot) {
+              results.push({ ok: false, action: 'cut', pos, error: 'no bot can leave the column being cut' });
+              this.stats.failed++;
+              if (++consecutiveFailures >= 8) { stoppedReason = 'too many columns could not be reached or vacated'; break columns; }
+              continue;
+            }
             const move = await bot.goTo(pos, { range: 4, timeoutMs: 12000 });
-            if (move && move.ok === false) { results.push({ ok: false, action: 'cut', pos, error: move.error }); this.stats.failed++; continue; }
+            if (move && move.ok === false) {
+              results.push({ ok: false, action: 'cut', pos, bot: bot.name, error: move.error });
+              this.stats.failed++;
+              if (++consecutiveFailures >= 8) { stoppedReason = 'too many columns could not be reached'; break columns; }
+              continue;
+            }
             const dig = await bot.digBlock(pos);
             actions++;
-            if (dig.ok) { cut++; this.stats.levelled++; results.push({ ok: true, action: 'cut', pos, bot: bot.name, block: block.name }); }
-            else { results.push({ ok: false, action: 'cut', pos, bot: bot.name, error: dig.error }); this.stats.failed++; }
+            if (dig.ok) {
+              cut++;
+              this.stats.levelled++;
+              consecutiveFailures = 0;
+              const after = this._blockAt(pos);
+              const removed = after && after.name === 'air';
+              results.push({ ok: removed, action: 'cut', pos, bot: bot.name, block: block.name, error: removed ? undefined : 'cut block still present' });
+              if (!removed) this.stats.failed++;
+            } else {
+              results.push({ ok: false, action: 'cut', pos, bot: bot.name, error: dig.error });
+              this.stats.failed++;
+              if (++consecutiveFailures >= 8) { stoppedReason = 'repeated dig failures'; break columns; }
+            }
           }
         } else if (top < y) {
           for (let dy = top + 1; dy <= y && actions < maxActions; dy++) {
             const pos = { x, y: dy, z };
-            const bot = this._botFor(actions);
+            const bot = await this._workerFor(pos, actions);
+            if (!bot) {
+              results.push({ ok: false, action: 'fill', pos, error: 'no bot can reach the fill column' });
+              this.stats.failed++;
+              stoppedReason = 'no bot can reach the fill column';
+              break columns;
+            }
             const item = availableFill(bot, fillItem);
-            if (!item) { results.push({ ok: false, action: 'fill', pos, error: 'no fill material' }); this.stats.failed++; break; }
+            if (!item) {
+              // Fill material is a team-wide condition. Reporting one failure per
+              // column made a large footprint look like hundreds of defects.
+              results.push({ ok: false, action: 'fill', pos, error: 'no fill material' });
+              this.stats.failed++;
+              stoppedReason = 'no fill material';
+              break columns;
+            }
             const move = await bot.goTo(pos, { range: 5, timeoutMs: 12000 });
-            if (move && move.ok === false) { results.push({ ok: false, action: 'fill', pos, error: move.error }); this.stats.failed++; break; }
+            if (move && move.ok === false) {
+              results.push({ ok: false, action: 'fill', pos, bot: bot.name, error: move.error });
+              this.stats.failed++;
+              if (++consecutiveFailures >= 8) { stoppedReason = 'too many fill columns could not be reached'; break columns; }
+              continue;
+            }
             const placed = await bot.placeBlock(pos, item);
             actions++;
             if (placed.ok) {
-              filled++; this.stats.filled++; this.stats.levelled++;
               const after = this._blockAt(pos);
-              results.push({ ok: after && after.name === item, action: 'fill', pos, bot: bot.name, item, error: after && after.name === item ? undefined : 'fill not visible' });
-            } else { results.push({ ok: false, action: 'fill', pos, bot: bot.name, error: placed.error }); this.stats.failed++; break; }
+              const ok = after && after.name === item;
+              if (ok) { filled++; this.stats.filled++; this.stats.levelled++; consecutiveFailures = 0; }
+              else this.stats.failed++;
+              results.push({ ok, action: 'fill', pos, bot: bot.name, item, error: ok ? undefined : 'fill not visible' });
+            } else {
+              results.push({ ok: false, action: 'fill', pos, bot: bot.name, error: placed.error });
+              this.stats.failed++;
+              if (++consecutiveFailures >= 8) { stoppedReason = 'repeated placement failures'; break columns; }
+            }
           }
         }
       }
     }
+    if (actions >= maxActions) stoppedReason = stoppedReason || 'action limit reached';
     this.updateLedger();
     return {
-      ok: results.every((result) => result.ok !== false),
-      actions, cut, filled, targetY: y,
+      ok: !stoppedReason && unknown === 0 && results.every((result) => result.ok !== false),
+      actions, cut, filled, unknown, targetY: y, stoppedReason,
       results: results.slice(-80),
-      remaining: actions >= maxActions ? 'action limit reached' : 'footprint levelled'
+      remaining: actions >= maxActions ? 'action limit reached' : stoppedReason || 'footprint levelled'
     };
   }
 
@@ -272,29 +381,58 @@ class SitePreparer {
   async drainFootprint({ minX, maxX, minZ, maxZ, topY, bottomY, maxActions = 200 } = {}) {
     const results = [];
     let actions = 0;
+    let unknown = 0;
+    let scanned = 0;
+    let stoppedReason = null;
+    const startDrained = this.stats.drained;
+    rows:
     for (let y = topY; y >= bottomY && actions < maxActions; y--) {
       for (let z = minZ; z <= maxZ && actions < maxActions; z++) {
         for (let x = minX; x <= maxX && actions < maxActions; x++) {
+          if ((scanned++ & 15) === 0) await yieldToLoop();
           const pos = { x, y, z };
           const block = this._blockAt(pos);
-          if (!block || !LIQUIDS.has(block.name)) continue;
-          if (block.name.includes('lava')) { results.push({ ok: false, action: 'drain', pos, error: 'lava requires a controlled cooling/containment plan' }); this.hazards.push({ pos, block: block.name, kind: 'lava' }); continue; }
-          const bot = this._botFor(actions);
+          if (isUnknownBlock(block)) { unknown++; continue; }
+          if (!LIQUIDS.has(block.name)) continue;
+          if (block.name.includes('lava')) {
+            results.push({ ok: false, action: 'drain', pos, error: 'lava requires a controlled cooling/containment plan' });
+            this.hazards.push({ pos, block: block.name, kind: 'lava' });
+            continue;
+          }
+          const bot = await this._workerFor(pos, actions);
+          if (!bot) { results.push({ ok: false, action: 'drain', pos, error: 'no bot can reach the liquid' }); this.stats.failed++; stoppedReason = 'no bot can reach the liquid'; break rows; }
           const item = availableFill(bot, 'cobblestone');
-          if (!item) { results.push({ ok: false, action: 'drain', pos, error: 'no displacement material' }); break; }
+          if (!item) {
+            // No displacement material is a team-wide condition; stop after one
+            // honest report instead of scanning the whole footprint per column.
+            results.push({ ok: false, action: 'drain', pos, error: 'no displacement material' });
+            this.stats.failed++;
+            stoppedReason = 'no displacement material';
+            break rows;
+          }
           const move = await bot.goTo(pos, { range: 5, timeoutMs: 12000 });
-          if (move && move.ok === false) { results.push({ ok: false, action: 'drain', pos, error: move.error }); continue; }
+          if (move && move.ok === false) {
+            results.push({ ok: false, action: 'drain', pos, bot: bot.name, error: move.error });
+            this.stats.failed++;
+            continue;
+          }
           const placed = await bot.placeBlock(pos, item);
           actions++;
           const after = this._blockAt(pos);
-          const ok = placed.ok && after && !LIQUIDS.has(after.name);
+          const ok = placed.ok && after && !isUnknownBlock(after) && !LIQUIDS.has(after.name);
           if (ok) this.stats.drained++;
+          else this.stats.failed++;
           results.push({ ok, action: 'drain', pos, bot: bot.name, item, block: block.name, after: after?.name, error: ok ? undefined : (placed.error || 'liquid still present') });
         }
       }
     }
+    if (actions >= maxActions) stoppedReason = stoppedReason || 'action limit reached';
     this.updateLedger();
-    return { ok: results.every((result) => result.ok !== false), actions, drained: this.stats.drained, results, hazards: this.hazards.slice(-20) };
+    return {
+      ok: !stoppedReason && unknown === 0 && results.every((result) => result.ok !== false),
+      actions, drained: this.stats.drained - startDrained, unknown, stoppedReason,
+      results, hazards: this.hazards.slice(-20)
+    };
   }
 
   /** Build a physical fence perimeter with a gate opening; verifies every post. */
@@ -345,10 +483,12 @@ class SitePreparer {
       results.push({ ok, action: 'perimeter', pos, bot: bot.name, item: fenceItem, error: ok ? undefined : (block.error || 'post not visible') });
     }
     this.updateLedger();
+    const skipped = results.filter((result) => result.skipped).length;
     return {
-      ok: placed > 0 && results.filter((result) => result.ok === false).length === 0,
-      placed, requested: filtered.length, gate, fenceItem,
-      skipped: results.filter((result) => result.skipped).length, results
+      // Posts already occupied by a dedicated light are satisfied posts, not a
+      // reason to fail an otherwise complete perimeter.
+      ok: (placed + skipped) > 0 && results.filter((result) => result.ok === false).length === 0,
+      placed, requested: filtered.length, gate, fenceItem, skipped, results
     };
   }
 

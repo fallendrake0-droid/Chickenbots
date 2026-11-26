@@ -59,14 +59,25 @@ function assignRegions(regions, botNames, { supervisor = null, includeSupervisor
   if (!pool.length) {
     return { assignments: [], supervisor: includeSupervisor ? null : supervisor, balanced: false, error: 'no bots available for excavation regions' };
   }
-  regions.forEach((region, i) => {
-    const name = pool[i % pool.length];
+  // Volume-aware least-loaded allocation. Plain round-robin alternated bots but
+  // ignored that mask-aware regions can differ several-fold in volume, leaving
+  // one bot with most of the digging while another finished early.
+  const loads = new Map(pool.map((name) => [name, 0]));
+  regions.forEach((region) => {
+    let name = pool[0];
+    for (const candidate of pool) {
+      if ((loads.get(candidate) || 0) < (loads.get(name) || 0)) name = candidate;
+    }
+    loads.set(name, (loads.get(name) || 0) + (Number(region.volume) || 0));
     assign.push({ regionId: region.id, bot: name, box: region.box, volume: region.volume });
   });
+  const loadValues = [...loads.values()];
   return {
     assignments: assign,
+    loads: Object.fromEntries(loads),
     supervisor: includeSupervisor ? null : supervisor,
-    balanced: assign.every((a) => !regions.find((r) => r.id !== a.regionId && boxesOverlap(r.box, a.box)))
+    balanced: assign.every((a) => !regions.find((r) => r.id !== a.regionId && boxesOverlap(r.box, a.box))),
+    loadSpread: loadValues.length ? Math.max(...loadValues) - Math.min(...loadValues) : 0
   };
 }
 
@@ -74,16 +85,33 @@ function assignRegions(regions, botNames, { supervisor = null, includeSupervisor
 function reassignRegion(assignments, disconnectedBot, candidates = []) {
   const lost = assignments.filter((a) => a.bot === disconnectedBot);
   if (!lost.length) return { ok: false, error: 'bot has no regions' };
-  const pool = candidates.filter((c) => c !== disconnectedBot);
+  const pool = [...new Set(candidates)].filter((c) => c && c !== disconnectedBot);
   if (!pool.length) return { ok: false, error: 'no candidates' };
+  // Seed each surviving candidate's existing load, then add each lost region to
+  // the least-loaded candidate in turn. The old implementation recomputed the
+  // same loads for every lost region, so every region went to one bot and the
+  // coordinator (one assignment per bot) silently lost all but one of them.
+  const loads = new Map(pool.map((name) => [name, 0]));
+  for (const assignment of assignments) {
+    if (assignment.bot === disconnectedBot) continue;
+    if (loads.has(assignment.bot)) loads.set(assignment.bot, loads.get(assignment.bot) + (Number(assignment.volume) || 0));
+  }
   const updated = assignments.map((a) => {
     if (a.bot !== disconnectedBot) return a;
-    const loads = {};
-    for (const x of assignments) if (x.bot !== disconnectedBot) loads[x.bot] = (loads[x.bot] || 0) + x.volume;
-    const best = pool.slice().sort((x, y) => (loads[x] || 0) - (loads[y] || 0) || x.localeCompare(y))[0];
+    let best = pool[0];
+    for (const name of pool) {
+      if ((loads.get(name) || 0) < (loads.get(best) || 0)) best = name;
+    }
+    loads.set(best, (loads.get(best) || 0) + (Number(a.volume) || 0));
     return { ...a, bot: best, reassignedFrom: disconnectedBot };
   });
-  return { ok: true, assignments: updated, moved: lost.length };
+  return {
+    ok: true,
+    assignments: updated,
+    moved: lost.length,
+    loads: Object.fromEntries(loads),
+    distributedTo: [...new Set(updated.filter((a) => a.reassignedFrom === disconnectedBot).map((a) => a.bot))]
+  };
 }
 
 /** Layer iteration used by the planner and executor. */

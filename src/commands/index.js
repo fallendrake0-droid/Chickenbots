@@ -1782,7 +1782,10 @@ function registerCombat(registry, services) {
       const bot = pickBot(services, args[1] || null);
       const controller = actionsFor(services, bot.name).combat;
       if (sub === 'optimise' || sub === 'optimize') {
-        const prepared = await controller.prepare(controller.assess().nearest);
+        // Equipping gear touches the same hands/inventory as a running task.
+        // Take the operator lock so a concurrent mine/chop cannot be equipped
+        // out from under and so the command cannot interleave two pathfinders.
+        const prepared = await withBotExclusive(services, bot, () => controller.prepare(controller.assess().nearest));
         return { ok: true, bot: bot.name, prepared, gear: controller.gearStatus() };
       }
       if (sub === 'durability') return { ok: true, bot: bot.name, broken: controller.gearStatus().broken, weapon: controller.gearStatus().bestWeapon, shield: controller.gearStatus().shield };
@@ -1792,7 +1795,7 @@ function registerCombat(registry, services) {
           const layout = Object.keys(bot.inventory || {}).filter((name) => bot.countItem(name) > 0).map((name) => ({ name, slot: itemSlot(name) })).filter((row) => String(row.slot).startsWith('hotbar'));
           return { ok: true, bot: bot.name, applied: false, note: 'this adapter cannot reorder the hotbar; conceptual layout only', layout };
         }
-        return { ok: true, bot: bot.name, ...(await bot.layoutHotbar()) };
+        return { ok: true, bot: bot.name, ...(await withBotExclusive(services, bot, () => bot.layoutHotbar())) };
       }
       if (sub === 'progression' || sub === 'progress') {
         const { upgradePlan } = require('../combat/equipment');

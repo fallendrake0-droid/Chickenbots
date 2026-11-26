@@ -352,7 +352,10 @@ class ExcavationManager {
       if (exc.status !== 'ACTIVE' && exc.status !== 'PAUSED') continue;
       const executors = [...this.executors.values()].filter((e) => e.botName === botName);
       for (const executor of executors) executor.stop('bot disconnected');
-      const result = reassignRegion(exc.assignments, botName, this.coordinator ? this.coordinator.botNames : []);
+      const activeNames = this.coordinator
+        ? this.coordinator.activeBots().map((bot) => bot.name).filter((name) => name !== botName)
+        : [];
+      const result = reassignRegion(exc.assignments, botName, activeNames);
       if (result.ok) {
         exc.assignments = result.assignments;
         const activeBots = this.coordinator ? this.coordinator.activeBots().map((b) => b.name) : [];

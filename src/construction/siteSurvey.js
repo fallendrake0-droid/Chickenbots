@@ -275,6 +275,9 @@ function projectBoundaries({ origin, width, length, margin = 6, staging = null }
 
 function classifySiteBlock(name) {
   if (!name || name === 'air' || name === 'cave_air') return 'air';
+  // A missing chunk read is unknown, not terrain: classifying it as terrain
+  // made clearance previews claim blocks that no bot had observed.
+  if (['unloaded', 'unknown', 'not_loaded', 'notloaded'].includes(String(name).toLowerCase())) return 'unknown';
   if (LIQUIDS.has(name)) return 'liquid';
   if (VALUABLE.test(name)) return 'valuable';
   if (CLEARABLE.test(name) || PLANTS.test(name)) return 'vegetation';

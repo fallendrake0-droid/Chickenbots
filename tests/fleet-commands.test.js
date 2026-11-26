@@ -172,3 +172,17 @@ test('fleet mining removes real ore blocks and reports per-bot evidence', async 
     await runtime.shutdown('test');
   }
 });
+
+test('gear optimise takes the per-bot operator lock before equipping', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    let exclusiveCalls = 0;
+    const original = runtime.runExclusive.bind(runtime);
+    runtime.runExclusive = async (name, fn) => { exclusiveCalls++; return original(name, fn); };
+    const result = await runtime.commands.execute('gear optimise', { source: 'internal' });
+    assert.equal(result.result.ok, true, JSON.stringify(result.result));
+    assert.ok(exclusiveCalls >= 1, 'gear changes must queue behind the bot command lock');
+  } finally {
+    await runtime.shutdown('test');
+  }
+});

@@ -106,6 +106,9 @@ function applyPipeline(proto) {
       actions: (project.sitePreparation.clearance?.actions || 0) + result.actions,
       recovered: result.recovered, lastAt: nowIso()
     };
+    if (result.unknown > 0) {
+      return this._blockPhase(project, phase, `${result.unknown} clearance positions are in unloaded chunks; move the team closer and re-check before clearing`);
+    }
     const remaining = this._clearRemaining(project);
     if (remaining > 0) {
       if (result.actions === 0) return this._blockPhase(project, phase, `${remaining} clearance blocks remain and no bot could reach/clear them`);
@@ -145,6 +148,7 @@ function applyPipeline(proto) {
       topY: project.origin.y - 1, bottomY: project.origin.y - depth, maxActions
     });
     if (result.hazards > 0) return this._blockPhase(project, phase, 'liquids observed in excavation box; stop and control hazards first');
+    if (result.unknown > 0) return this._blockPhase(project, phase, `${result.unknown} excavation positions are in unloaded chunks; the hole cannot be verified yet`);
     project.sitePreparation.excavation = {
       ...(project.sitePreparation.excavation || {}),
       actions: (project.sitePreparation.excavation?.actions || 0) + result.actions,
@@ -192,6 +196,11 @@ function applyPipeline(proto) {
       filled: (project.sitePreparation.levelling?.filled || 0) + result.filled,
       targetY: target, lastAt: nowIso()
     };
+    if (result.unknown > 0) return this._blockPhase(project, phase, `${result.unknown} levelling probes are in unloaded chunks; move the team closer before declaring the footprint level`);
+    if (result.stoppedReason && result.stoppedReason !== 'action limit reached') {
+      const remaining = this._levelRemaining(project);
+      return this._blockPhase(project, phase, `levelling stopped (${result.stoppedReason}); ${remaining} columns are not level`);
+    }
     const remaining = this._levelRemaining(project);
     if (remaining > 0) {
       if (result.actions === 0) return this._blockPhase(project, phase, `${remaining} columns are not level and cannot be cut/filled with current reach or materials`);
@@ -228,6 +237,10 @@ function applyPipeline(proto) {
       minX: b.min.x, maxX: b.max.x, minZ: b.min.z, maxZ: b.max.z,
       topY: project.origin.y - 1, bottomY: project.origin.y - 6, maxActions
     });
+    if (result.unknown > 0) return this._blockPhase(project, phase, `${result.unknown} drainage probes are in unloaded chunks; liquid state is unknown`);
+    if (result.stoppedReason && result.stoppedReason !== 'action limit reached') {
+      return this._blockPhase(project, phase, `drainage stopped (${result.stoppedReason}); liquids remain in the foundation`);
+    }
     const remaining = this._liquidsInFoundation(project);
     if (remaining.length) {
       if (result.actions === 0) return this._blockPhase(project, phase, `${remaining.length} liquid blocks remain and cannot be displaced safely`);

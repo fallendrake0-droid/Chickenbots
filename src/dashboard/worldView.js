@@ -157,7 +157,10 @@ function nameOf(block) {
 }
 
 function isVisible(name) {
-  return Boolean(name) && name !== 'air' && name !== 'cave_air' && name !== 'void_air';
+  // An unloaded chunk is unknown. Drawing it as a surface (usually at the top
+  // of the scan window) invented terrain that no bot had observed.
+  if (!name) return false;
+  return !['air', 'cave_air', 'void_air', 'unloaded', 'unknown', 'not_loaded', 'void'].includes(String(name).toLowerCase());
 }
 
 function isFluid(name) {

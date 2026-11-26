@@ -64,6 +64,23 @@ test('repeat requests are served from a short-lived cache', () => {
   assert.deepEqual(second.columns, first.columns);
 });
 
+test('unloaded chunks produce no invented surface columns', () => {
+  const services = {
+    mode: 'live',
+    bots: new Map([['________', {
+      name: '________',
+      ready: true, connected: true, spawned: true,
+      position: { x: 0, y: 64, z: 0 },
+      getBlock: () => ({ name: 'unloaded' })
+    }]])
+  };
+  const snap = worldSnapshot(services, { bot: '________', radius: 4, height: 8 });
+  assert.equal(snap.ok, true);
+  assert.equal(snap.columns.length, 0);
+  assert.equal(snap.palette.length, 0);
+  assert.equal(snap.counts.columns, 0);
+});
+
 test('missing or unknown bots return an honest error instead of fake terrain', () => {
   const { services } = fixture();
   const unknown = worldSnapshot(services, { bot: 'nobody' });
