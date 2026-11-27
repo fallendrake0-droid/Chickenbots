@@ -35,10 +35,10 @@ export default {
     return `
       <div class="page">
         <section class="overview-hero">
-          <div>
-            <div class="eyebrow">Operations overview</div>
-            <h1>Welcome to Chickenbots</h1>
-            <p>${fleet.length || rosterNames.length} autonomous bots, one coordinated team. This is the live operational picture.</p>
+          <div class="hero-copy">
+            <div class="eyebrow">Command deck · live operations</div>
+            <h1>Fleet command center</h1>
+            <p>${fleet.length || rosterNames.length} autonomous operators, one coordinated team. Telemetry, objectives and fleet health in a single command surface.</p>
             <div class="hero-meta">
               <span class="status">${icon('server')} ${esc(server.host || 'server not configured')}:${esc(server.port || '—')}</span>
               <span class="status">${modeBadge}</span>
@@ -54,9 +54,15 @@ export default {
               }).join('')}
             </div>
           </div>
-          <div class="hero-actions">
-            <button class="button" type="button" data-command="${autonomyPaused ? 'resume' : 'pause'}">${icon(autonomyPaused ? 'play' : 'pause')} ${autonomyPaused ? 'Resume autonomy' : 'Pause autonomy'}</button>
-            <button class="button button--primary" type="button" data-command-palette>${icon('terminal')} Run command</button>
+          <div class="hero-side">
+            <div class="hero-signal" role="img" aria-label="${online.length} of ${fleet.length || rosterNames.length} bots online">
+              <strong>${online.length}<small>/${fleet.length || rosterNames.length}</small></strong>
+              <span>bots online</span>
+            </div>
+            <div class="hero-actions">
+              <button class="button" type="button" data-command="${autonomyPaused ? 'resume' : 'pause'}">${icon(autonomyPaused ? 'play' : 'pause')} ${autonomyPaused ? 'Resume autonomy' : 'Pause autonomy'}</button>
+              <button class="button button--primary" type="button" data-command-palette>${icon('terminal')} Run command</button>
+            </div>
           </div>
         </section>
 
@@ -139,7 +145,7 @@ export default {
           <div class="card-title">${icon('heart')} Fleet health</div>
           <div class="card-subtitle">Real samples collected since this page opened (${state.samples.length})</div>
         </div>
-        <div class="chart-legend">${botNames().map((name, index) => `<span class="legend-item"><span class="legend-swatch" style="background:${['#39b8a5','#5998e8','#e5a947','#a78bfa','#e05b68','#4ecdc4','#f78c6b','#8bd450','#c77dff','#ffb703'][index % 10]}"></span>${esc(name)}</span>`).join('')}</div>
+        <div class="chart-legend">${botNames().map((name, index) => `<span class="legend-item"><span class="legend-swatch" style="background:${['#d2f65a','#4ee3c0','#6aa9ff','#ffbf69','#ff6b7a','#c084fc','#f78c6b','#7ee787','#e879f9','#fde047'][index % 10]}"></span>${esc(name)}</span>`).join('')}</div>
       </div>
       ${lineChart(state.samples, botNames(), { metric: 'health', max: 20 })}`;
   }

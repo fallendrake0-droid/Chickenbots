@@ -218,7 +218,7 @@ export function chartLegend(names) {
 }
 
 function chartColorFor(index) {
-  const palette = ['#39b8a5', '#5998e8', '#e5a947', '#a78bfa', '#e05b68'];
+  const palette = ['#d2f65a', '#4ee3c0', '#6aa9ff', '#ffbf69', '#ff6b7a'];
   return palette[index % palette.length];
 }
 

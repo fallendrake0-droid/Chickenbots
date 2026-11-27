@@ -113,7 +113,7 @@ export function progressTone(value) {
   return 'danger';
 }
 
-const CHART_COLORS = ['#39b8a5', '#5998e8', '#e5a947', '#a78bfa', '#e05b68', '#35b779'];
+const CHART_COLORS = ['#d2f65a', '#4ee3c0', '#6aa9ff', '#ffbf69', '#ff6b7a', '#c084fc'];
 export function chartColor(nameOrIndex) {
   if (typeof nameOrIndex === 'number') return CHART_COLORS[nameOrIndex % CHART_COLORS.length];
   const index = botRoster.indexOf(nameOrIndex);
@@ -124,8 +124,8 @@ export function chartColor(nameOrIndex) {
 }
 
 const CATEGORY_COLORS = {
-  ore: '#8a9bb0', ingot: '#b8c4d2', food: '#e5a947', tool: '#5998e8', weapon: '#e05b68',
-  armor: '#a78bfa', block: '#39b8a5', log: '#a9754f', planks: '#c08a5a', plant: '#35b779',
+  ore: '#8a9bb0', ingot: '#b8c4d2', food: '#ffbf69', tool: '#6aa9ff', weapon: '#ff6b7a',
+  armor: '#c084fc', block: '#d2f65a', log: '#b58256', planks: '#cf9a65', plant: '#7ee787',
   potion: '#d67ad6', utility: '#7d8b9c', redstone: '#d95d5d', treasure: '#e0c15b', other: '#657386'
 };
 export function categoryColor(category) { return CATEGORY_COLORS[String(category || '').toLowerCase()] || CATEGORY_COLORS.other; }

@@ -96,3 +96,74 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* V7 command-deck responsive behaviour */
+@media (max-width: 1180px) {
+  .overview-hero { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .hero-side { flex-direction: row; align-items: center; justify-content: space-between; width: 100%; }
+  .hero-actions { justify-content: flex-start; }
+  .hero-signal { width: 112px; }
+  .hero-signal strong { font-size: 34px; }
+  .mission-cell--objective { flex: 1 1 200px; min-width: 180px; }
+}
+
+@media (max-width: 1080px) {
+  .mission-cell--build { display: none; }
+  .mission-cell--objective .mission-value { max-width: 210px; }
+  .topbar { padding-inline: 20px; }
+  .main { padding: 24px 22px 56px; }
+}
+
+@media (max-width: 780px) {
+  .mission-strip { padding-inline: 18px; min-height: 44px; }
+  .mission-cell { min-width: 98px; padding: 6px 14px; }
+  .mission-cell--objective { display: none; }
+  .mission-clock { padding-left: 14px; gap: 6px; }
+  .mission-clock strong { font-size: 13px; }
+  #mission-date { display: none; }
+  .main { padding: 20px 16px 48px; }
+  .topbar { padding-inline: 14px; }
+  .overview-hero { padding: 26px 24px; }
+  .overview-hero h1 { font-size: clamp(28px, 7.4vw, 38px); }
+  .hero-side { gap: 14px; }
+  .hero-actions { width: auto; }
+  .hero-actions .button { flex: 0 1 auto; }
+  .page-title { font-size: clamp(24px, 5.8vw, 30px); }
+  .stat-value { font-size: 28px; }
+  .card:hover { transform: none; }
+  .bot-card:hover { transform: none; }
+}
+
+@media (max-width: 560px) {
+  .overview-hero { padding: 22px 18px; gap: 20px; }
+  .hero-side { flex-direction: column; align-items: flex-start; }
+  .hero-signal { width: 96px; }
+  .hero-signal strong { font-size: 29px; }
+  .hero-signal strong small { font-size: 13px; }
+  .hero-signal > span { font-size: 7px; }
+  .overview-hero .hero-meta { gap: 5px; }
+  .overview-hero .status { font-size: 9px; padding: 3px 6px; }
+  .hero-actions { width: 100%; }
+  .hero-actions .button { flex: 1 1 auto; justify-content: center; }
+  .mission-clock { margin-left: 0; }
+  .stat-card { min-height: 112px; padding: 15px; }
+  .stat-value { font-size: 26px; }
+  .page-header { padding-bottom: 12px; }
+}
+
+@media (max-width: 480px) {
+  .mission-cell { min-width: 86px; padding-inline: 10px; }
+  .mission-cell:first-child { padding-left: 0; }
+  .mission-clock { padding-left: 10px; }
+  .mission-value { font-size: 10.5px; }
+  .overview-hero h1 { font-size: 27px; letter-spacing: -0.045em; }
+  .stat-value { font-size: 24px; }
+}
+
+@media print {
+  .mission-strip { display: none !important; }
+  .overview-hero { background: #fff; box-shadow: none; border-color: #ccc; }
+  .overview-hero::before, .overview-hero::after, .hero-signal::before, .hero-signal::after { display: none; }
+  .hero-signal { border-color: #999; background: #fff; }
+  .hero-signal strong, .hero-signal > span { color: #000; }
+}

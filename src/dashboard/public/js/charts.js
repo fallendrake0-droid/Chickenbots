@@ -38,7 +38,7 @@ export function lineChart(samples, bots, { height = 190, metric = 'health', max 
     </svg>`;
 }
 
-export function sparkline(values, { width = 120, height = 30, color = '#39b8a5', max = 20 } = {}) {
+export function sparkline(values, { width = 120, height = 30, color = '#d2f65a', max = 20 } = {}) {
   if (!values || values.length < 2) return `<span class="muted tiny">—</span>`;
   const step = width / Math.max(1, values.length - 1);
   const points = values.map((value, i) => `${(i * step).toFixed(1)},${(height - (clamp(value, 0, max) / max) * (height - 4) - 2).toFixed(1)}`).join(' ');
@@ -63,8 +63,8 @@ export function donut(value, { size = 92, stroke = 8, label = '', caption = '' }
   return `
     <div class="donut" style="position:relative;width:${size}px;height:${size}px">
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(label)} ${percent.toFixed(0)} percent">
-        <circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke="#1f2a37" stroke-width="${stroke}"/>
-        <circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke="#39b8a5" stroke-width="${stroke}" stroke-linecap="round"
+        <circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke="#182433" stroke-width="${stroke}"/>
+        <circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke="#d2f65a" stroke-width="${stroke}" stroke-linecap="round"
           stroke-dasharray="${dash} ${circumference - dash}" transform="rotate(-90 ${size / 2} ${size / 2})"/>
       </svg>
       <div style="position:absolute;inset:0;display:grid;place-items:center;text-align:center;line-height:1.1">

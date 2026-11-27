@@ -16,7 +16,7 @@ let pending = false;
 let lastLiveRender = 0;
 
 function cacheDom() {
-  for (const id of ['app', 'sidebar', 'nav', 'sidebar-status', 'sidebar-collapse', 'menu-toggle', 'sidebar-backdrop', 'breadcrumbs', 'server-host', 'server-status', 'fleet-count', 'notifications-toggle', 'notification-dot', 'notifications-panel', 'command-trigger', 'view', 'main', 'toasts', 'modal-root', 'build-badge', 'build-label']) {
+  for (const id of ['app', 'sidebar', 'nav', 'sidebar-status', 'sidebar-collapse', 'menu-toggle', 'sidebar-backdrop', 'breadcrumbs', 'server-host', 'server-status', 'fleet-count', 'notifications-toggle', 'notification-dot', 'notifications-panel', 'command-trigger', 'view', 'main', 'toasts', 'modal-root', 'build-badge', 'build-label', 'mission-fleet', 'mission-tasks', 'mission-objective', 'mission-build', 'mission-time', 'mission-date']) {
     dom[id] = document.getElementById(id);
   }
 }
@@ -76,6 +76,49 @@ function setActiveNav(path) {
   }
 }
 
+function updateMissionRail(fleet) {
+  const snap = state.snapshot || {};
+  const taskManager = snap.taskManager || {};
+  const tasks = Array.isArray(taskManager.tasks) ? taskManager.tasks : [];
+  const activeTasks = tasks.filter((task) => task.status === 'ACTIVE' || task.status === 'CLAIMED').length;
+  const objective = (Array.isArray(taskManager.objectives) ? taskManager.objectives : [])
+    .find((entry) => entry.status === 'ACTIVE');
+  if (dom['mission-fleet']) {
+    const tone = fleet.total && fleet.online === fleet.total ? 'ok' : fleet.online ? 'warn' : 'danger';
+    dom['mission-fleet'].innerHTML = `<span class="status-dot status-dot--${tone}"></span> ${fleet.online} / ${fleet.total}`;
+  }
+  if (dom['mission-tasks']) {
+    const pending = tasks.filter((task) => task.status === 'PENDING').length;
+    dom['mission-tasks'].textContent = `${activeTasks} active · ${pending} queued`;
+  }
+  if (dom['mission-objective']) {
+    dom['mission-objective'].textContent = objective
+      ? `${objective.title}${objective.progress && objective.progress.target ? ` — ${Math.round((objective.progress.current / objective.progress.target) * 100)}%` : ''}`
+      : 'No active objective';
+  }
+  if (dom['mission-build']) {
+    const build = state.build;
+    dom['mission-build'].textContent = build
+      ? `${build.gitShort || 'nogit'} · ${String(build.frontendHash || '').slice(0, 7)}`
+      : 'checking';
+  }
+}
+
+function tickClock() {
+  const now = new Date();
+  if (dom['mission-time']) {
+    dom['mission-time'].textContent = now.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+  if (dom['mission-date']) {
+    dom['mission-date'].textContent = now.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase();
+  }
+}
+
+function startClock() {
+  tickClock();
+  setInterval(tickClock, 1000);
+}
+
 function updateChrome(route) {
   setActiveNav(route.key === 'not-found' ? '' : route.key);
   const crumbs = `<a href="#/">Chickenbots</a> <span aria-hidden="true">/</span> <span>${esc(route.group)}</span> <span aria-hidden="true">/</span> <strong>${esc(route.label)}</strong>`;
@@ -90,6 +133,7 @@ function updateChrome(route) {
   }
   const fleet = fleetHealth();
   if (dom['fleet-count']) dom['fleet-count'].textContent = `${fleet.online} / ${fleet.total}`;
+  updateMissionRail(fleet);
   const unread = unreadNotifications();
   if (dom['notification-dot']) {
     dom['notification-dot'].hidden = unread === 0;
@@ -889,6 +933,7 @@ function adoptPathDeepLink() {
 function start() {
   adoptPathDeepLink();
   cacheDom();
+  startClock();
   buildShell();
   wireShell();
   wireGlobalActions();
