@@ -208,7 +208,10 @@ test('the command surface drives fishing, home, sleep automation, formations and
     const resumed = await runtime.executeCommand(`build resume ${buildId}`, { source: 'dashboard' });
     assert.equal(resumed.result.ok, true, resumed.result.error);
     assert.equal(resumed.result.status.state, 'RUNNING');
-    const stopped = await runtime.executeCommand(`build stop ${buildId}`, { source: 'dashboard' });
+    const unconfirmedStop = await runtime.executeCommand(`build stop ${buildId}`, { source: 'dashboard' });
+    assert.equal(unconfirmedStop.result.ok, false);
+    assert.equal(unconfirmedStop.result.code, 'CONFIRMATION_REQUIRED');
+    const stopped = await runtime.executeCommand(`build stop ${buildId} confirm`, { source: 'dashboard' });
     assert.equal(stopped.result.status.state, 'CANCELLED');
 
     const teamOff = await runtime.executeCommand('team off', { source: 'dashboard' });

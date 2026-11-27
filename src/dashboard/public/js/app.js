@@ -3,10 +3,11 @@ import { esc, timeAgo, humanize } from './utils.js';
 import { openModal, isModalOpen, confirmDialog, toast, resultMessage, setButtonLoading } from './ui.js';
 import {
   init, state, prefs, savePrefs, subscribe, unreadNotifications, notifications,
-  markNotificationsRead, botNames, serverInfo, fleetHealth, runCommand, runBotAction, runQueueAction,
+  markNotificationsRead, serverInfo, fleetHealth, runCommand, runBotAction, runQueueAction,
   fetchLogs, refreshCommands, payloadOf, frontendBuild
 } from './store.js';
 import { resolveRoute, renderNav, NAV_ITEMS } from './router.js';
+import { hasCommand, parseCommandLine, requiresConfirmation } from './commands.js';
 import { openAssignDialog, openPriorityDialog, openCreateDialog, openObjectiveDialog, findTask } from './taskActions.js';
 import { applyDocumentPrefs } from './pages/system.js';
 
@@ -414,7 +415,15 @@ function notify(type, title, message, duration) {
 /* ------------------------------------------------------------ command run */
 
 async function executeLine(line, { danger = false, confirmTitle = 'Confirm command', confirmMessage = '', successTitle = null } = {}) {
-  if (danger) {
+  // Ask for confirmation before the first attempt whenever the registry says
+  // this exact invocation is destructive. The backend still enforces it; this
+  // only avoids a guaranteed round-trip rejection.
+  let needsConfirmation = danger;
+  try {
+    const parsed = parseCommandLine(line);
+    if (parsed.name && requiresConfirmation(parsed.name, parsed.args)) needsConfirmation = true;
+  } catch (_) { /* the backend reports tokenizer errors */ }
+  if (needsConfirmation) {
     const ok = await confirmDialog({
       title: confirmTitle,
       message: confirmMessage || `Run “${line}”?`,
@@ -423,7 +432,7 @@ async function executeLine(line, { danger = false, confirmTitle = 'Confirm comma
     });
     if (!ok) return null;
   }
-  const result = await runCommand(line, { confirm: danger });
+  const result = await runCommand(line, { confirm: needsConfirmation });
   const payload = payloadOf(result);
   if (payload && payload.requiresConfirmation) {
     const ok = await confirmDialog({
@@ -445,10 +454,16 @@ async function executeLine(line, { danger = false, confirmTitle = 'Confirm comma
 
 async function onCommandButton(button) {
   if (button.dataset.busy === 'true') return;
-  button.dataset.busy = 'true';
-  setButtonLoading(button, true);
+  const line = button.dataset.command || '';
   try {
-    await executeLine(button.dataset.command, {
+    const parsed = parseCommandLine(line);
+    if (!parsed.name || !hasCommand(parsed.name)) {
+      notify('error', 'Command unavailable', `“${parsed.name || line}” is not in the backend command catalogue. The control was not executed.`, 9000);
+      return;
+    }
+    button.dataset.busy = 'true';
+    setButtonLoading(button, true);
+    await executeLine(line, {
       danger: button.dataset.danger === 'true',
       confirmTitle: button.dataset.confirmTitle || 'Confirm command',
       confirmMessage: button.dataset.confirmMessage || '',
@@ -478,12 +493,24 @@ async function onFleetCommand(button) {
   setButtonLoading(button, true);
   const failures = [];
   let ok = 0;
+  let line = base;
   try {
     // One command reaches the whole fleet. The registry fans out with bounded
     // concurrency and returns a structured row per bot; the browser must not
     // issue ten separate commands (that is what "one command per bot" means).
     const [verb, ...rest] = base.split(/\s+/);
-    const line = `${verb} all${rest.length ? ` ${rest.join(' ')}` : ''}`;
+    if (!hasCommand(verb)) {
+      failures.push(`“${verb}” is not in the backend command catalogue`);
+      setButtonLoading(button, false);
+      notify('error', 'Fleet command unavailable', failures[0], 9000);
+      return;
+    }
+    if (rest.length && ['all', 'fleet', 'team'].includes(String(rest[0]).toLowerCase())) {
+      setButtonLoading(button, false);
+      notify('error', 'Invalid fleet control', `data-fleet-command must carry the verb only; “${base}” would have produced “${verb} all all …”.`, 9000);
+      return;
+    }
+    line = `${verb} all${rest.length ? ` ${rest.join(' ')}` : ''}`;
     const result = await runCommand(line);
     const payload = payloadOf(result);
     const rows = Array.isArray(payload && payload.results) ? payload.results : [];
@@ -491,14 +518,18 @@ async function onFleetCommand(button) {
       if (row && row.ok === false) failures.push(`${row.bot || 'fleet'}: ${row.error || row.code || 'rejected'}`);
       else if (row && row.ok === true) ok++;
     }
-    if (!rows.length && payload && payload.ok !== false) ok = botNames().length;
     if (!rows.length && payload && payload.ok === false) failures.push(payload.error || 'rejected');
+    if (!rows.length && payload && payload.ok !== false) {
+      notify('info', 'Fleet command accepted', `The backend accepted “${line}”. No per-bot rows were returned, so completion is not claimed.`, 6000);
+      fetchLogs();
+      return;
+    }
   } catch (err) {
     failures.push(err.message);
   }
   setButtonLoading(button, false);
-  if (failures.length) notify('warn', `${ok} succeeded`, failures.slice(0, 3).join(' · '), 9000);
-  else notify('success', 'Fleet command complete', `${ok} bots accepted “${base}”.`);
+  if (failures.length) notify('warn', `${ok} accepted · ${failures.length} failed`, failures.slice(0, 3).join(' · '), 9000);
+  else notify('success', 'Fleet command accepted', `${ok} bot${ok === 1 ? '' : 's'} accepted “${line}”. Accepted is not the same as completed.`);
   fetchLogs();
 }
 
@@ -627,9 +658,13 @@ function openPalette() {
   const navItems = NAV_ITEMS.map((item) => ({ type: 'nav', id: item.path, label: item.label, meta: item.group, icon: item.icon }));
   const commandItems = state.commands.map((command) => ({
     type: 'command', id: command.name, label: command.name,
-    meta: command.summary || humanize(command.category || 'command'),
-    keywords: [command.category, ...(command.aliases || []), command.usage].filter(Boolean).join(' '),
-    usage: command.usage, dangerous: command.dangerous, icon: 'terminal'
+    meta: [humanize(command.category || 'command'), command.summary].filter(Boolean).join(' · '),
+    keywords: [command.category, ...(command.aliases || []), command.usage, ...(command.requiredArgs || [])].filter(Boolean).join(' '),
+    usage: command.usage, dangerous: command.dangerous,
+    readOnly: command.readOnly === true,
+    confirmation: command.confirmation || (command.requiresConfirmation ? 'always' : 'never'),
+    requiredArgs: command.requiredArgs || [],
+    icon: 'terminal'
   }));
   let filtered = [];
   let index = 0;
@@ -759,6 +794,9 @@ function paletteRow(item) {
     <span class="palette-icon">${icon(item.icon || 'chevron-right')}</span>
     <span class="palette-main"><span class="palette-label">${esc(item.label)}</span><span class="palette-meta">${esc(item.meta || '')}</span>${item.usage ? `<span class="palette-usage mono">${esc(item.usage)}</span>` : ''}</span>
     ${item.dangerous ? '<span class="badge badge--danger">dangerous</span>' : ''}
+    ${item.readOnly ? '<span class="badge badge--outline">read-only</span>' : ''}
+    ${!item.readOnly && item.confirmation && item.confirmation !== 'never' ? '<span class="badge badge--warn">confirm</span>' : ''}
+    ${item.requiredArgs && item.requiredArgs.length ? `<span class="badge badge--outline">${item.requiredArgs.length} required</span>` : ''}
     ${item.type === 'nav' ? '<span class="palette-key">go</span>' : '<span class="palette-key">↵</span>'}
   </button>`;
 }

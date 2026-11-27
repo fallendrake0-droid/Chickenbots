@@ -120,9 +120,60 @@ function oreVariants(name) {
   return [target, `deepslate_${target}`].filter((entry) => ORE_TIERS[entry]);
 }
 
+function label(target) {
+  return String(target || '')
+    .replace(/^deepslate_/, 'deepslate ')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+/**
+ * The authoritative target catalogue for operator surfaces. Both the CLI and
+ * the dashboard resolve `mine` targets through this list — there is no second
+ * ore/block table in the frontend. `choices` are the friendly alias forms the
+ * UI shows; `accepted` is every raw name the handler will resolve.
+ */
+function miningTargets() {
+  const oreAliases = {};
+  for (const [alias, target] of Object.entries(ORE_ALIASES)) {
+    oreAliases[target] = oreAliases[target] || [];
+    oreAliases[target].push(alias);
+  }
+  const oreTargets = [...new Set(Object.values(ORE_ALIASES))];
+  const ores = oreTargets.map((target) => ({
+    kind: 'ore',
+    target,
+    id: (oreAliases[target] || [target])[0],
+    label: label(target).replace(/ Ore$/, ''),
+    aliases: oreAliases[target] || [],
+    variants: oreVariants(target),
+    tier: requiredPickaxeTier(target),
+    drop: ORE_DROPS[target] || null
+  })).sort((a, b) => a.label.localeCompare(b.label));
+  const blocks = Object.keys(BLOCK_TIERS).map((target) => ({
+    kind: 'block',
+    target,
+    id: target,
+    label: label(target),
+    aliases: Object.entries(BLOCK_ALIASES).filter(([, value]) => value === target).map(([alias]) => alias),
+    variants: [target],
+    tier: BLOCK_TIERS[target],
+    drop: target
+  })).sort((a, b) => a.label.localeCompare(b.label));
+  return {
+    ores,
+    blocks,
+    choices: [...ores, ...blocks],
+    aliases: { ...ORE_ALIASES, ...BLOCK_ALIASES },
+    tierNames: ['hand', 'wood', 'stone', 'iron', 'diamond'],
+    defaults: { radius: 48, limit: 4, maxDepth: 12, minY: -60 },
+    source: 'src/actions/miningCatalog.js'
+  };
+}
+
 module.exports = {
   ORE_TIERS, ORE_DROPS, ORE_ALIASES, ORE_NAMES,
   BLOCK_TIERS, BLOCK_ALIASES, MINABLE_BLOCKS,
   normalizeName, normalizeMineTarget, isOreName, isMineableTarget,
-  requiredPickaxeTier, oreVariants
+  requiredPickaxeTier, oreVariants, miningTargets
 };

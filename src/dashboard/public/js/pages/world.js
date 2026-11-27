@@ -26,7 +26,9 @@ function onlineBots() {
 function defaultBot() {
   const online = onlineBots();
   const leader = state.snapshot && state.snapshot.overview && state.snapshot.overview.leader;
-  if (leader && botNames().includes(leader)) return leader;
+  // Only centre on the leader when it is actually online; otherwise the first
+  // online bot keeps the viewer usable instead of requesting a dead session.
+  if (leader && online.some((bot) => bot.name === leader)) return leader;
   return (online[0] && online[0].name) || botNames()[0] || null;
 }
 

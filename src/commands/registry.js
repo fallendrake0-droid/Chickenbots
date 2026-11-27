@@ -4,6 +4,71 @@ const FORBIDDEN = /[;&|`$<>\\\n\r\t]|\.\.\//;
 const NAME_PATTERN = /^[a-z][a-z0-9:_-]{0,31}$/;
 const { redactString, redactValue } = require('../util/redact');
 
+/**
+ * Serialise one already-validated argument for the tokenizer. This is the only
+ * place the frontend/API layer may turn structured input into command text:
+ * quotes are only opened when a token actually needs them, and shell syntax is
+ * rejected before it can reach a handler.
+ */
+function serializeArg(value) {
+  if (value === null || value === undefined) throw new CommandError('command argument cannot be empty', 'ARGS');
+  const text = String(value);
+  if (!text.length) throw new CommandError('command argument cannot be empty', 'ARGS');
+  if (FORBIDDEN.test(text)) throw new CommandError('illegal characters in command argument (shell syntax is never accepted)', 'ARGS');
+  if (/\s/.test(text) || /^["']/.test(text)) {
+    if (text.includes('"')) throw new CommandError('command argument cannot contain a double quote', 'ARGS');
+    return `"${text}"`;
+  }
+  return text;
+}
+
+/**
+ * Merge the authored metadata with the registered definition. The definition
+ * stays the authority for whether a command exists and how many raw arguments
+ * it accepts; the metadata adds the argument schema and semantics the operator
+ * surfaces need. A mismatch is a startup error, never a silently wrong button.
+ */
+function normalizeMetadata(definition, metadata = {}) {
+  const normalizeArgs = (list = []) => list.map((entry, index) => ({
+    ...entry,
+    // Positional grammar is the array order. Authoring a separate position was
+    // how duplicated coordinates could slip in; the array is the contract.
+    position: index,
+    required: Boolean(entry.required)
+  }));
+  const args = normalizeArgs(metadata.args);
+  const subcommands = (metadata.subcommands || []).map((entry) => (
+    typeof entry === 'string' ? entry : { ...entry, args: normalizeArgs(entry.args) }
+  ));
+  const readOnly = metadata.readOnly === true;
+  const mutates = readOnly ? false : metadata.mutates !== false;
+  const confirmation = metadata.confirmation
+    || (definition.requiresConfirmation ? 'always' : (metadata.confirmSubcommands && metadata.confirmSubcommands.length ? 'conditional' : 'never'));
+  return {
+    ...metadata,
+    args,
+    argumentSchema: args,
+    requiredArgs: args.filter((entry) => entry.required).map((entry) => entry.name),
+    optionalArgs: args.filter((entry) => !entry.required).map((entry) => entry.name),
+    scope: metadata.scope || 'none',
+    readOnly,
+    mutates,
+    cancellable: Boolean(metadata.cancellable),
+    createsTasks: Boolean(metadata.createsTasks),
+    confirmation,
+    confirmSubcommands: metadata.confirmSubcommands || [],
+    subcommands,
+    // Command-level value groups (e.g. the woodcutting role enum) that are not
+    // tied to a single positional argument. Pages read these instead of
+    // keeping a second copy of a backend enum.
+    values: { ...(metadata.values || {}) },
+    targetSource: metadata.targetSource || null,
+    page: metadata.page === undefined || metadata.page === '' ? null : metadata.page,
+    palette: metadata.palette !== false,
+    errorCodes: metadata.errorCodes || []
+  };
+}
+
 class CommandError extends Error {
   constructor(message, code = 'COMMAND_ERROR', details = {}) {
     super(message);
@@ -69,6 +134,7 @@ class CommandRegistry {
       requiresConfirmation: Boolean(definition.requiresConfirmation),
       minArgs: definition.minArgs === undefined ? 0 : definition.minArgs,
       maxArgs: definition.maxArgs === undefined ? 32 : definition.maxArgs,
+      metadata: normalizeMetadata(definition, definition.metadata || {}),
       execute: definition.execute
     };
     // Validate every alias before mutating the registry. Previously a bad
@@ -83,6 +149,25 @@ class CommandRegistry {
     return command;
   }
 
+  /**
+   * Attach the authored schema table after every handler has registered.
+   * Missing or orphaned entries are hard errors so `/api/commands` can never
+   * advertise a command the CLI cannot run (or hide one it can).
+   */
+  annotate(table = {}) {
+    const seen = new Set();
+    for (const [name, metadata] of Object.entries(table)) {
+      const command = this.commands.get(name);
+      if (!command) throw new Error(`command metadata references unknown command: ${name}`);
+      if (seen.has(name)) throw new Error(`duplicate command metadata: ${name}`);
+      seen.add(name);
+      command.metadata = normalizeMetadata(command, metadata);
+    }
+    const missing = [...this.commands.keys()].filter((name) => !seen.has(name));
+    if (missing.length) throw new Error(`commands without metadata: ${missing.join(', ')}`);
+    return this;
+  }
+
   get(name) {
     const key = String(name || '').toLowerCase();
     if (this.commands.has(key)) return this.commands.get(key);
@@ -94,8 +179,27 @@ class CommandRegistry {
     return [...this.commands.values()]
       .filter((c) => !category || c.category === category)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map(({ name, aliases, category: cat, summary, usage, examples, dangerous, requiresConfirmation, minArgs, maxArgs }) => ({
-        name, aliases, category: cat, summary, usage, examples, dangerous, requiresConfirmation, minArgs, maxArgs
+      .map(({ name, aliases, category: cat, summary, usage, examples, dangerous, requiresConfirmation, minArgs, maxArgs, metadata }) => ({
+        name, aliases, category: cat, summary, usage, examples, dangerous, requiresConfirmation, minArgs, maxArgs,
+        args: metadata.args,
+        argumentSchema: metadata.argumentSchema,
+        requiredArgs: metadata.requiredArgs,
+        optionalArgs: metadata.optionalArgs,
+        variants: metadata.variants || [],
+        subcommands: metadata.subcommands,
+        scope: metadata.scope,
+        readOnly: metadata.readOnly,
+        mutates: metadata.mutates,
+        cancellable: metadata.cancellable,
+        createsTasks: metadata.createsTasks,
+        confirmation: metadata.confirmation,
+        confirmSubcommands: metadata.confirmSubcommands,
+        values: metadata.values || {},
+        targetSource: metadata.targetSource,
+        page: metadata.page,
+        palette: metadata.palette,
+        errorCodes: metadata.errorCodes,
+        metadata
       }));
   }
 
@@ -110,7 +214,10 @@ class CommandRegistry {
             name: command.name, category: command.category, aliases: command.aliases,
             usage: command.usage, summary: command.summary, examples: command.examples,
             dangerous: command.dangerous, requiresConfirmation: command.requiresConfirmation,
-            minArgs: command.minArgs, maxArgs: command.maxArgs
+            minArgs: command.minArgs, maxArgs: command.maxArgs,
+            args: command.metadata.args, argumentSchema: command.metadata.argumentSchema,
+            variants: command.metadata.variants || [], subcommands: command.metadata.subcommands,
+            scope: command.metadata.scope, confirmation: command.metadata.confirmation
           }
         };
       }
@@ -157,7 +264,10 @@ class CommandRegistry {
           name: command.name, category: command.category, aliases: command.aliases,
           usage: command.usage, summary: command.summary, examples: command.examples,
           dangerous: command.dangerous, requiresConfirmation: command.requiresConfirmation,
-          minArgs: command.minArgs, maxArgs: command.maxArgs
+          minArgs: command.minArgs, maxArgs: command.maxArgs,
+          args: command.metadata.args, argumentSchema: command.metadata.argumentSchema,
+          variants: command.metadata.variants || [], subcommands: command.metadata.subcommands,
+          scope: command.metadata.scope, confirmation: command.metadata.confirmation
         }
       }, { line, source, operator, started });
     }
@@ -168,9 +278,11 @@ class CommandRegistry {
       return this._record({ ok: false, error: `too many arguments. usage: ${command.usage}`, code: 'ARGS' }, { line, source, operator, started });
     }
     const explicitConfirm = confirmed || args.includes('confirm') || args.includes('--confirm');
-    if (command.requiresConfirmation && !explicitConfirm) {
+    if (this.requiresConfirmationFor(command, args) && !explicitConfirm) {
       return this._record({
-        ok: false, error: `'${command.name}' is destructive and requires explicit confirmation (append 'confirm')`, code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true
+        ok: false, command: command.name,
+        error: `'${command.name}${args.length ? ` ${args[0]}` : ''}' is destructive and requires explicit confirmation (append 'confirm')`,
+        code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true
       }, { line, source, operator, started });
     }
     try {
@@ -181,6 +293,71 @@ class CommandRegistry {
       if (this.logger) this.logger.error(`command '${line}' failed: ${err.message}`);
       return this._record({ ok: false, command: command.name, error: err.message, code, details: err.details || null }, { line, source, operator, started });
     }
+  }
+
+  /** True when this exact invocation must be confirmed before it can run. */
+  requiresConfirmationFor(commandOrName, args = []) {
+    const command = typeof commandOrName === 'string' ? this.get(commandOrName) : commandOrName;
+    if (!command) return false;
+    if (command.requiresConfirmation) return true;
+    const metadata = command.metadata || {};
+    // Metadata confirmation is the UI's proactive prompt. It is only enforced
+    // by the registry when a handler already required it (or a command opts in
+    // explicitly), so adding operator metadata never changes CLI behaviour.
+    if (metadata.enforceConfirmation !== true) return false;
+    if (metadata.confirmation === 'always') return true;
+    const sub = String(args[0] || '').toLowerCase();
+    return Boolean(sub && (metadata.confirmSubcommands || []).includes(sub));
+  }
+
+  /**
+   * Validate a structured invocation without executing it. This is deliberately
+   * limited to contract checks (known command, known-ish argument count);
+   * semantic validation remains inside the handler so there is exactly one
+   * authority for what the world accepts.
+   */
+  validate(name, args = []) {
+    const command = this.get(name);
+    if (!command) return { ok: false, code: 'UNKNOWN_COMMAND', error: `unknown command: ${name}` };
+    if (!Array.isArray(args)) return { ok: false, code: 'ARGS', error: 'command args must be an array' };
+    const list = args;
+    if (list.length < command.minArgs) return { ok: false, code: 'ARGS', error: `missing arguments. usage: ${command.usage}` };
+    if (list.length > command.maxArgs) return { ok: false, code: 'ARGS', error: `too many arguments. usage: ${command.usage}` };
+    return { ok: true, command: command.name, requiresConfirmation: this.requiresConfirmationFor(command, list) };
+  }
+
+  /** Build a tokenizer-safe line from structured input. */
+  serialize(name, args = []) {
+    const command = this.get(name);
+    if (!command) throw new CommandError(`unknown command: ${name}`, 'UNKNOWN_COMMAND');
+    const list = Array.isArray(args) ? args : [];
+    if (!list.every((entry) => ['string', 'number', 'boolean'].includes(typeof entry))) {
+      throw new CommandError('command arguments must be strings, numbers or booleans', 'ARGS');
+    }
+    return [command.name, ...list.map(serializeArg)].join(' ');
+  }
+
+  /** Strict structured entry point: validate, serialise and execute once. */
+  async executeStructured({ name, args = [], source = 'dashboard', operator = 'dashboard', confirmed = false } = {}) {
+    const started = Date.now();
+    const command = this.get(name);
+    if (!command) {
+      return this._record({ ok: false, error: `unknown command: ${name}`, code: 'UNKNOWN_COMMAND' }, { line: String(name || ''), source, operator, started });
+    }
+    if (!Array.isArray(args)) {
+      return this._record({ ok: false, command: command.name, error: 'command args must be an array', code: 'ARGS' }, { line: command.name, source, operator, started });
+    }
+    const check = this.validate(command.name, args);
+    if (!check.ok) {
+      return this._record({ ok: false, command: command.name, error: check.error, code: check.code }, { line: command.name, source, operator, started });
+    }
+    let line;
+    try {
+      line = `${command.name}${args.length ? ` ${args.map(serializeArg).join(' ')}` : ''}`;
+    } catch (err) {
+      return this._record({ ok: false, command: command.name, error: err.message, code: err.code || 'ARGS' }, { line: command.name, source, operator, started });
+    }
+    return this.execute(line, { source, operator, confirmed });
   }
 
   _record(result, meta) {
@@ -205,4 +382,4 @@ class CommandRegistry {
   recent(limit = 20) { return this.history.slice(-limit); }
 }
 
-module.exports = { CommandRegistry, CommandError, tokenize, FORBIDDEN, NAME_PATTERN };
+module.exports = { CommandRegistry, CommandError, tokenize, serializeArg, normalizeMetadata, FORBIDDEN, NAME_PATTERN };

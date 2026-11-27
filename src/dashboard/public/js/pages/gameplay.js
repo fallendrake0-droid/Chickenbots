@@ -1,4 +1,5 @@
-import { state, runCommand, payloadOf } from '../store.js';
+import { state, runCommand, runStructuredCommand, refreshState, payloadOf } from '../store.js';
+import { commandPreview, commandValues, mineArguments, miningChoices, findMiningTarget, leaderName } from '../commands.js';
 import { icon } from '../icons.js';
 import { esc, num, clamp, humanize, healthTone, timeAgo, sum } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, statCard, toast, confirmDialog, setButtonLoading, resultMessage } from '../ui.js';
@@ -29,14 +30,15 @@ function actionButton(label, line, iconName, { danger = false, confirmTitle = ''
 
 let survivalTarget = '';
 
-const SURVIVAL_FEATURES = [
-  ['eat', 'Auto eat', 'Eats before hunger becomes dangerous.'],
-  ['healing', 'Emergency healing', 'Uses golden apples when health is critical.'],
-  ['armour', 'Auto armour', 'Equips better armour pieces from the inventory.'],
-  ['tools', 'Auto tools', 'Checks for a usable pickaxe, axe and sword.'],
-  ['crafting', 'Crafting', 'Crafts a replacement tool when materials exist.'],
-  ['shield', 'Shield', 'Raises a shield when badly hurt.']
-];
+// Display copy only; the routine keys come from command metadata.
+const SURVIVAL_COPY = {
+  eat: ['Auto eat', 'Eats before hunger becomes dangerous.'],
+  healing: ['Emergency healing', 'Uses golden apples when health is critical.'],
+  armour: ['Auto armour', 'Equips better armour pieces from the inventory.'],
+  tools: ['Auto tools', 'Checks for a usable pickaxe, axe and sword.'],
+  crafting: ['Crafting', 'Crafts a replacement tool when materials exist.'],
+  shield: ['Shield', 'Raises a shield when badly hurt.']
+};
 
 export const survivalPage = {
   title: 'Survival',
@@ -92,7 +94,8 @@ export const survivalPage = {
                   <select class="select" id="survival-target" data-survival-target>${rows.map((row) => `<option value="${esc(row.bot)}"${row.bot === routineTarget.bot ? ' selected' : ''}>${esc(row.bot)}</option>`).join('')}</select>
                 </div>
                 <div class="toggle-list">
-                  ${SURVIVAL_FEATURES.map(([key, label, description]) => {
+                  ${commandValues('survival', 'feature').map((key) => {
+                    const [label, description] = SURVIVAL_COPY[key] || [humanize(key), 'Reported by the survival controller.'];
                     const enabled = routineTarget.features ? Boolean(routineTarget.features[key]) : true;
                     return `<div class="toggle-row">
                       <span class="toggle-icon">${icon(enabled ? 'check' : 'x')}</span>
@@ -311,9 +314,139 @@ function pickaxeText(pickaxe) {
   return `${humanize(name || 'unknown')}${tier !== null && tier !== undefined ? ` · T${tier}` : ''}`;
 }
 
-function miningTargets(ores) {
-  const common = ['diamond', 'iron', 'gold', 'redstone', 'lapis', 'emerald', 'coal', 'copper', 'quartz', 'ancient_debris', 'stone', 'deepslate', 'obsidian'];
-  return [...new Set([...[...ores].sort(), ...common])];
+let miningResult = null;
+
+function miningSnapshot() {
+  const snapshot = new Map();
+  const live = new Map(((state.snapshot && state.snapshot.bots) || []).map((bot) => [bot.name, bot]));
+  for (const row of perBot('mining')) {
+    const bot = live.get(row.bot) || {};
+    const inventory = {};
+    for (const [item, count] of Object.entries(bot.inventory || {})) {
+      const value = Number(count);
+      if (Number.isFinite(value)) inventory[item] = value;
+    }
+    snapshot.set(row.bot, { total: minedTotal(row), entries: Object.fromEntries(minedEntries(row)), inventory, stopped: Boolean(row.stopped) });
+  }
+  return snapshot;
+}
+
+/** Item drops that can prove the mine actually removed a block. */
+function miningDropDelta(before, after, bot, payload, target) {
+  const row = ((payload && payload.results) || []).find((entry) => entry && entry.bot === bot);
+  const breakdown = (row && row.breakdown) || (payload && payload.breakdown) || null;
+  const items = new Set(Object.keys(breakdown || {}));
+  if (target && target.drop) items.add(target.drop);
+  if (target && target.target === 'stone') items.add('cobblestone');
+  if (!items.size) return 0;
+  const beforeInv = (before.get(bot) && before.get(bot).inventory) || {};
+  const afterInv = (after.get(bot) && after.get(bot).inventory) || {};
+  let delta = 0;
+  for (const item of items) delta += Math.max(0, (afterInv[item] || 0) - (beforeInv[item] || 0));
+  return delta;
+}
+
+function miningRows(payload) {
+  const candidates = [payload && payload.results, payload && payload.rows, payload && payload.fleet];
+  return candidates.find((value) => Array.isArray(value)) || [];
+}
+
+function miningReported(row) {
+  if (!row || typeof row !== 'object') return 0;
+  const value = row.mined !== undefined ? row.mined : (row.minedCount !== undefined ? row.minedCount : (row.count || 0));
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function miningScopeBots(scope) {
+  if (scope === 'all') return botNames();
+  if (scope === 'leader') return [leaderName()].filter(Boolean);
+  return [scope];
+}
+
+function miningVerdict({ payload, before, after, scope, stop, target }) {
+  if (!payload) return { tone: 'danger', label: 'No result', detail: 'The backend returned no payload.' };
+  if (payload.requiresConfirmation) return { tone: 'warning', label: 'Confirmation required', detail: payload.error || 'This action needs explicit confirmation.' };
+  const names = miningScopeBots(scope);
+  if (stop) {
+    if (payload.ok === false) return { tone: 'danger', label: 'Rejected', detail: `${payload.code || 'ERROR'}: ${payload.error || 'the backend rejected the stop command.'}` };
+    const stillRunning = names.filter((name) => after.has(name) && after.get(name).stopped !== true);
+    if (stillRunning.length) return { tone: 'warning', label: 'Stop accepted, not observed', detail: `Still reporting active mining: ${stillRunning.join(', ')}.` };
+    return { tone: 'success', label: 'Mining stopped', detail: `${names.length} bot${names.length === 1 ? '' : 's'} report stopped in live state.` };
+  }
+  const changes = names.map((name) => ({
+    name,
+    delta: ((after.get(name) && after.get(name).total) || 0) - ((before.get(name) && before.get(name).total) || 0),
+    items: miningDropDelta(before, after, name, payload, target),
+    reported: miningReported((payload.results || []).find((row) => row && row.bot === name) || (names.length === 1 ? payload : null))
+  }));
+  // Counter and inventory evidence can describe the same drop. Take the
+  // stronger per-bot signal instead of double-counting one mined item twice.
+  const verified = changes.reduce((total, row) => total + Math.max(0, row.delta, row.items), 0);
+  const reported = changes.reduce((total, row) => total + Math.max(0, row.reported), 0);
+  const rowErrors = miningRows(payload).filter((row) => row && row.ok === false);
+  // A fleet command is `ok:false` when any bot failed. That is not a total
+  // rejection: report verified work as partial rather than hiding it.
+  if (verified > 0) {
+    if (payload.ok === false || rowErrors.length) {
+      const failed = rowErrors.map((row) => row.bot).filter(Boolean);
+      return { tone: 'warning', label: 'Partial success', detail: `${verified} mined item${verified === 1 ? '' : 's'} verified${target ? ` for ${target.label}` : ''}; ${failed.length ? `${failed.join(', ')} failed` : 'the backend reported a partial fleet result'}.` };
+    }
+    return { tone: 'success', label: 'Verified', detail: `${verified} mined item${verified === 1 ? '' : 's'} confirmed by live counters or inventory${target ? ` for ${target.label}` : ''}.` };
+  }
+  if (reported > 0) {
+    return { tone: 'warning', label: 'Reported, not yet observed', detail: `The handler reported ${reported} mined item${reported === 1 ? '' : 's'} but no state delta is visible yet. Accepted is not completion.` };
+  }
+  if (payload.ok === false) return { tone: 'danger', label: 'Rejected', detail: `${payload.code || 'ERROR'}: ${payload.error || 'the backend rejected the command.'}` };
+  const rowError = rowErrors[0];
+  if (rowError) return { tone: 'danger', label: 'No ore mined', detail: `${rowError.bot || 'fleet'}: ${rowError.code || 'ERROR'} ${rowError.error || ''}`.trim() };
+  const code = payload.code || (payload.skipped && payload.skipped.length ? 'SKIPPED' : null);
+  return { tone: 'warning', label: 'Accepted, no ore verified', detail: `${code ? `${code}: ` : ''}No state delta was observed. The command ran, but it did not mine${target ? ` ${target}` : ''}.` };
+}
+
+function miningResultHtml() {
+  if (!miningResult) {
+    return `<div class="callout callout--info">${icon('shield-check')}<div><strong>Verified, not assumed.</strong> The result card compares the live mined counters before and after the command. An accepted command with no ore removed will be reported as accepted, never as success.</div></div>`;
+  }
+  const { line, verdict, payload, before, after, at, scope, target } = miningResult;
+  const rows = miningRows(payload);
+  const names = miningScopeBots(scope);
+  const tone = verdict.tone === 'success' ? 'ok' : verdict.tone === 'danger' ? 'danger' : 'warn';
+  return `<div class="callout callout--${verdict.tone === 'success' ? 'success' : verdict.tone === 'danger' ? 'danger' : 'warning'}">${icon(verdict.tone === 'success' ? 'shield-check' : 'alert-circle')}<div><strong>${esc(verdict.label)}</strong> ${esc(verdict.detail)}</div></div>
+    <div class="row gap-2" style="flex-wrap:wrap;margin:10px 0"><span class="badge badge--outline mono">${esc(line)}</span>${badge(verdict.label, tone)}<span class="tiny muted">${scope === 'all' ? 'Fleet' : scope === 'leader' ? `Leader · ${esc(leaderName() || 'none')}` : esc(scope)}${target ? ` · ${esc(target)}` : ' · auto target'} · ${timeAgo(at)}</span></div>
+    <div class="table-wrap"><table class="table table--compact"><thead><tr><th>Bot</th><th>Reported</th><th>Counter delta</th><th>Item delta</th><th>Result</th></tr></thead><tbody>${names.map((name) => {
+      const row = rows.find((entry) => entry && entry.bot === name) || (names.length === 1 ? payload : null);
+      const delta = ((after.get(name) && after.get(name).total) || 0) - ((before.get(name) && before.get(name).total) || 0);
+      const items = miningDropDelta(before, after, name, payload, target ? findMiningTarget(target) : null);
+      const rowOk = row && row.ok === false ? false : row && row.ok === true ? true : null;
+      return `<tr><td>${esc(name)}</td><td class="mono">${num(miningReported(row))}</td><td class="mono">${delta > 0 ? `+${num(delta)}` : num(delta)}</td><td class="mono">${items > 0 ? `+${num(items)}` : num(items)}</td><td class="tiny">${verdict.tone === 'danger' && rowOk === false ? esc(`${row.code || 'ERROR'} ${row.error || ''}`) : rowOk === false ? badge('Failed', 'danger') : rowOk === true ? badge('Handler ok', 'ok') : '—'}</td></tr>`;
+    }).join('')}</tbody></table></div>
+    ${payload.skipped && payload.skipped.length ? `<div class="tiny muted" style="margin-top:8px">Skipped: ${esc(payload.skipped.map((entry) => (typeof entry === 'string' ? entry : entry.bot || entry.reason || JSON.stringify(entry))).join(', '))}</div>` : ''}`;
+}
+
+function miningArgsFor(scope, target, stop = false) {
+  if (scope === 'all') return mineArguments({ fleet: 'all', target: target || null, stop });
+  if (scope === 'leader') return mineArguments({ bot: leaderName(), target: target || null, stop });
+  return mineArguments({ bot: scope, target: target || null, stop });
+}
+
+function previewMineLine(scope, targetId) {
+  const target = targetId ? findMiningTarget(targetId) : null;
+  return commandPreview('mine', miningArgsFor(scope, target ? target.id : null));
+}
+
+function targetChoicesHtml(selected = '') {
+  const choices = miningChoices();
+  if (!choices.length) return '<option value="">Target catalogue unavailable</option>';
+  const group = (kind, label) => {
+    const rows = choices.filter((entry) => entry.kind === kind);
+    if (!rows.length) return '';
+    return `<optgroup label="${esc(label)}">${rows.map((entry) => {
+      const suffix = `${entry.tier !== null ? `tier ${entry.tier}` : ''}${entry.drop && entry.drop !== entry.target ? ` · ${humanize(entry.drop)}` : ''}`;
+      return `<option value="${esc(entry.id)}"${entry.id === selected ? ' selected' : ''}>${esc(entry.label)}${suffix ? ` — ${esc(suffix)}` : ''}</option>`;
+    }).join('')}</optgroup>`;
+  };
+  return `<option value="">Auto — nearest exposed ore</option>${group('ore', 'Ores')}${group('block', 'Blocks')}`;
 }
 
 export const miningPage = {
@@ -333,11 +466,18 @@ export const miningPage = {
     const nearest = rows
       .flatMap((row) => (row.nearbyOres || []).map((ore) => ({ ...ore, bot: row.bot })))
       .sort((left, right) => (left.distance || 0) - (right.distance || 0))[0] || null;
+    const leader = leaderName();
+    const scopeOptions = [
+      `<option value="leader"${leader ? '' : ' disabled'}>${esc(leader || 'Leader unavailable')} — leader (implicit)</option>`,
+      ...botNames().filter((name) => name !== leader).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`),
+      '<option value="all">All bots — fleet fan-out</option>'
+    ].join('');
+    const preview = previewMineLine('leader', null);
     return `
       <div class="page">
         ${pageHeader({
           eyebrow: 'Gameplay', title: 'Mining', description: 'Mine exposed ore or bootstrap a missing pickaxe tier. Deep targets are reached by safe shafts; every target is constrained to the shared work zone.',
-          actions: `<button class="button" type="button" data-command="mine stop" data-danger="true" data-confirm-title="Stop mining" data-confirm-message="Stop every active mining job?">${icon('square')} Stop all</button><button class="button button--primary" type="button" data-command="mine">${icon('pickaxe')} Mine leader</button>`
+          actions: `<button class="button button--danger-ghost" type="button" data-mining-quick="stop-all">${icon('square')} Stop all</button><button class="button button--primary" type="button" data-mining-quick="leader">${icon('pickaxe')} Mine leader</button>`
         })}
         <div class="grid grid--stats">
           ${statCard({ label: 'Ores mined', value: num(totalMined), iconName: 'pickaxe', tone: totalMined ? 'accent' : 'neutral', context: `${num(oreTotals.size)} ore types across ${num(rows.length)} reporting bots` })}
@@ -350,15 +490,19 @@ export const miningPage = {
             <div class="card-header"><div class="card-title">${icon('target')} Start mining</div><span class="badge badge--outline">Work-zone confined</span></div>
             <div class="card-body">
               <form data-mining-form class="form-grid form-grid--2">
-                ${selectBots('mine-bot')}
-                <div class="field"><label class="field-label" for="mine-target">Ore or block</label>
-                  <input class="input" id="mine-target" name="target" list="mine-targets" placeholder="Auto — nearest exposed ore" autocomplete="off" spellcheck="false">
-                  <datalist id="mine-targets">${miningTargets(oreNames).map((target) => `<option value="${esc(target)}"></option>`).join('')}</datalist>
-                  <div class="field-hint">Leave blank to mine the nearest exposed ores. Named ores use the deep path and verify that an ore was actually removed.</div>
+                <div class="field"><label class="field-label" for="mine-scope">Who</label>
+                  <select class="select" id="mine-scope" name="scope">${scopeOptions}</select>
+                  <div class="field-hint">The leader uses the implicit grammar (<span class="mono">mine</span> / <span class="mono">mine diamonds</span>). Other bots are named explicitly; <span class="mono">mine leader</span> is not valid.</div>
                 </div>
+                <div class="field"><label class="field-label" for="mine-target">Ore or block</label>
+                  <select class="select" id="mine-target" name="target">${targetChoicesHtml()}</select>
+                  <div class="field-hint">Targets come from the server mining catalogue. Leave blank to mine the nearest exposed ores; named targets use the deep path and must verify an ore was removed.</div>
+                </div>
+                <div class="field field--full"><div class="tiny muted">${icon('terminal')} <span class="mono" data-mining-preview>${esc(preview)}</span> · preview is produced from the same registry metadata and argument order used by execution.</div></div>
                 <div class="field field--full"><div class="tiny muted">${icon('scan')} Command scans use a 24-block radius and up to 8 targets. The telemetry card samples a 5-block radius with a per-bot cache so a snapshot cannot stall the tick loop.</div></div>
                 <div class="field field--full"><button class="button button--primary" type="submit">${icon('pickaxe')} Start mining</button></div>
               </form>
+              <div data-mining-result style="margin-top:14px">${miningResultHtml()}</div>
             </div>
           </section>
           <aside class="card">
@@ -382,6 +526,8 @@ export const miningPage = {
                 const entries = minedEntries(row).sort((left, right) => right[1] - left[1]);
                 const rowNearby = row.nearbyOres || [];
                 const zone = row.zone || {};
+                const mineLine = commandPreview('mine', mineArguments({ bot: row.bot }));
+                const stopLine = commandPreview('mine', mineArguments({ bot: row.bot, stop: true }));
                 return `<tr>
                   <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}">${esc(row.bot)}</a><div class="mono tiny muted">${row.position ? `${num(row.position.x)}, ${num(row.position.y)}, ${num(row.position.z)}` : 'position unknown'}</div></td>
                   <td>${row.stopped ? badge('Stopped', 'warn') : badge('Ready', 'ok')}</td>
@@ -390,7 +536,7 @@ export const miningPage = {
                   <td class="mono">${num(minedTotal(row))}${entries.length ? `<div class="tiny muted">${entries.slice(0, 2).map(([name, count]) => `${esc(humanize(name))} ${num(count)}`).join(' · ')}</div>` : ''}</td>
                   <td class="mono">${num(rowNearby.length)}${rowNearby.length ? `<div class="tiny muted">${rowNearby.slice(0, 2).map((ore) => `${esc(humanize(ore.name))} ${num(ore.distance)}m`).join(' · ')}</div>` : ''}</td>
                   <td class="tiny">${row.reservations ? `${num(row.reservations.count)} held · ${num(row.reservations.stats && row.reservations.stats.rejected)} conflicts` : '—'}</td>
-                  <td><div class="row gap-1">${actionButton('Mine', `mine ${row.bot}`, 'pickaxe')}${row.stopped ? '' : actionButton('Stop', `mine ${row.bot} stop`, 'square')}</div></td>
+                  <td><div class="row gap-1"><button class="button button--sm" type="button" data-mining-quick="bot" data-mining-bot="${esc(row.bot)}" title="${esc(mineLine)}">${icon('pickaxe')} Mine</button>${row.stopped ? '' : `<button class="button button--sm" type="button" data-mining-quick="stop-bot" data-mining-bot="${esc(row.bot)}" title="${esc(stopLine)}">${icon('square')} Stop</button>`}</div></td>
                 </tr>`;
               }).join('') : `<tr><td colspan="8">${emptyState('No mining status', 'Mining telemetry will appear when the action starts reporting.', 'pickaxe')}</td></tr>`}</tbody>
             </table>
@@ -401,23 +547,73 @@ export const miningPage = {
   },
   mount(root) {
     const form = root.querySelector('[data-mining-form]');
-    if (!form) return;
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const bot = form.querySelector('#mine-bot').value;
-      const target = form.querySelector('#mine-target').value.trim();
-      const button = form.querySelector('button[type="submit"]');
-      setButtonLoading(button, true);
-      try {
-        const result = await runCommand(`mine ${bot}${target ? ` ${target}` : ''}`);
-        const message = resultMessage(result);
-        toast({ type: message.type, title: message.title, message: message.message });
-      } catch (err) {
-        toast({ type: 'error', title: 'Mining failed', message: err.message, duration: 8000 });
-      } finally {
-        setButtonLoading(button, false);
+    const scopeSelect = form && form.querySelector('#mine-scope');
+    const targetSelect = form && form.querySelector('#mine-target');
+    const previewSlot = form && form.querySelector('[data-mining-preview]');
+    const resultSlot = root.querySelector('[data-mining-result]');
+    const refreshPreview = () => {
+      if (!form || !scopeSelect || !targetSelect || !previewSlot) return;
+      const target = targetSelect.value ? findMiningTarget(targetSelect.value) : null;
+      const args = miningArgsFor(scopeSelect.value, target ? target.id : null);
+      previewSlot.textContent = commandPreview('mine', args);
+    };
+    if (scopeSelect) scopeSelect.addEventListener('change', refreshPreview);
+    if (targetSelect) targetSelect.addEventListener('change', refreshPreview);
+    refreshPreview();
+
+    const runMining = async (scope, targetId, { stop = false, button = null } = {}) => {
+      const target = targetId ? findMiningTarget(targetId) : null;
+      if (targetId && !target) {
+        toast({ type: 'error', title: 'Unknown target', message: `${targetId} is not in the server mining catalogue.`, duration: 8000 });
+        return;
       }
+      if (stop) {
+        const ok = await confirmDialog({ title: 'Stop mining', message: `Stop mining for ${scope === 'all' ? 'the whole fleet' : scope === 'leader' ? `the leader (${leaderName()})` : scope}?`, confirmLabel: 'Stop mining', tone: 'danger' });
+        if (!ok) return;
+      }
+      const args = miningArgsFor(scope, target ? target.id : null, stop);
+      const line = commandPreview('mine', args);
+      const before = miningSnapshot();
+      if (button) setButtonLoading(button, true);
+      try {
+        const result = await runStructuredCommand('mine', args, { confirm: stop });
+        const payload = payloadOf(result) || {};
+        try { await refreshState(); } catch (_) { /* the verdict below reports an unobserved state honestly */ }
+        const after = miningSnapshot();
+        const verdict = miningVerdict({ payload, before, after, scope, stop, target });
+        miningResult = { line, verdict, payload, before, after, at: Date.now(), scope, target: target ? target.id : null };
+        if (resultSlot) resultSlot.innerHTML = miningResultHtml();
+        toast({
+          type: verdict.tone === 'success' ? 'success' : verdict.tone === 'danger' ? 'error' : 'warn',
+          title: verdict.label,
+          message: verdict.detail,
+          duration: verdict.tone === 'success' ? 4500 : 9000
+        });
+      } catch (err) {
+        const payload = err.payload || { ok: false, code: err.code || 'REQUEST_FAILED', error: err.message };
+        miningResult = { line, payload, before, after: before, at: Date.now(), scope, target: target ? target.id : null, verdict: { tone: 'danger', label: 'Command failed', detail: err.message || 'The backend did not answer.' } };
+        if (resultSlot) resultSlot.innerHTML = miningResultHtml();
+        toast({ type: 'error', title: 'Mining failed', message: err.message, duration: 9000 });
+      } finally {
+        if (button) setButtonLoading(button, false);
+      }
+    };
+
+    if (form) form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      await runMining(scopeSelect && scopeSelect.value ? scopeSelect.value : 'leader', targetSelect ? targetSelect.value : null, { button });
     });
+
+    root.querySelectorAll('[data-mining-quick]').forEach((button) => button.addEventListener('click', async () => {
+      const mode = button.getAttribute('data-mining-quick');
+      const bot = button.getAttribute('data-mining-bot');
+      if (mode === 'leader') return runMining('leader', null, { button });
+      if (mode === 'bot') return runMining(bot || 'leader', null, { button });
+      if (mode === 'stop-bot') return runMining(bot || 'leader', null, { stop: true, button });
+      if (mode === 'stop-all') return runMining('all', null, { stop: true, button });
+      return null;
+    }));
   }
 };
 
@@ -531,6 +727,9 @@ export const excavationPage = {
         for (const group of form.querySelectorAll('[data-mode-group]')) {
           group.hidden = !group.dataset.modeGroup.split(' ').includes(mode.value);
         }
+        // Trench width is 1–16 in the backend, while box/flatten accept 1–128.
+        const width = form.querySelector('#exc-width');
+        if (width) width.max = mode.value === 'trench' ? '16' : '128';
       };
       mode.addEventListener('change', applyMode);
       applyMode();
@@ -752,7 +951,7 @@ export const woodcuttingPage = {
       <div class="page">
         ${pageHeader({
           eyebrow: 'Gameplay', title: 'Woodcutting', description: 'Version-aware tree identification, verified chopping, species-correct replanting, storage and fleet roles. Counters are split between the current task and the process lifetime.',
-          actions: `<button class="button button--primary" type="button" data-command="chop">${icon('axe')} Chop all</button><button class="button" type="button" data-wood-scan="${esc((rows[0] && rows[0].bot) || '')}">${icon('scan')} Scan trees</button><button class="button" type="button" data-command="woodcutting plant all">${icon('sprout')} Plant</button><button class="button button--danger-ghost" type="button" data-command="woodcutting stop" data-danger="true" data-confirm-title="Stop woodcutting" data-confirm-message="Stop chopping on every bot? Verified logs already collected are kept.">${icon('stop')} Stop all</button>`
+          actions: `<button class="button button--primary" type="button" data-fleet-command="chop">${icon('axe')} Chop fleet</button><button class="button" type="button" data-wood-scan="${esc((rows[0] && rows[0].bot) || '')}">${icon('scan')} Scan trees</button><button class="button" type="button" data-command="woodcutting plant all">${icon('sprout')} Plant</button><button class="button button--danger-ghost" type="button" data-command="woodcutting stop" data-danger="true" data-confirm-title="Stop woodcutting" data-confirm-message="Stop chopping on every bot? Verified logs already collected are kept.">${icon('stop')} Stop all</button>`
         })}
         <div class="grid grid--stats">
           ${statCard({ label: 'Logs held', value: num(sum(rows, (row) => row.logs || 0)), iconName: 'axe', tone: 'accent', context: 'Live inventory across the fleet' })}
@@ -798,7 +997,10 @@ export const woodcuttingPage = {
               <p class="muted">CHOPPER harvests, SCOUT explores farther, HAULER deposits logs, PLANTER plants spare saplings, GUARD keeps a defensive watch. Roles change support behaviour, never verification.</p>
               <form class="row row--wrap" data-wood-role>
                 <select class="select select--sm" name="bot" aria-label="Woodcutting bot">${botNames().map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select>
-                <select class="select select--sm" name="role" aria-label="Woodcutting role">${['CHOPPER', 'SCOUT', 'HAULER', 'PLANTER', 'GUARD'].map((role) => `<option value="${role}">${humanize(role)}</option>`).join('')}</select>
+                <select class="select select--sm" name="role" aria-label="Woodcutting role">${(() => {
+                  const roles = commandValues('woodcutting', 'role');
+                  return roles.length ? roles.map((role) => `<option value="${role}">${humanize(role)}</option>`).join('') : '<option value="">Role catalogue unavailable</option>';
+                })()}</select>
                 <button class="button button--sm" type="submit">${icon('check')} Assign role</button>
                 <button class="button button--sm" type="button" data-command="woodcutting team auto">${icon('zap')} Auto-assign</button>
               </form>

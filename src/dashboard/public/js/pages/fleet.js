@@ -1,4 +1,5 @@
 import { state, runBotAction, bot as getBot, tasksFor, actionsFor, teamMember } from '../store.js';
+import { commandValues, subcommandValues } from '../commands.js';
 import { icon } from '../icons.js';
 import { esc, num, clamp, formatTime, timeAgo, duration, humanize, healthTone } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, sectionHead, statCard, toast, botAvatar } from '../ui.js';
@@ -112,6 +113,12 @@ function tasksForAll() {
   return (state.snapshot && state.snapshot.taskManager && state.snapshot.taskManager.tasks) || [];
 }
 
+function assignmentText(value) {
+  if (!value) return '—';
+  if (typeof value === 'string') return value;
+  return value.label || (value.type ? humanize(value.type) : null) || value.taskId || 'assigned';
+}
+
 function profilePageRender({ params }) {
   const name = params[0];
   const tab = params[1] || 'summary';
@@ -127,7 +134,7 @@ function profilePageRender({ params }) {
         ${botAvatar(name, 'avatar--lg')}
         <div class="profile-identity">
           <div class="profile-name">${esc(name)} ${botStatusBadge(bot)}</div>
-          <div class="profile-sub">${esc(team ? team.role : 'IDLE')} · ${esc(team && team.assignment ? team.assignment : bot.activity || 'idle')} · joined ${team && team.uptimeMs ? esc(duration(team.uptimeMs)) : '—'}</div>
+          <div class="profile-sub">${esc(team ? team.role : 'IDLE')} · ${esc(assignmentText(team && team.assignment) === '—' ? (bot.activity || 'idle') : assignmentText(team && team.assignment))} · joined ${team && team.uptimeMs ? esc(duration(team.uptimeMs)) : '—'}</div>
           <div class="meta-list">
             <span>${icon('map')} ${esc(positionText(bot.position))}</span>
             <span>${icon('globe')} ${esc(bot.dimension || 'overworld')}</span>
@@ -187,7 +194,7 @@ function profileSummary(bot, actions, team, name) {
           <div class="card-body">
             ${kvRows([
               ['Role', esc(team ? team.role : '—')],
-              ['Assignment', esc(team && team.assignment ? team.assignment : '—')],
+              ['Assignment', esc(assignmentText(team && team.assignment))],
               ['Task', esc(team && team.task ? team.task : bot.currentTaskId || '—')],
               ['Activity', esc(bot.activity || 'idle')],
               ['Detail', esc(bot.activityDetail || '—')],
@@ -334,17 +341,22 @@ function profileSurvival(bot, actions, name) {
     </div>`;
 }
 
-const SURVIVAL_TOGGLES = [
-  ['eat', 'Auto eat', 'Consumes the best available food when hunger drops.', 'eat'],
-  ['armour', 'Auto armour', 'Equips the best armour pieces from inventory.', 'shield'],
-  ['tools', 'Auto tools', 'Checks for a usable pickaxe, axe and sword.', 'wrench'],
-  ['crafting', 'Crafting', 'Crafts missing tools and supplies when possible.', 'hammer'],
-  ['healing', 'Healing', 'Uses emergency healing when health is critical.', 'heart'],
-  ['shield', 'Shield', 'Raises a shield when badly hurt.', 'shield']
-];
+// Display copy only. The set of routines is read from command metadata, so the
+// page cannot advertise a switch the survival controller does not implement.
+const SURVIVAL_COPY = {
+  eat: ['Auto eat', 'Consumes the best available food when hunger drops.', 'eat'],
+  armour: ['Auto armour', 'Equips the best armour pieces from inventory.', 'shield'],
+  tools: ['Auto tools', 'Checks for a usable pickaxe, axe and sword.', 'wrench'],
+  crafting: ['Crafting', 'Crafts missing tools and supplies when possible.', 'hammer'],
+  healing: ['Healing', 'Uses emergency healing when health is critical.', 'heart'],
+  shield: ['Shield', 'Raises a shield when badly hurt.', 'shield']
+};
 
 function survivalToggleRows(name, survival) {
-  return SURVIVAL_TOGGLES.map(([key, label, description, iconName]) => {
+  const features = commandValues('survival', 'feature');
+  if (!features.length) return '<p class="muted tiny">Survival routine metadata unavailable.</p>';
+  return features.map((key) => {
+    const [label, description, iconName] = SURVIVAL_COPY[key] || [humanize(key), 'Reported by the survival controller.', 'wrench'];
     const enabled = survival.features ? Boolean(survival.features[key]) : true;
     return `<div class="toggle-row">
       <span class="toggle-icon">${icon(iconName)}</span>
@@ -517,7 +529,7 @@ function profileTasks(name, team) {
   const tasks = tasksFor(name);
   return `
     <div class="row" style="justify-content:space-between;margin-bottom:12px">
-      <div class="muted small">Tasks currently claimed by ${esc(name)}${team && team.assignment ? ` · assignment ${esc(team.assignment)}` : ''}</div>
+      <div class="muted small">Tasks currently claimed by ${esc(name)}${team && team.assignment ? ` · assignment ${esc(assignmentText(team.assignment))}` : ''}</div>
       <button class="button" type="button" data-new-task>${icon('plus')} New task</button>
     </div>
     ${tasks.length ? `<div class="grid grid--2">${tasks.map((task) => `<div class="card card--pad">${taskCard(task)}</div>`).join('')}</div>` : `<div class="card">${emptyState('No tasks', 'This bot has no claimed tasks. Assign one from the task manager.', 'clipboard', '<a class="button" href="#/tasks">Open task manager</a>')}</div>`}`;
@@ -586,7 +598,9 @@ export const teamPage = {
     const objectives = (state.snapshot && state.snapshot.taskManager && state.snapshot.taskManager.objectives) || [];
     const ledger = (state.snapshot && state.snapshot.inventory && state.snapshot.inventory.ledger) || {};
     const leader = stateTeam.leader || overview().leader;
-    const formations = ['FOLLOW', 'COMPACT', 'DEFENSIVE', 'EXPLORATION', 'MINING', 'FISHING', 'BUILDING', 'RETREAT', 'REGROUP'];
+    // Formation names come from the team command metadata; the UI never keeps
+    // its own copy of a backend enum.
+    const formations = subcommandValues('team', 'formation');
     const counts = tasks.reduce((acc, task) => { acc[task.status] = (acc[task.status] || 0) + 1; return acc; }, {});
     return `
       <div class="page">
@@ -607,7 +621,7 @@ export const teamPage = {
               <div class="card-header"><div class="card-title">${icon('crown')} Formation</div><span class="badge badge--accent">${esc(stateTeam.formation || '—')}</span></div>
               <div class="card-body">
                 <div class="segmented" role="group" aria-label="Team formation">
-                  ${formations.map((formation) => `<button class="segmented-item${formation === stateTeam.formation ? ' is-active' : ''}" type="button" data-command="team formation ${formation.toLowerCase()}">${humanize(formation)}</button>`).join('')}
+                  ${formations.length ? formations.map((formation) => `<button class="segmented-item${formation === stateTeam.formation ? ' is-active' : ''}" type="button" data-command="team formation ${formation.toLowerCase()}">${humanize(formation)}</button>`).join('') : '<span class="tiny muted">Formation catalogue unavailable.</span>'}
                 </div>
                 <p class="tiny muted" style="margin:10px 0 0">Changing formation moves the coordinator's slot assignment on the next tick.</p>
               </div>
@@ -624,7 +638,7 @@ export const teamPage = {
                         <td><a class="link" href="#/bots/${encodeURIComponent(member.name)}">${esc(member.name)}</a>${member.name === leader ? ` ${badge('leader', 'accent')}` : ''}</td>
                         <td>${badge(member.status || (member.online ? 'ONLINE' : 'OFFLINE'), member.online ? 'ok' : ['JOINING', 'AUTHENTICATING', 'NOT_READY'].includes(member.status) ? 'warn' : 'danger', { dot: true })}</td>
                         <td>${esc(member.role)}</td>
-                        <td class="truncate" style="max-width:160px">${esc(member.assignment || '—')}</td>
+                        <td class="truncate" style="max-width:160px">${esc(assignmentText(member.assignment))}</td>
                         <td>${miniBar(member.health, 20)}</td>
                         <td class="mono tiny">${esc(member.task || '—')}</td>
                         <td><a class="button button--sm button--ghost" href="#/bots/${encodeURIComponent(member.name)}" aria-label="Open ${esc(member.name)}">${icon('arrow-up-right')}</a></td>

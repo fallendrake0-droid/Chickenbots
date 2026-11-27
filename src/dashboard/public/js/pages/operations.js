@@ -3,6 +3,7 @@ import { icon } from '../icons.js';
 import { esc, num, humanize } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, statCard, toast, setButtonLoading } from '../ui.js';
 import { botStatus } from '../botStatus.js';
+import { quoteArg } from '../commands.js';
 
 function construction() {
   return (state.snapshot && state.snapshot.construction) || { projects: [], active: null, warehouse: { containers: [], capacity: {} }, stats: {} };
@@ -167,6 +168,7 @@ export const builderProjectsPage = {
               <div class="form-grid form-grid--4">
                 <div class="field"><label class="field-label" for="proj-design">Schematic</label><input class="input" id="proj-design" placeholder="0001 or shelter" required></div>
                 <div class="field"><label class="field-label" for="proj-x">X</label><input class="input" id="proj-x" type="number" placeholder="auto"></div>
+                <div class="field"><label class="field-label" for="proj-y">Y (optional)</label><input class="input" id="proj-y" type="number" placeholder="auto"></div>
                 <div class="field"><label class="field-label" for="proj-z">Z</label><input class="input" id="proj-z" type="number" placeholder="auto"></div>
                 <div class="field"><label class="field-label" for="proj-priority">Priority</label><input class="input" id="proj-priority" type="number" value="50" min="0" max="100"></div>
               </div>
@@ -184,17 +186,47 @@ export const builderProjectsPage = {
       event.preventDefault();
       const design = form.querySelector('#proj-design').value.trim();
       const x = form.querySelector('#proj-x').value.trim();
+      const y = form.querySelector('#proj-y').value.trim();
       const z = form.querySelector('#proj-z').value.trim();
+      const priorityRaw = form.querySelector('#proj-priority').value.trim();
       if (!design) return;
-      const origin = x !== '' && z !== '' ? ` ${x} ${z}` : '';
+      if ((x === '') !== (z === '')) {
+        toast({ type: 'warn', title: 'Origin incomplete', message: 'Enter both X and Z, or leave both empty to let the builder choose an origin.' });
+        return;
+      }
+      if (y !== '' && (x === '' || z === '')) {
+        toast({ type: 'warn', title: 'Origin incomplete', message: 'Y needs both X and Z; leave all three blank for an automatic origin.' });
+        return;
+      }
+      if ([x, y, z].some((value) => value !== '' && !Number.isInteger(Number(value)))) {
+        toast({ type: 'warn', title: 'Origin must be numeric', message: 'Project X, Y and Z must be integers.' });
+        return;
+      }
+      const priority = priorityRaw === '' ? 50 : Number(priorityRaw);
+      if (!Number.isInteger(priority) || priority < 0 || priority > 100) {
+        toast({ type: 'warn', title: 'Priority must be 0–100', message: 'Enter a whole-number priority between 0 and 100.' });
+        return;
+      }
+      const origin = x !== '' && z !== '' ? (y !== '' ? ` ${x} ${y} ${z}` : ` ${x} ${z}`) : '';
       const button = form.querySelector('button[type=submit]');
       setButtonLoading(button, true);
       try {
-        await runCommand(`builder create ${design}${origin}`);
+        const result = await runCommand(`builder create ${quoteArg(design)}${origin}`);
+        const payload = result && result.result ? result.result : result;
+        const projectId = payload && payload.project && payload.project.id;
+        if (projectId && priority !== 50) {
+          try {
+            await runCommand(`builder priority ${projectId} ${priority}`);
+          } catch (err) {
+            toast({ type: 'warn', title: 'Project created, priority not set', message: err.message || 'The priority command was rejected.' });
+            form.reset();
+            return;
+          }
+        }
         form.reset();
-        toast('Project created', 'ok');
+        toast({ type: 'success', title: 'Project created', message: `${design}${projectId ? ` · ${projectId}` : ''}` });
       } catch (err) {
-        toast(err.message || 'Could not create project', 'error');
+        toast({ type: 'error', title: 'Could not create project', message: err.message || 'The backend rejected the request.' });
       } finally {
         setButtonLoading(button, false);
       }
@@ -442,12 +474,13 @@ export const crewAssignmentsPage = {
       event.preventDefault();
       const bot = form.querySelector('#crew-bot').value;
       const role = form.querySelector('#crew-role').value.trim().replace(/\s+/g, '_');
+      const phase = form.querySelector('#crew-phase').value.trim();
       if (!bot || !role) return;
       try {
-        await runCommand(`builder assign ${bot} ${role}`);
-        toast('Assignment saved', 'ok');
+        await runCommand(`builder assign ${bot} ${role}${phase ? ` --phase ${phase}` : ''}`);
+        toast({ type: 'success', title: 'Assignment saved', message: `${bot} · ${role}${phase ? ` · ${phase}` : ''}` });
         form.reset();
-      } catch (err) { toast(err.message || 'Assignment failed', 'error'); }
+      } catch (err) { toast({ type: 'error', title: 'Assignment failed', message: err.message || 'The backend rejected the assignment.' }); }
     });
   }
 };

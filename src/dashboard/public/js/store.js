@@ -40,6 +40,7 @@ export const state = {
   commands: [],
   commandHistory: [],
   taskTypes: [],
+  targets: null,
   settings: null,
   build: null,
   logs: [],
@@ -91,6 +92,7 @@ export async function init() {
     state.commands = commandsResult.value.commands || [];
     state.commandHistory = commandsResult.value.history || [];
     state.taskTypes = commandsResult.value.taskTypes || [];
+    state.targets = commandsResult.value.targets || (commandsResult.value.catalogue && commandsResult.value.catalogue.targets) || null;
   }
   if (settingsResult.status === 'fulfilled') {
     state.settings = settingsResult.value.settings;
@@ -238,15 +240,17 @@ export async function refreshCommands() {
     state.commands = result.commands || [];
     state.commandHistory = result.history || [];
     state.taskTypes = result.taskTypes || state.taskTypes;
+    state.targets = result.targets || (result.catalogue && result.catalogue.targets) || state.targets;
     emit('commands');
   } catch (_) { /* palette falls back to navigation */ }
 }
 
-export async function runCommand(line, { confirm = false, operator = 'dashboard' } = {}) {
-  const trimmed = String(line || '').trim();
-  if (!trimmed) throw new ApiError('Command is empty', { code: 'EMPTY' });
+export async function runCommand(input, { confirm = false, operator = 'dashboard' } = {}) {
+  const structured = input && typeof input === 'object' ? input : null;
+  const trimmed = structured ? '' : String(input || '').trim();
+  if (!structured && !trimmed) throw new ApiError('Command is empty', { code: 'EMPTY' });
   try {
-    const result = await api.execute(trimmed, { confirm, operator });
+    const result = await api.execute(structured ? structured : trimmed, { confirm, operator });
     await fetchLogs();
     // Commands change backend state immediately; refresh in the background so
     // controls reflect the confirmed result without waiting for the next tick.
@@ -256,6 +260,11 @@ export async function runCommand(line, { confirm = false, operator = 'dashboard'
     await fetchLogs();
     throw err;
   }
+}
+
+/** Structured command: the registry validates and serialises on the server. */
+export async function runStructuredCommand(name, args = [], { confirm = false, operator = 'dashboard' } = {}) {
+  return runCommand({ name, args }, { confirm, operator });
 }
 
 export async function refreshState() {

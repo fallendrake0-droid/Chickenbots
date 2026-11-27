@@ -445,20 +445,59 @@ function createDashboard(services, { port = config.dashboard.port, host = config
 
   app.get('/api/commands', (req, res) => {
     if (!services.commands) return res.status(503).json({ ok: false, error: 'commands unavailable' });
+    const commands = services.commands.list();
+    const targets = services.commands.targets ? services.commands.targets() : null;
     res.json({
       ok: true,
-      commands: services.commands.list(),
+      commands,
+      targets,
+      catalogue: { commands, targets, taskTypes: services.commands.taskTypes || [] },
       history: services.commands.recent(30),
       taskTypes: services.commands.taskTypes || []
     });
   });
 
+  app.get('/api/commands/targets', (req, res) => {
+    if (!services.commands || !services.commands.targets) return res.status(503).json({ ok: false, error: 'target catalogue unavailable' });
+    res.json({ ok: true, ...services.commands.targets() });
+  });
+
+  /**
+   * Single command entry point for every dashboard control. A structured
+   * {name, args, confirm} body is validated and serialised by the registry, so
+   * the browser never hand-assembles a command line. A raw `line` is retained
+   * for the terminal and for backwards compatibility with existing clients.
+   */
   app.post('/api/command', sameOrigin, rateLimit, async (req, res) => {
     if (!services.commands) return res.status(503).json({ ok: false, error: 'commands unavailable' });
-    const { line, confirm } = req.body || {};
-    if (!line) return res.status(400).json({ ok: false, error: 'missing command line' });
+    const body = req.body || {};
+    const { line, confirm } = body;
+    const operator = body.operator || 'dashboard';
+    const source = ['dashboard', 'chat', 'terminal', 'cli'].includes(body.source) ? body.source : 'dashboard';
+    if (body.name !== undefined) {
+      const name = String(body.name || '').trim().toLowerCase();
+      const args = body.args === undefined ? [] : body.args;
+      if (!name) return res.status(400).json({ ok: false, code: 'ARGS', error: 'missing command name' });
+      if (!Array.isArray(args)) return res.status(400).json({ ok: false, code: 'ARGS', error: 'command args must be an array' });
+      const check = services.commands.validate(name, args);
+      if (!check.ok) return res.status(400).json({ ...check, name, args });
+      try {
+        const result = await services.commands.executeStructured({ name, args, source, operator, confirmed: confirm === true });
+        invalidate();
+        // Contract rejections (unknown command, unserialisable argument) are a
+        // client error even when the registry recorded them instead of throwing.
+        const rejection = result && result.ok === false ? result.result : null;
+        if (rejection && ['ARGS', 'UNKNOWN_COMMAND'].includes(rejection.code)) {
+          return res.status(400).json({ ...result, ok: false, code: rejection.code, error: rejection.error });
+        }
+        return res.json(result);
+      } catch (err) {
+        return res.status(400).json({ ok: false, code: err.code || 'ARGS', error: err.message, name, args });
+      }
+    }
+    if (!line) return res.status(400).json({ ok: false, code: 'ARGS', error: 'missing command line' });
     try {
-      const result = await services.commands.execute(line, { source: 'dashboard', operator: (req.body && req.body.operator) || 'dashboard', confirmed: confirm === true });
+      const result = await services.commands.execute(line, { source, operator, confirmed: confirm === true });
       invalidate();
       res.json(result);
     } catch (err) {
@@ -666,22 +705,38 @@ function createDashboard(services, { port = config.dashboard.port, host = config
       || [...services.builders.values()].find((entry) => entry.id.startsWith(req.params.id)));
     if (!builder) return res.status(404).json({ ok: false, error: 'unknown build' });
     const action = String(req.body?.action || '').toLowerCase();
+    const steps = Math.min(500, Math.max(1, Number(req.body?.steps) || 40));
+    const extras = req.body?.includeExtras === true ? ' extras' : '';
+    const lines = {
+      pause: `build pause ${builder.id}`,
+      resume: `build resume ${builder.id}`,
+      cancel: `build stop ${builder.id}`,
+      stop: `build stop ${builder.id}`,
+      verify: `build verify ${builder.id}`,
+      repair: `build repair ${builder.id}${extras}`,
+      run: `build run ${builder.id} ${steps}`
+    };
+    const line = lines[action];
+    if (!line) return res.status(400).json({ ok: false, error: `unknown action ${action}` });
+    if (!services.commands) return res.status(503).json({ ok: false, error: 'commands unavailable' });
+    // The domain endpoint is not a confirmation bypass. These actions destroy
+    // or place live world state, so the caller must opt in explicitly exactly
+    // as the command line does; pause/resume/verify remain safe.
+    const needsConfirmation = ['cancel', 'stop', 'repair', 'run'].includes(action);
+    if (needsConfirmation && req.body?.confirm !== true) {
+      return res.status(400).json({
+        ok: false, code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true,
+        error: `build ${action} requires explicit confirmation`
+      });
+    }
     try {
-      if (action === 'pause') return res.json({ ok: true, result: builder.pause('paused from dashboard'), status: builder.status() });
-      if (action === 'resume') return res.json({ ok: true, result: builder.resume(), status: builder.status() });
-      if (action === 'cancel' || action === 'stop') return res.json({ ok: true, status: builder.cancel('cancelled from dashboard') });
-      if (action === 'verify') return res.json({ ok: true, verification: builder.verify({ includeExtras: true }), tripleCheck: builder.tripleCheck() });
-      if (action === 'repair') {
-        const repair = await builder.repair(null, { includeExtras: req.body?.includeExtras === true, allowExtraRemoval: req.body?.allowExtraRemoval === true });
-        invalidate();
-        return res.json({ ok: repair.complete, repair });
-      }
-      if (action === 'run') {
-        const run = await builder.run({ maxIterations: Math.min(500, Math.max(1, Number(req.body?.steps) || 40)) });
-        invalidate();
-        return res.json({ ok: run.status.state !== 'FAILED', run });
-      }
-      return res.status(400).json({ ok: false, error: `unknown action ${action}` });
+      // Domain endpoint for the build card, but the action still goes through
+      // the registry: the CLI and every button resolve to the same handler.
+      const entry = await services.commands.execute(line, { source: 'dashboard', operator: 'dashboard', confirmed: needsConfirmation });
+      invalidate();
+      const payload = entry.result || { ok: false, error: entry.error || 'command failed' };
+      if (payload.ok === false) return res.status(400).json({ ...payload, command: entry.line });
+      return res.json({ ...payload, command: entry.line });
     } catch (err) {
       return res.status(500).json({ ok: false, error: err.message });
     }

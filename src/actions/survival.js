@@ -5,6 +5,10 @@ const { Logger } = require('../logger');
 const { bestFood } = require('../world/items');
 const { needsFood, foodItems, hasFood } = require('./common');
 
+// Operator-controlled survival routines. This is the single list used by the
+// controller, the command handler, command metadata and the dashboard.
+const SURVIVAL_FEATURES = Object.freeze(['eat', 'healing', 'armour', 'tools', 'crafting', 'shield']);
+
 const ARMOUR_SLOTS = [
   { slot: 'head', names: ['netherite_helmet', 'diamond_helmet', 'iron_helmet', 'chainmail_helmet', 'golden_helmet', 'leather_helmet'] },
   { slot: 'torso', names: ['netherite_chestplate', 'diamond_chestplate', 'iron_chestplate', 'chainmail_chestplate', 'golden_chestplate', 'leather_chestplate'] },
@@ -36,7 +40,7 @@ class SurvivalController {
     this.lastActionAt = 0;
     // Operator-controlled routines. Environmental clutch handling is always on
     // because disabling it would let a bot stand in lava.
-    this.features = { eat: true, healing: true, armour: true, tools: true, crafting: true, shield: true };
+    this.features = Object.fromEntries(SURVIVAL_FEATURES.map((feature) => [feature, true]));
     this.stats = { eaten: 0, crafted: 0, armourEquipped: 0, clutches: 0, emergencyHeals: 0 };
   }
 
@@ -227,4 +231,4 @@ class SurvivalController {
   }
 }
 
-module.exports = { SurvivalController, ARMOUR_SLOTS, TOOL_RECIPES };
+module.exports = { SurvivalController, SURVIVAL_FEATURES, ARMOUR_SLOTS, TOOL_RECIPES };

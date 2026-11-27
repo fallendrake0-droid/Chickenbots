@@ -3,6 +3,8 @@
 const { COMBAT_ROLES } = require('./constants');
 const { profileFor, isHostile } = require('./mobs');
 
+const TEAM_COMBAT_MODES = Object.freeze(['TEAM_FIGHT', 'DEFENSIVE', 'GUARD', 'FOLLOW', 'ARENA', 'BOSS', 'RETREAT', 'ESCORT']);
+
 const ROLE_OFFSETS = {
   FRONTLINE: { angle: 0, distance: 2.2 },
   FLANKER: { angle: Math.PI / 2, distance: 2.6 },
@@ -48,7 +50,7 @@ class TeamCombatCoordinator {
 
   setMode(mode) {
     const value = String(mode || '').toUpperCase();
-    if (!['TEAM_FIGHT', 'DEFENSIVE', 'GUARD', 'FOLLOW', 'ARENA', 'BOSS', 'RETREAT', 'ESCORT'].includes(value)) return { ok: false, error: `unknown team combat mode ${mode}` };
+    if (!TEAM_COMBAT_MODES.includes(value)) return { ok: false, error: `unknown team combat mode ${mode}` };
     this.mode = value;
     return { ok: true, mode: value };
   }
@@ -348,4 +350,4 @@ class TeamCombatCoordinator {
   }
 }
 
-module.exports = { TeamCombatCoordinator, ROLE_OFFSETS };
+module.exports = { TEAM_COMBAT_MODES, TeamCombatCoordinator, ROLE_OFFSETS };

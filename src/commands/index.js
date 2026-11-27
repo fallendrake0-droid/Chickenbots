@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { CommandRegistry, CommandError } = require('./registry');
+const { COMMAND_METADATA } = require('./metadata');
 const { config, BOT_NAMES } = require('../config');
 const { SchematicLibrary } = require('../schematics/library');
 const { SchematicBuilder } = require('../builder/builder');
@@ -12,11 +13,13 @@ const { exportSchematic } = require('../building/schematicIO');
 const { statusSnapshot } = require('../runtimeState');
 const { connectionStatus } = require('../bot/status');
 const { botWorldView } = require('../construction/constants');
-const { normalizeMineTarget, isMineableTarget, isOreName, BLOCK_TIERS } = require('../actions/miningCatalog');
+const { normalizeMineTarget, isMineableTarget, isOreName, BLOCK_TIERS, miningTargets } = require('../actions/miningCatalog');
 const { workZone } = require('../world/workZone');
 const { planRoute } = require('../navigation/planner');
 const { goalPosition } = require('../navigation/standability');
 const { catalogue } = require('../woodcutting/catalog');
+const { TEAM_COMBAT_MODES } = require('../combat/team');
+const { SURVIVAL_FEATURES } = require('../actions/survival');
 
 const TASK_TYPES = new Set([
   'CHOP_WOOD', 'MINE_ORE', 'MINE_BLOCK', 'FARM_CROP', 'FARM_ANIMAL', 'BUILD_BLOCK', 'BUILD_PHASE', 'EXCAVATE_REGION',
@@ -135,7 +138,6 @@ function targetActions(services, target) {
   return [actionsFor(services, pickBot(services, value).name)];
 }
 
-const SURVIVAL_FEATURES = ['eat', 'healing', 'armour', 'tools', 'crafting', 'shield'];
 const MINE_BLOCK_TARGETS = new Set(Object.keys(BLOCK_TIERS));
 
 function normalizeOre(value) {
@@ -239,7 +241,11 @@ async function buildDesign(services, design, { origin = null, confirm = false, r
   const builder = new SchematicBuilder({
     schematic, origin: buildOrigin, world, bots,
     taskBoard: services.taskBoard, ledger: services.ledger, memory: services.memory,
-    logger: services.logger, buildId: `${kind === 'home' ? 'home' : 'build'}-${design.id}-${Date.now().toString(36)}`
+    logger: services.logger, buildId: `${kind === 'home' ? 'home' : 'build'}-${design.id}-${Date.now().toString(36)}`,
+    // `confirm` authorises player structures in the footprint. Without this,
+    // every confirmed build still failed in start() because the builder was
+    // constructed with authorized=false. Preview paths deliberately keep it off.
+    authorized: Boolean(confirm)
   });
   const started = builder.start({ confirm });
   if (!started.ok) return { ok: false, error: started.error, buildId: builder.id, analysis: builder.analyze(), needsConfirmation: started.needsConfirmation, conflicts: started.conflicts };
@@ -1629,6 +1635,21 @@ function registerBuild(registry, services) {
         if (sub === 'progress') {
           return project ? { ok: true, project: manager.summary(project), builder: project.builderId && services.builders.get(project.builderId) ? services.builders.get(project.builderId).status() : null } : { ok: false, error: 'no active project' };
         }
+        // Verification and repair address a builder by id, so they must work
+        // even when no construction project is currently active.
+        if (sub === 'verify') {
+          const builder = args[1] ? findBuild(services, args[1]) : (project && project.builderId ? services.builders.get(project.builderId) : null);
+          if (!builder) return { ok: false, error: args[1] ? 'unknown build' : 'no active builder for this project' };
+          return { ok: true, verification: builder.verify({ includeExtras: true }), tripleCheck: builder.tripleCheck(), statuses: builder.engine.statusCounts() };
+        }
+        if (sub === 'repair') {
+          const builder = args[1] ? findBuild(services, args[1]) : (project && project.builderId ? services.builders.get(project.builderId) : null);
+          if (!builder) return { ok: false, error: args[1] ? 'unknown build' : 'no active builder for this project' };
+          if (!ctx.confirmed) return { ok: false, error: 'repair work requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
+          builder.resume();
+          const repair = await builder.repair(null, { includeExtras: args.includes('extras'), allowExtraRemoval: args.includes('extras') });
+          return { ok: repair.complete, repair, verification: builder.verify({ includeExtras: true }) };
+        }
         if (!project) return { ok: false, error: 'no active project; create one with builder create <schematic>' };
         if (sub === 'assign') {
           const bot = pickBot(services, args[1]);
@@ -1637,19 +1658,6 @@ function registerBuild(registry, services) {
         if (sub === 'plan') {
           if (!ctx.confirmed) return { ok: false, error: 'build planning can create cooperative tasks; append confirm', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
           return manager.runPhase('BUILD_PLAN');
-        }
-        if (sub === 'verify') {
-          const builder = project.builderId ? services.builders.get(project.builderId) : null;
-          if (!builder) return { ok: false, error: 'no active builder for this project' };
-          return { ok: true, verification: builder.verify({ includeExtras: true }), tripleCheck: builder.tripleCheck(), statuses: builder.engine.statusCounts() };
-        }
-        if (sub === 'repair') {
-          if (!ctx.confirmed) return { ok: false, error: 'repair work requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
-          const builder = project.builderId ? services.builders.get(project.builderId) : null;
-          if (!builder) return { ok: false, error: 'no active builder for this project' };
-          builder.resume();
-          const repair = await builder.repair(null, { includeExtras: args.includes('extras'), allowExtraRemoval: args.includes('extras') });
-          return { ok: repair.complete, repair, verification: builder.verify({ includeExtras: true }) };
         }
         if (sub === 'finish') {
           if (!ctx.confirmed) return { ok: false, error: 'project handover requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
@@ -1691,11 +1699,13 @@ function registerBuild(registry, services) {
       if (sub === 'stop') {
         const builder = findBuild(services, args[1]);
         if (!builder) return { ok: false, error: 'no active build' };
+        if (!ctx.confirmed) return { ok: false, error: 'stopping a build requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
         return { ok: true, status: builder.cancel('stopped by operator') };
       }
       if (sub === 'run') {
         const builder = findBuild(services, args[1]);
         if (!builder) return { ok: false, error: 'no active build' };
+        if (!ctx.confirmed) return { ok: false, error: 'running build steps requires confirmation (append confirm)', code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true };
         const result = await builder.run({ maxIterations: args[2] ? intArg(args[2], 'steps', { min: 1, max: 500 }) : 40 });
         return { ok: result.status.state !== 'FAILED', ...result };
       }
@@ -1922,7 +1932,7 @@ function registerCombat(registry, services) {
         return { ok: true, stopped, team: team().status() };
       }
       if (sub === 'mode') {
-        if (!args[1]) return { ok: true, mode: team().mode, modes: ['TEAM_FIGHT', 'DEFENSIVE', 'GUARD', 'ARENA', 'RETREAT', 'ESCORT'] };
+        if (!args[1]) return { ok: true, mode: team().mode, modes: [...TEAM_COMBAT_MODES] };
         return { ok: true, ...team().setMode(args[1]) };
       }
       if (sub === 'rescue') return { ok: true, ...(await team().autoRescue({ cooldownMs: 0 })) };
@@ -2510,7 +2520,7 @@ function registerConstruction(registry, services) {
   registry.register({
     name: 'builder', aliases: ['project'], category: 'builder',
     summary: 'Manage construction projects and the full site-to-handover pipeline',
-    usage: 'builder [projects|create <schematic> [x y z]|select <id>|status|preview|advance [phases] confirm|run confirm|auto on/off|pause|resume|stop|phases|report|assign <bot> <role>|priority <id> <0-100>]',
+    usage: 'builder [projects|create <schematic> [x y z]|select <id>|status|preview|advance [phases] confirm|run confirm|auto on/off|pause|resume|stop|phases|report|assign <bot> <role> [--phase <phase>]|priority <id> <0-100>]',
     dangerous: true,
     execute: async (args, ctx) => {
       const sub = (args[0] || 'status').toLowerCase();
@@ -2557,9 +2567,15 @@ function registerConstruction(registry, services) {
       if (sub === 'resume') return m.resume();
       if (sub === 'stop' || sub === 'cancel') return m.cancel();
       if (sub === 'assign') {
-        if (!args[1]) throw new CommandError('usage: builder assign <bot> <role>');
+        if (!args[1]) throw new CommandError('usage: builder assign <bot> <role> [--phase <phase>]');
         const bot = pickBot(services, args[1]);
-        return m.assign({ bot: bot.name, role: args.slice(2).join(' ') || 'FLEXIBLE' });
+        // Phase is an explicit flag so a multi-word role remains valid and
+        // `builder assign <bot> <role>` keeps its old meaning.
+        const flag = args.indexOf('--phase');
+        if (flag >= 0 && !args[flag + 1]) throw new CommandError('--phase needs a pipeline phase id');
+        const roleArgs = flag >= 0 ? args.slice(2, flag) : args.slice(2);
+        const phase = flag >= 0 && args[flag + 1] !== undefined ? args[flag + 1] : null;
+        return m.assign({ bot: bot.name, role: roleArgs.join(' ') || 'FLEXIBLE', phase });
       }
       if (sub === 'priority') {
         if (!args[1]) throw new CommandError('usage: builder priority <projectId> <0-100>');
@@ -2700,12 +2716,22 @@ function createCommandHandler(services = {}) {
   if (!services.imported) services.imported = new Map();
   const registry = new CommandRegistry({ logger: services.logger });
   registerAll(services, registry);
+  // Fail closed: metadata is merged only after every handler exists and every
+  // handler must have an entry. A missing schema therefore breaks startup
+  // instead of producing a dashboard control with invented grammar.
+  registry.annotate(COMMAND_METADATA);
   return {
     registry,
     services,
     list: (category) => registry.list(category),
+    catalogue: () => ({ commands: registry.list(), targets: miningTargets(), taskTypes: [...TASK_TYPES] }),
+    targets: () => miningTargets(),
     help: (name) => registry.help(name),
     execute: (line, options) => registry.execute(line, options),
+    executeStructured: (payload, options) => registry.executeStructured({ ...payload, ...options }),
+    serialize: (name, args) => registry.serialize(name, args),
+    validate: (name, args) => registry.validate(name, args),
+    requiresConfirmationFor: (name, args) => registry.requiresConfirmationFor(name, args),
     recent: (limit) => registry.recent(limit),
     taskTypes: [...TASK_TYPES],
     snapshot: () => statusSnapshot(services)

@@ -118,7 +118,12 @@ export function openCreateDialog() {
         }
         setButtonLoading(button, true);
         try {
-          const result = await runCommand(`task add ${type}${label ? ` ${label}` : ''}${rawParams ? ` --params ${rawParams}` : ''}`);
+          // Structured args keep a label with normal spaces as one token and
+          // minify valid JSON so whitespace cannot split the parameter object.
+          const args = ['add', type];
+          if (label) args.push(label);
+          if (rawParams) args.push('--params', JSON.stringify(JSON.parse(rawParams)));
+          const result = await runCommand({ name: 'task', args });
           const message = resultMessage(result);
           toast({ type: message.type, title: message.title, message: message.message });
           closeDialog();
@@ -153,7 +158,9 @@ export function openObjectiveDialog() {
         const button = event.currentTarget;
         setButtonLoading(button, true);
         try {
-          const result = await runCommand(`task objective ${title}`);
+          // Structured args keep the whole title as one argument; the handler
+          // still joins any legacy multi-token form for CLI compatibility.
+          const result = await runCommand({ name: 'task', args: ['objective', title] });
           const message = resultMessage(result);
           toast({ type: message.type, title: message.title, message: message.message });
           closeDialog();

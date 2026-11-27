@@ -1,9 +1,10 @@
-import { state, runCommand, botNames } from '../store.js';
+import { state, runCommand, refreshState, botNames } from '../store.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { esc, num, humanize, duration, timeAgo, formatDateTime } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, statCard, toast, confirmDialog, setButtonLoading, resultMessage, openModal } from '../ui.js';
 import { schematicPreview } from '../charts.js';
+import { quoteArg } from '../commands.js';
 
 function builds() {
   return (state.snapshot && state.snapshot.builder && state.snapshot.builder.builds) || [];
@@ -28,6 +29,11 @@ export const homeBasePage = {
     const sleep = new Map((snap.sleep || []).map((row) => [row.bot, row]));
     const inventory = new Map(((snap.inventory && snap.inventory.bots) || []).map((row) => [row.bot, row]));
     const builds = ((snap.builder && snap.builder.builds) || []).filter((build) => String(build.buildId).startsWith('home-'));
+    // Tiers come from the loaded schematic library, not a page-local list.
+    const tiers = ((snap.schematics && snap.schematics.stats && snap.schematics.stats.tiers) || [])
+      .map((entry) => entry.tier)
+      .filter(Boolean);
+    const defaultTier = tiers.includes('Novice') ? 'Novice' : (tiers[0] || '');
     const beds = [...inventory.values()].reduce((sum, row) => sum + ((row.items || []).filter((item) => /_bed$/.test(item.name || item) || item.name === 'bed').reduce((n, item) => n + (item.count || 0), 0)), 0);
     const sleeping = [...sleep.values()].filter((row) => row.sleeping).length;
     return `
@@ -80,7 +86,7 @@ export const homeBasePage = {
               <div class="card-body">
                 <form data-home-build-form>
                   <div class="form-grid form-grid--2">
-                    <div class="field"><label class="field-label" for="home-tier">Schematic tier</label><select class="select" id="home-tier">${['Beginner', 'Novice', 'Apprentice', 'Intermediate', 'Advanced', 'Expert', 'Master', 'Grandmaster'].map((tier) => `<option value="${tier}"${tier === 'Novice' ? ' selected' : ''}>${tier}</option>`).join('')}</select></div>
+                    <div class="field"><label class="field-label" for="home-tier">Schematic tier</label><select class="select" id="home-tier">${tiers.length ? tiers.map((tier) => `<option value="${esc(tier)}"${tier === defaultTier ? ' selected' : ''}>${esc(tier)}</option>`).join('') : '<option value="">Tier catalogue unavailable</option>'}</select></div>
                     <div class="field"><label class="field-label" for="home-run">Execution</label><select class="select" id="home-run"><option value="run">Plan and run</option><option value="">Plan only</option></select></div>
                   </div>
                   <button class="button button--primary" type="submit" style="margin-top:10px">${icon('home')} Build home base</button>
@@ -130,6 +136,10 @@ export const homeBasePage = {
     if (buildForm) buildForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const tier = buildForm.querySelector('#home-tier').value;
+      if (!tier) {
+        toast({ type: 'warn', title: 'No schematic tier available', message: 'The schematic library has not reported any tiers yet.' });
+        return;
+      }
       const run = buildForm.querySelector('#home-run').value;
       const ok = await confirmDialog({
         title: 'Build home base',
@@ -248,14 +258,19 @@ export const builderPage = {
         toast({ type: 'warn', title: 'Design required', message: 'Enter a design ID or name from the schematic library.' });
         return;
       }
-      const x = form.querySelector('#build-x').value;
-      const y = form.querySelector('#build-y').value;
-      const z = form.querySelector('#build-z').value;
+      const x = form.querySelector('#build-x').value.trim();
+      const y = form.querySelector('#build-y').value.trim();
+      const z = form.querySelector('#build-z').value.trim();
+      if (![x, y, z].every((value) => value !== '' && Number.isInteger(Number(value)))) {
+        toast({ type: 'warn', title: 'Origin required', message: 'Origin X, Y and Z must all be numbers before a build can be previewed.' });
+        return;
+      }
       const run = Boolean(form.querySelector('#build-run').value);
       const button = form.querySelector('button[type="submit"]');
       setButtonLoading(button, true);
       try {
-        const previewResponse = await runCommand(`build preview ${design} ${x} ${y} ${z}`);
+        const designArg = quoteArg(design);
+        const previewResponse = await runCommand(`build preview ${designArg} ${x} ${y} ${z}`);
         const preview = previewResponse.result || previewResponse;
         if (!preview.ok) throw new Error(preview.error || 'preview failed');
         const analysis = preview.analysis || {};
@@ -278,7 +293,7 @@ export const builderPage = {
           details: `Preview: ${num(analysis.toPlace || 0)} blocks to place, ${num(analysis.alreadyBuilt || 0)} already present, ${num((analysis.conflicts || []).length)} conflicts and ${num((analysis.blocked || []).length)} blocked positions. The builder rescans the world and only counts verified placements.`
         });
         if (!ok) return;
-        const line = `build ${design} ${x} ${y} ${z}${run ? ' run' : ''}`;
+        const line = `build ${quoteArg(design)} ${x} ${y} ${z}${run ? ' run' : ''}`;
         const result = await runCommand(line, { confirm: true });
         const message = resultMessage(result);
         toast({ type: message.type, title: message.title, message: message.message });
@@ -549,7 +564,7 @@ async function openSchematic(id) {
         toast({ type: 'success', title: `Schematic ${action} complete`, message: result.entry ? result.entry.name : design.id });
         close();
         legacyLibraryReset();
-        await api.state();
+        await refreshState();
       } catch (err) {
         toast({ type: 'error', title: `Could not ${action}`, message: err.message });
       }
@@ -560,20 +575,20 @@ async function openSchematic(id) {
     if (tag) tag.addEventListener('click', () => {
       const value = window.prompt('Tag to add');
       if (!value) return;
-      api.customAction(design.id, 'tag', { tags: [value] }).then(() => { toast({ type: 'success', title: 'Tag added', message: value }); close(); legacyLibraryReset(); return api.state(); })
+      api.customAction(design.id, 'tag', { tags: [value] }).then(() => { toast({ type: 'success', title: 'Tag added', message: value }); close(); legacyLibraryReset(); return refreshState(); })
         .catch((err) => toast({ type: 'error', title: 'Tag failed', message: err.message }));
     });
     const licence = body.querySelector('[data-custom-licence]');
     if (licence) licence.addEventListener('click', () => customAction('licence', 'Licence / attribution', 'licence'));
     const duplicate = body.querySelector('[data-custom-duplicate]');
     if (duplicate) duplicate.addEventListener('click', () => {
-      api.customAction(design.id, 'duplicate', {}).then((result) => { toast({ type: 'success', title: 'Duplicate imported', message: result.entry.name }); close(); legacyLibraryReset(); return api.state(); })
+      api.customAction(design.id, 'duplicate', {}).then((result) => { toast({ type: 'success', title: 'Duplicate imported', message: result.entry.name }); close(); legacyLibraryReset(); return refreshState(); })
         .catch((err) => toast({ type: 'error', title: 'Duplicate failed', message: err.message }));
     });
     const remove = body.querySelector('[data-custom-delete]');
     if (remove) remove.addEventListener('click', () => {
       if (!window.confirm(`Delete ${design.name} from the custom catalogue? The original file is not removed.`)) return;
-      api.customDelete(design.id).then(() => { toast({ type: 'success', title: 'Removed from catalogue', message: design.name }); close(); legacyLibraryReset(); return api.state(); })
+      api.customDelete(design.id).then(() => { toast({ type: 'success', title: 'Removed from catalogue', message: design.name }); close(); legacyLibraryReset(); return refreshState(); })
         .catch((err) => toast({ type: 'error', title: 'Delete failed', message: err.message }));
     });
   } catch (err) {
@@ -827,7 +842,7 @@ export const buildingPage = {
         toast({ type: 'success', title: 'Schematic imported', message: `${payload.entry.name} (${payload.entry.format}, ${num(payload.entry.blocks)} blocks)` });
         if ((payload.warnings || []).length) toast({ type: 'warn', title: 'Import warning', message: payload.warnings[0].detail || payload.warnings[0].kind, duration: 12000 });
         form.reset();
-        await api.state();
+        await refreshState();
       } catch (err) {
         toast({ type: 'error', title: 'Import rejected', message: err.message, duration: 12000 });
       } finally {
@@ -839,7 +854,7 @@ export const buildingPage = {
       try {
         const result = await api.customScan();
         toast({ type: 'info', title: 'Custom folder scanned', message: `${num(result.imported || 0)} imported, ${num(result.rejected || 0)} rejected` });
-        await api.state();
+        await refreshState();
       } catch (err) {
         toast({ type: 'error', title: 'Scan failed', message: err.message });
       }
@@ -848,12 +863,18 @@ export const buildingPage = {
       const id = button.getAttribute('data-build-id');
       const action = button.getAttribute('data-build-action');
       if (action === 'cancel' && !window.confirm('Cancel this build? Pending tasks stop and no further blocks are placed.')) return;
+      // Repair resumes placement and may remove extra blocks. It must not run
+      // from a single click just because the command gateway marks it confirmed.
+      if (action === 'repair' && !window.confirm('Repair this build? Remaining work resumes and the world is rescanned; only verified placements count.')) return;
+      // The endpoint now enforces the same confirmation contract as the CLI.
+      // Only send `confirm` after the dialog above has actually been accepted.
+      const confirmedAction = ['cancel', 'stop', 'repair', 'run'].includes(action);
       setButtonLoading(button, true);
       try {
-        const result = await api.buildAction(id, action);
+        const result = await api.buildAction(id, action, confirmedAction ? { confirm: true } : {});
         const message = resultMessage(result);
         toast({ type: message.type, title: message.title, message: message.message });
-        await api.state();
+        await refreshState();
       } catch (err) {
         toast({ type: 'error', title: `Build ${action} failed`, message: err.message });
       } finally {

@@ -1,7 +1,8 @@
 import { state, runCommand } from '../store.js';
+import { subcommandValues } from '../commands.js';
 import { icon } from '../icons.js';
 import { esc, num, timeAgo, humanize } from '../utils.js';
-import { badge, emptyState, pageHeader, statCard, kvRows, toast, setButtonLoading, resultMessage } from '../ui.js';
+import { badge, emptyState, pageHeader, statCard, kvRows, toast, setButtonLoading, resultMessage, confirmDialog } from '../ui.js';
 import { botNames } from './shared.js';
 
 // Roster bots never enter the player directory (cleanName rejects them), so a
@@ -145,7 +146,13 @@ function pvpPanel() {
     <div class="card-body">
       <div class="row row--wrap" style="margin-bottom:10px">
         <span class="tiny muted">Targeting mode</span>
-        ${['EXPLICIT', 'ARENA', 'DEFENSIVE'].map((entry) => `<button class="button button--sm${entry === mode ? ' button--primary' : ''}" type="button" data-command="players mode ${entry}" title="${entry === 'EXPLICIT' ? 'Only named targets, anywhere allowed by arena bounds' : entry === 'ARENA' ? 'Named targets must be inside an authorised arena' : 'Only retaliation against a named player who attacked first'}">${humanize(entry)}</button>`).join('')}
+        ${(() => {
+          // Target modes come from the PvP policy enum exposed through the
+          // registry; the page does not keep a second copy.
+          const modes = subcommandValues('players', 'mode');
+          if (!modes.length) return '<span class="tiny muted">Target mode catalogue unavailable.</span>';
+          return modes.map((entry) => `<button class="button button--sm${entry === mode ? ' button--primary' : ''}" type="button" data-command="players mode ${entry}" title="${entry === 'EXPLICIT' ? 'Only named targets, anywhere allowed by arena bounds' : entry === 'ARENA' ? 'Named targets must be inside an authorised arena' : 'Only retaliation against a named player who attacked first'}">${humanize(entry)}</button>`).join('');
+        })()}
       </div>
       <div class="grid grid--2">
         <div>
@@ -329,6 +336,14 @@ function wireForms(root) {
         toast({ type: 'error', title: 'Invalid player', message: 'Use an exact Minecraft name.' });
         return;
       }
+      const ok = await confirmDialog({
+        title: 'Authorise PvP target',
+        message: `Allow the fleet to attack ${player} when PvP and all policy gates permit it?`,
+        confirmLabel: 'Authorise target',
+        tone: 'danger',
+        details: 'This adds an explicit player target. Protection and trust still override it, and no player is auto-targeted.'
+      });
+      if (!ok) return;
       await runLine(targetForm.querySelector('button[type="submit"]'), `players target add ${player}`, { title: 'Target authorisation failed' });
       targetForm.reset();
     });
@@ -374,7 +389,7 @@ function wireForms(root) {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const data = new FormData(form);
-      const tag = String(data.get('flag') || '').trim().toLowerCase();
+      const tag = String(data.get('tag') || '').trim().toLowerCase();
       if (!/^[a-z0-9_-]{1,24}$/.test(tag)) {
         toast({ type: 'error', title: 'Invalid tag', message: 'Tags are letters, digits, _ or -.' });
         return;

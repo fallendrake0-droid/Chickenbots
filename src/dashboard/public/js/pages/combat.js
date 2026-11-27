@@ -1,8 +1,9 @@
 import { state, runCommand } from '../store.js';
 import { icon } from '../icons.js';
 import { esc, num, humanize, timeAgo, sum } from '../utils.js';
-import { badge, progress, kvRows, emptyState, pageHeader, statCard, toast, setButtonLoading, resultMessage } from '../ui.js';
+import { badge, progress, kvRows, emptyState, pageHeader, statCard, toast, setButtonLoading, resultMessage, confirmDialog } from '../ui.js';
 import { botNames, bots } from './shared.js';
+import { subcommandValues } from '../commands.js';
 
 function combatRows() {
   return (state.snapshot && state.snapshot.combat) || [];
@@ -52,8 +53,24 @@ function botLinks(current, base) {
   return `<div class="chips">${botNames().map((name) => `<a class="chip${name === current ? ' is-active' : ''}" href="#/${base}/${encodeURIComponent(name)}">${esc(name)}</a>`).join('')}</div>`;
 }
 
-function commandButton(label, line, iconName, { danger = false, primary = false, title = '' } = {}) {
-  return `<button class="button button--sm${danger ? ' button--danger-ghost' : primary ? ' button--primary' : ''}" type="button" data-command="${esc(line)}"${title ? ` title="${esc(title)}"` : ''}>${icon(iconName)}${esc(label)}</button>`;
+function commandButton(label, line, iconName, { danger = false, primary = false, title = '', disabled = false } = {}) {
+  return `<button class="button button--sm${danger ? ' button--danger-ghost' : primary ? ' button--primary' : ''}" type="button" data-command="${esc(line)}"${title ? ` title="${esc(title)}"` : ''}${disabled ? ' disabled aria-disabled="true"' : ''}>${icon(iconName)}${esc(label)}</button>`;
+}
+
+/**
+ * Guard needs the bot's actual block position and the bot name after the
+ * coordinates. The previous control sent a hard-coded `guard 0 64 0`, which
+ * either guarded spawn or was rejected — never the bot's real area.
+ */
+function guardButton(label, botName, iconName = 'shield') {
+  const bot = botFor(botName) || {};
+  const row = rowFor(botName) || {};
+  const position = bot.position || row.position || (row.area && row.area.center) || null;
+  if (!position || !Number.isFinite(Number(position.x)) || !Number.isFinite(Number(position.y)) || !Number.isFinite(Number(position.z))) {
+    return `<button class="button button--sm" type="button" disabled aria-disabled="true" title="Guard unavailable: ${esc(botName || 'bot')} has no reported position">${icon(iconName)} ${esc(label)}</button>`;
+  }
+  const line = `guard ${Math.floor(Number(position.x))} ${Math.floor(Number(position.y))} ${Math.floor(Number(position.z))}${botName ? ` ${botName}` : ''}`;
+  return commandButton(label, line, iconName, { title: `${line} · position from live state` });
 }
 
 function stateTone(value) {
@@ -136,16 +153,41 @@ function wireCombatForms() {
       const data = new FormData(form);
       const name = String(data.get('player') || data.get('target') || '').trim();
       if (!name) { toast({ type: 'error', title: 'Name required', message: 'Enter an exact Minecraft username or team bot name.' }); return; }
+      if (form.dataset.combatForm === 'target') {
+        const ok = await confirmDialog({
+          title: 'Authorise PvP target',
+          message: `Allow the fleet to attack ${name} when PvP and all policy gates permit it?`,
+          confirmLabel: 'Authorise target',
+          tone: 'danger',
+          details: 'This adds an explicit player target. Protection and trust still override it, and no player is auto-targeted.'
+        });
+        if (!ok) return;
+      }
       const button = form.querySelector('button[type="submit"]');
       setButtonLoading(button, true);
       try {
         let line;
         if (form.dataset.combatForm === 'protect') line = `target protect ${name}`;
         else if (form.dataset.combatForm === 'follow') line = `follow ${name} ${Number(data.get('distance') || 4)}`;
+        else if (form.dataset.combatForm === 'duel') line = `duel ${name}`;
         else line = `target add ${name}`;
-        const result = await runCommand(line, { confirm: false });
-        toast({ type: result.ok ? 'success' : 'error', title: result.ok ? 'Command accepted' : 'Command refused', message: resultMessage(result) });
-        if (result.ok) form.reset();
+        if (form.dataset.combatForm === 'duel') {
+          const ok = await confirmDialog({
+            title: `Duel ${name}`,
+            message: `Send the authorised duel request for ${name}?`,
+            confirmLabel: 'Duel',
+            tone: 'danger',
+            details: 'A duel is a dangerous command. It is only started against the named player and still obeys teammates, protection and arena rules.'
+          });
+          if (!ok) return;
+        }
+        const result = await runCommand(line, { confirm: form.dataset.combatForm === 'duel' });
+        const payload = result && result.result ? result.result : result;
+        const ok = result && result.ok !== false && payload && payload.ok !== false;
+        toast({ type: ok ? 'success' : 'error', title: ok ? 'Command accepted' : 'Command refused', message: resultMessage(result).message });
+        if (ok) form.reset();
+      } catch (err) {
+        toast({ type: 'error', title: 'Combat action failed', message: err.message || 'The backend rejected the command.' });
       } finally { setButtonLoading(button, false); }
     });
   }
@@ -185,7 +227,7 @@ function botCombatCard(row) {
     ])}
     <div class="row row--wrap">
       ${commandButton('Fight', `combat on`, 'sword', { primary: true })}
-      ${commandButton('Guard', 'guard 0 64 0', 'shield')}
+      ${guardButton('Guard', row.bot)}
       ${commandButton('Retreat', 'team combat retreat', 'arrow-left', { danger: true })}
       <a class="button button--sm" href="#/combat-gear/${encodeURIComponent(row.bot)}">${icon('layers')} Gear</a>
     </div>
@@ -267,7 +309,10 @@ export const combatTeamPage = {
       <div class="grid grid--2">
         <div class="card card--pad"><div class="card-title">Focus target</div>${team.focus ? kvRows([['Name', humanize(team.focus.name || team.focus)], ['Type', team.focus.type || '—'], ['Distance', team.focus.distance === undefined ? '—' : `${num(team.focus.distance)} blocks`], ['Priority', team.focus.priority || '—']]) : emptyState('No focus target', 'Focus is selected from real nearby threats during planning.', 'target')}</div>
         <div class="card card--pad"><div class="card-title">Mode</div>
-          <div class="row row--wrap">${['TEAM_FIGHT', 'DEFENSIVE', 'GUARD', 'ARENA', 'BOSS', 'ESCORT', 'RETREAT'].map((mode) => commandButton(humanize(mode), `combat mode ${mode}`, 'sliders')).join('')}</div>
+          <div class="row row--wrap">${(() => {
+            const modes = subcommandValues('combat', 'mode');
+            return modes.length ? modes.map((mode) => commandButton(humanize(mode), `combat mode ${mode}`, 'sliders')).join('') : '<span class="tiny muted">Combat mode catalogue unavailable.</span>';
+          })()}</div>
           ${kvRows([['Active mode', humanize(team.mode)], ['Enabled', team.enabled ? 'Yes' : 'No'], ['Engaged', num(team.engaged)]])}
         </div>
       </div>
@@ -337,7 +382,7 @@ export const combatSuppliesPage = {
         ${rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Bot</th><th>Totems</th><th>Offhand</th><th>Golden apples</th><th>Food</th><th>Potions</th><th>Action</th></tr></thead><tbody>${rows.map((row) => `<tr>
           <td>${esc(row.bot)}</td><td>${num(totemsOf(row).count)}</td><td>${totemsOf(row).equipped ? badge('Equipped', 'success') : badge('Not equipped', 'neutral')}</td>
           <td>${num(suppliesOf(row).goldenApples)}</td><td>${num(suppliesOf(row).food)}</td><td>${num(suppliesOf(row).potions)}</td>
-          <td>${commandButton('Equip', 'totem refill', 'shield')}</td>
+          <td>${commandButton('Refill fleet', 'totem refill', 'shield', { title: 'Refill every bot below its reserve from a verified donor' })}</td>
         </tr>`).join('')}</tbody></table></div>` : emptyState('No supply state', 'The combat controller has not reported inventories.', 'package')}
       </div>
     </div>`;
@@ -384,7 +429,12 @@ export const combatTargetsPage = {
             ['Protected players', num((policy.protectedPlayers || []).length)],
             ['Policy mode', humanize(policy.mode || 'EXPLICIT')]
           ])}
-          <div class="row row--wrap">${commandButton('Guard area', 'guard 0 64 0', 'shield')}${commandButton('Duel…', 'duel', 'sword', { danger: true })}</div>
+          <div class="row row--wrap">${guardButton('Guard area', first.bot)}</div>
+          <form class="form-row" data-combat-form="duel" style="margin-top:10px">
+            <div class="field"><label class="field-label" for="combat-duel-name">Duel a player</label><input class="input" id="combat-duel-name" name="player" maxlength="32" placeholder="Exact authorised username" required></div>
+            <button class="button button--danger-ghost" type="submit">${icon('sword')} Duel…</button>
+          </form>
+          <p class="tiny muted" style="margin:6px 0 0">Duel is dangerous and requires confirmation. The button only sends <span class="mono">duel &lt;player&gt;</span>; it never sends a bare <span class="mono">duel</span>.</p>
         </div>
         <div class="card card--pad"><div class="card-title">Team state</div>
           ${team ? kvRows([['Mode', humanize(team.mode)], ['Enabled', team.enabled ? 'Yes' : 'No'], ['Focus', team.focus ? humanize(team.focus.name || team.focus) : '—'], ['Engaged', num(team.engaged)]]) : '<p class="muted">Coordinator unavailable.</p>'}

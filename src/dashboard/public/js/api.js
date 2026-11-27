@@ -46,8 +46,15 @@ export const api = {
   health: () => request('/healthz', { timeoutMs: 5000 }),
   buildInfo: () => request('/api/build', { timeoutMs: 5000 }),
   commands: () => request('/api/commands'),
-  execute: (line, { confirm = false, operator = 'dashboard' } = {}) =>
-    request('/api/command', { method: 'POST', body: { line, confirm, operator }, timeoutMs: 120000 }),
+  execute: (input, { confirm = false, operator = 'dashboard' } = {}) =>
+    request('/api/command', {
+      method: 'POST',
+      // A string keeps the terminal/palette on the raw-line path; an object is
+      // the structured path {name,args} and is serialised by the server.
+      body: typeof input === 'string' ? { line: input, confirm, operator } : { ...input, confirm, operator },
+      timeoutMs: 120000
+    }),
+  commandTargets: () => request('/api/commands/targets', { timeoutMs: 10000 }),
   logs: (params = {}) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
