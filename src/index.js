@@ -69,7 +69,7 @@ async function main() {
   if (!args.simulate && args.connect) {
     liveLock = acquireLiveLock();
     if (!liveLock.ok) {
-      logger.error(`another live runtime is already running (pid ${liveLock.pid}); stop it before starting a second one to avoid duplicate-login kicks`);
+      logger.error(`another live runtime is already running (pid ${liveLock.pid}; lock ${liveLock.file}); use its dashboard at http://127.0.0.1:${config.dashboard.port} or stop it with \`kill ${liveLock.pid}\` before starting a second one to avoid duplicate-login kicks`);
       return 2;
     }
   }

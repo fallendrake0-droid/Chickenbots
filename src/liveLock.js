@@ -10,8 +10,8 @@ const { ROOT } = require('./config');
  * EPIPE/ECONNRESET rather than a readable kick message. The dashboard and the
  * CLI both acquire this lock so one process owns the roster at a time.
  */
-function acquireLiveLock() {
-  const dir = path.join(ROOT, 'data', 'runtime');
+function acquireLiveLock({ root = ROOT } = {}) {
+  const dir = path.join(root, 'data', 'runtime');
   const file = path.join(dir, 'live.pid');
   fs.mkdirSync(dir, { recursive: true });
   try {
@@ -19,9 +19,9 @@ function acquireLiveLock() {
     if (Number.isFinite(pid) && pid > 0 && pid !== process.pid) {
       try {
         process.kill(pid, 0);
-        return { ok: false, pid };
+        return { ok: false, pid, file };
       } catch (err) {
-        if (err.code === 'EPERM') return { ok: false, pid };
+        if (err.code === 'EPERM') return { ok: false, pid, file };
         if (err.code !== 'ESRCH') throw err;
       }
     }
@@ -35,7 +35,7 @@ function acquireLiveLock() {
     } catch (_) { /* already gone */ }
   };
   process.once('exit', release);
-  return { ok: true, release };
+  return { ok: true, file, release };
 }
 
 module.exports = { acquireLiveLock };

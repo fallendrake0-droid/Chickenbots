@@ -696,7 +696,11 @@ commissioning.
   becomes ready closes the episode and clears the pause, and only a separate later outage escalates
   the bounded, jittered backoff. Only one live runtime may run per checkout: a PID lock
   (`data/runtime/live.pid`, shared by the dashboard and the CLI) refuses a second instance, because
-  duplicate logins make Aternos close the first socket as an uninformative `EPIPE`/`ECONNRESET`. If you control the server, set
+  duplicate logins make Aternos close the first socket as an uninformative `EPIPE`/`ECONNRESET`. If startup reports the lock is held, run
+  `cat data/runtime/live.pid` and `ps -p <pid> -o pid,etime,cmd`; connect to that instance's
+  dashboard (default `http://127.0.0.1:3000`) or stop it with `kill <pid>`. The lock is removed on a
+  clean exit; delete `data/runtime/live.pid` only after confirming that no such process exists.
+  If you control the server, set
   `settings.connection-throttle: 0` in `bukkit.yml` if the burst is being rejected; otherwise the
   runtime's bounded backoff handles it. A bot that drops re-enters the same queue after
   `MC_REJOIN_DELAY_MS` (5s by default), and the reconnect supervisor keeps running even while
