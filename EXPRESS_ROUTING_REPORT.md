@@ -271,10 +271,10 @@ fragment is never sent to the HTTP server.
 ## 10. Git state
 
 - Branch: `arena/de11bd2d-chickenbots`
-- HEAD: `9c9d0d43791f73b7df047ac5b54d721bd10d562c`
-- Working tree: modified, **not committed** (the instructions said not to
-  commit without explicit authorisation).
-- Modified: `README.md`, `package.json`, `src/config.js`,
+- Fix commit: `32bff3e` (`Fix Express 5 startup crash and harden dashboard routing`)
+- Working tree: clean; all routing and regression changes are committed and
+  pushed to `origin/arena/de11bd2d-chickenbots`.
+- Changed: `README.md`, `package.json`, `src/config.js`,
   `src/dashboard/server.js`, `src/index.js`, `src/runtime.js`,
   `tests/audit-regressions.test.js`
 - New: `tests/dashboard-routing.test.js`, `EXPRESS_ROUTING_REPORT.md`
