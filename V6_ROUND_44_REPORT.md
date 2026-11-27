@@ -3,7 +3,7 @@
 **Branch:** `arena/de11bd2d-chickenbots`
 **Base:** `7764c41` (`main`)
 **Preceding shipped round:** `315ec05` (round 43)
-**Live simulator observed after restart:** `6.0.0+315ec05.cc079c2a46b4.3d60d5c1af15`
+**Live simulator observed after restart:** `6.0.0+3efe395.cc079c2a46b4.3d60d5c1af15`
 
 ---
 
@@ -193,7 +193,7 @@ A failure in an active/pending objective still alerts normally.
 
 Restarted at 19:42:04 UTC with a clean runtime:
 
-- build `6.0.0+315ec05.cc079c2a46b4.3d60d5c1af15`, five bots ready;
+- build `6.0.0+3efe395.cc079c2a46b4.3d60d5c1af15`, five bots ready;
 - `/api/state` and `/api/build` uptimes agree within 25 ms;
 - first snapshot has `alerts: []` and `actionStatusFresh: true`;
 - the active construction project reports `autonomyEnabled: false` and the Builder
