@@ -112,6 +112,7 @@ export function objectiveBlock(objective, tasks = []) {
     </div>
     <div class="tiny muted" style="margin-top:6px">Assigned: ${(objective.assignedBots && objective.assignedBots.length) ? objective.assignedBots.map(esc).join(', ') : (related.filter((task) => task.claimedBy).map((task) => esc(task.claimedBy)).filter((name, index, list) => list.indexOf(name) === index).join(', ') || 'No bots claimed yet')}</div>
     ${objective.completionCondition ? `<div class="tiny muted" style="margin-top:8px">Done when: ${esc(objective.completionCondition)}</div>` : ''}
+    ${objective.optionalFailure ? `<div class="callout callout--warn" style="margin-top:10px">${icon('alert')}<div>Optional work degraded — ${esc(objective.optionalFailure.label || objective.optionalFailure.type)}: ${esc(objective.optionalFailure.reason || 'no verified result')}. Required work continues.</div></div>` : ''}
   </div>`;
 }
 

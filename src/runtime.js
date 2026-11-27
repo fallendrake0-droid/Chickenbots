@@ -119,6 +119,9 @@ class TeamRuntime {
     // Team rescue/healing are dispatched, never awaited by the runtime tick.
     this.teamDispatches = new Set();
     this.safetyStages = new Map();
+    // Per-bot rate limit for safety stage logging. The live log produced a
+    // warning every lap for every bot, which buried the actual failures.
+    this._lastSafetyStageWarnAt = new Map();
     this.preemptions = new Map();
     this.commandLocks = new Set();
     // Commands for the same bot must queue, not race. The lock alone only
@@ -892,9 +895,13 @@ class TeamRuntime {
       }
       this._checkEventLoopDelay();
       this._phase = 'state-sync';
+      // Label the phase before the work, not after it. A synchronous block
+      // inside coordinator.tick() was previously blamed on the previous
+      // tick's launch-actions phase, which sent the live investigation to the
+      // wrong subsystem.
+      this._lastPhase = 'state-sync';
       const syncStarted = Date.now();
       this._syncBots();
-      this._lastPhase = 'state-sync';
       const syncMs = Date.now() - syncStarted;
       if (syncMs >= 1000) this.logger.warn(`state sync took ${syncMs}ms; the event loop was blocked inside _syncBots`);
       // Status-cache refresh is deliberately outside _syncBots and outside the
@@ -931,15 +938,15 @@ class TeamRuntime {
         }
       }
       this._phase = 'coordinator';
+      this._lastPhase = 'coordinator';
       try {
         this.coordinator.tick();
       } catch (err) {
         this.logger.error(`coordinator tick failed: ${err.message}`);
       }
-      this._lastPhase = 'coordinator';
       this._phase = 'launch-actions';
-      this._launchBotWork();
       this._lastPhase = 'launch-actions';
+      this._launchBotWork();
       if (this.ticks % 5 === 0 && !this._assignRolesBusy) {
         // Role assignment calls every combat controller's status. On the live
         // box that can take a second per bot, which is exactly the 5.7s
@@ -1093,6 +1100,9 @@ class TeamRuntime {
       // prefix runs. Previously that prefix was attributed to launch-actions
       // and blocked the timer for seconds while five bots started at once.
       await new Promise((resolve) => setImmediate(resolve));
+      // The safety pass runs after the tick returned. Label it so a long
+      // controller await is not mis-attributed to launch-actions.
+      this._lastPhase = 'safety';
       try {
         const safetyStarted = Date.now();
         const result = await actions.safetyTick();
@@ -1116,11 +1126,21 @@ class TeamRuntime {
     const elapsed = Date.now() - started;
     const totalMs = result.totalMs === undefined ? elapsed : result.totalMs;
     this.safetyStages.set(name, { at: Date.now(), totalMs, stages: { ...result.stages } });
+    const budget = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
     const parts = Object.entries(result.stages)
       .filter(([, ms]) => ms >= 250)
       .map(([stage, ms]) => `${stage} ${ms}ms`);
-    if (elapsed >= 5000 || parts.length) {
-      this.logger.warn(`[${name}] safety stages ${elapsed}ms${parts.length ? `: ${parts.join(', ')}` : ''}`);
+    const overdue = elapsed >= budget + 250;
+    const now = Date.now();
+    const last = this._lastSafetyStageWarnAt.get(name) || 0;
+    // A safety pass that misses its budget is a real warning, but once per
+    // ten seconds per bot is enough. Ordinary slow stages are diagnostic.
+    if (overdue && now - last >= 10000) {
+      this._lastSafetyStageWarnAt.set(name, now);
+      this.logger.warn(`[${name}] safety stages ${elapsed}ms over the ${budget}ms budget${parts.length ? `: ${parts.join(', ')}` : ''}`);
+    } else if (!overdue && parts.length && now - last >= 30000) {
+      this._lastSafetyStageWarnAt.set(name, now);
+      this.logger.debug(`[${name}] safety stages ${elapsed}ms${parts.length ? `: ${parts.join(', ')}` : ''}`);
     }
   }
 
@@ -1189,6 +1209,7 @@ class TeamRuntime {
     const task = (async () => {
       // Yield before the synchronous controller prefix; see _startBotSafety.
       await new Promise((resolve) => setImmediate(resolve));
+      this._lastPhase = 'bot-safety';
       try {
         // Safety and death bookkeeping must run for a dead bot too; the
         // controller returns early without moving it.

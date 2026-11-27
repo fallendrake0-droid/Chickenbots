@@ -67,6 +67,33 @@ test('all four survival-base phases place and verify real blocks on a shared anc
   }
 });
 
+test('a stale or cluttered base anchor is replaced instead of failing every retry', async () => {
+  const rt = await runtime();
+  try {
+    const actions = rt.actions.bots.get('01010100');
+    const home = actions.home;
+    const offsets = [[6, 6], [-6, 6], [6, -6], [-6, -6], [10, 0], [0, 10], [-10, 0], [0, -10], [12, 12]];
+    for (const [dx, dz] of offsets) {
+      for (let x = home.x + dx - 1; x <= home.x + dx + 1; x++) {
+        for (let z = home.z + dz - 1; z <= home.z + dz + 1; z++) {
+          for (let y = home.y; y <= home.y + 3; y++) rt.world.setBlock({ x, y, z }, 'chest');
+        }
+      }
+    }
+    const stale = { x: home.x + 6, y: home.y, z: home.z + 6 };
+    rt.memory.setFact('base_anchor', stale);
+    actions.bot.addItem('cobblestone', 32);
+    const result = await actions.buildBasePhase('FOUNDATION');
+    assert.equal(result.ok, true, JSON.stringify(result.missing.slice(0, 3)));
+    assert.equal(result.missing.length, 0);
+    const anchor = rt.memory.getFact('base_anchor');
+    assert.equal(anchor.x === stale.x && anchor.z === stale.z, false, 'the occupied remembered anchor must be replaced');
+    assert.ok(Math.max(Math.abs(anchor.x - home.x), Math.abs(anchor.z - home.z)) >= 8, 'the fallback site is outside the blocked offsets');
+  } finally {
+    await rt.shutdown('test');
+  }
+});
+
 test('storage discovery finds the real chest and deposits are verified', async () => {
   const rt = await runtime();
   try {

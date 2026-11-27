@@ -367,10 +367,30 @@ class BotActions {
     // Operator player-watch (follow/guard/escort) runs after the threat and
     // recovery gates, so a guard bot still flees lava or a creeper first.
     // Survival (eat/heal) runs immediately after the watch movement.
-    const playerWatch = await this.players.tick();
+    // Hand the pass deadline to operator watching. A 9s follow path inside a
+    // 6s safety budget used to cancel itself on every lap (and, before the
+    // controller guarded its mode, threw a null toLowerCase when the cancel
+    // raced the await). When the watch consumes the pass, stop here and let
+    // the next lap start with a fresh budget instead of starting task work
+    // while a movement is still settling.
+    const playerWatch = await this.players.tick({ deadlineAt });
     lap('player-watch');
-    const survival = await this.survival.tick();
+    if (Date.now() >= deadlineAt - 500) {
+      return {
+        ok: true, timedOut: true, budgetExhausted: true, deferredStage: 'player-watch',
+        playerWatch, threatCount: assessment.threats.length, stages,
+        totalMs: Date.now() - startedAt, equipmentRescan, recovery: this.recovery.status()
+      };
+    }
+    const survival = await this.survival.tick({ deadlineAt });
     lap('survival');
+    if (Date.now() >= deadlineAt - 250) {
+      return {
+        ok: true, timedOut: true, budgetExhausted: true, deferredStage: 'survival',
+        playerWatch, survival, threatCount: assessment.threats.length, stages,
+        totalMs: Date.now() - startedAt, equipmentRescan, recovery: this.recovery.status()
+      };
+    }
     const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
     lap('follow');
     let defence = null;
@@ -676,25 +696,60 @@ class BotActions {
 
   /** Build the survival-base hut phase (shared anchor near home) with real blocks. */
   async buildBasePhase(phase = 'FOUNDATION') {
-    const wanted = new Set(['air', 'cave_air', 'leaves', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'jungle_leaves', 'acacia_leaves', 'dark_oak_leaves', 'mangrove_leaves', 'short_grass', 'tall_grass', 'fern']);
+    // Trees are workable, not blockers: the vegetation pass below fells these
+    // logs. Rejecting them sent the site search to the edge of the 32-block
+    // ring and made the first path there needlessly long.
+    const wanted = new Set([
+      'air', 'cave_air', 'leaves', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'jungle_leaves',
+      'acacia_leaves', 'dark_oak_leaves', 'mangrove_leaves', 'cherry_leaves', 'pale_oak_leaves',
+      'short_grass', 'tall_grass', 'fern', 'large_fern', 'dandelion', 'poppy',
+      'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log'
+    ]);
+    const built = new Set(['cobblestone', 'oak_planks', 'stone_bricks', 'glass', 'oak_fence']);
     const offsets = [[6, 6], [-6, 6], [6, -6], [-6, -6], [10, 0], [0, 10], [-10, 0], [0, -10], [12, 12]];
-    let anchor = this.memory && typeof this.memory.getFact === 'function' ? this.memory.getFact('base_anchor') : null;
-    for (const [dx, dz] of offsets) {
-      if (anchor) break;
-      const candidate = { x: Math.floor(this.home.x) + dx, y: Math.floor(this.home.y), z: Math.floor(this.home.z) + dz };
-      let clear = true;
-      for (let x = candidate.x - 1; x <= candidate.x + 1 && clear; x++) {
-        for (let z = candidate.z - 1; z <= candidate.z + 1 && clear; z++) {
+    const baseY = Math.floor(this.home.y);
+    // A 3x3x4 pocket with solid ground underneath. `allowBuilt` accepts blocks
+    // this plan already placed so every phase shares one anchor; a new site
+    // must not be carved out of an existing structure or storage chest.
+    const clearAt = (candidate, { allowBuilt = false } = {}) => {
+      for (let x = candidate.x - 1; x <= candidate.x + 1; x++) {
+        for (let z = candidate.z - 1; z <= candidate.z + 1; z++) {
+          const below = this.bot.getBlock({ x, y: candidate.y - 1, z });
+          if (!below || ['air', 'cave_air', 'water', 'lava'].includes(below.name)) return false;
           for (let y = candidate.y; y <= candidate.y + 3; y++) {
             const block = this.bot.getBlock({ x, y, z });
-            if (!block || !wanted.has(block.name)) { clear = false; break; }
+            if (!block) return false;
+            if (allowBuilt && built.has(block.name)) continue;
+            if (!wanted.has(block.name)) return false;
           }
         }
       }
-      if (clear) { anchor = candidate; break; }
+      return true;
+    };
+    const remembered = this.memory && typeof this.memory.getFact === 'function' ? this.memory.getFact('base_anchor') : null;
+    let anchor = remembered && Number.isFinite(Number(remembered.x)) && Number.isFinite(Number(remembered.z))
+      && clearAt(remembered, { allowBuilt: true }) ? { ...remembered } : null;
+    for (const [dx, dz] of offsets) {
+      if (anchor) break;
+      const candidate = { x: Math.floor(this.home.x) + dx, y: baseY, z: Math.floor(this.home.z) + dz };
+      if (clearAt(candidate)) anchor = candidate;
     }
-    if (!anchor) return { ok: false, placed: 0, missing: [], error: 'no clear site for base phase' };
-    if (this.memory && typeof this.memory.setFact === 'function' && !this.memory.getFact('base_anchor')) this.memory.setFact('base_anchor', anchor);
+    // The hut, chests and previous phases can occupy every fixed offset around
+    // home. Keep looking outwards instead of failing the whole objective with
+    // "no clear site" and re-opening it until the planner pauses.
+    for (let radius = 8; radius <= 24 && !anchor; radius += 8) {
+      for (let dx = -radius; dx <= radius && !anchor; dx += 2) {
+        for (let dz = -radius; dz <= radius && !anchor; dz += 2) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+          const candidate = { x: Math.floor(this.home.x) + dx, y: baseY, z: Math.floor(this.home.z) + dz };
+          if (clearAt(candidate)) anchor = candidate;
+        }
+      }
+    }
+    if (!anchor) return { ok: false, placed: 0, missing: [], error: 'no clear site for base phase within 24 blocks of home' };
+    // Overwrite a stale remembered anchor when the area it named is no longer
+    // usable; otherwise every retry would keep failing on the same coordinates.
+    if (this.memory && typeof this.memory.setFact === 'function') this.memory.setFact('base_anchor', anchor);
 
     // Clear only vegetation. Never dig blocks a previous phase already placed.
     const vegetation = new Set(['leaves', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'jungle_leaves', 'acacia_leaves', 'dark_oak_leaves', 'mangrove_leaves', 'cherry_leaves', 'pale_oak_leaves', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'dandelion', 'poppy', 'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log']);

@@ -515,11 +515,17 @@ class TeamCoordinator {
       priority: obj.priority,
       progress: obj.progress,
       completedAt: obj.completedAt || null,
+      // Optional work can fail without failing the objective. Surface the
+      // degradation so the dashboard explains a lower-than-expected result
+      // instead of claiming everything succeeded.
+      optionalFailure: obj.optionalFailure || null,
+      degraded: Array.isArray(obj.degraded) ? obj.degraded.slice(-5) : [],
       tasks: obj.tasks.map((id) => this.board.getTask(id)).filter(Boolean).map((t) => ({
         id: t.id,
         label: t.label,
         type: t.type,
         status: t.status,
+        optional: t.optional === true,
         claimedBy: t.claimedBy,
         progress: t.units,
         dependsOn: t.dependsOn,

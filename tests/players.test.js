@@ -66,6 +66,44 @@ test('follow moves toward a real player and stop clears the watch', async () => 
   assert.equal(missing.code, 'PLAYER_NOT_SEEN');
 });
 
+test('player watch stopped during movement cannot crash on a null mode', async () => {
+  const { bot, controller } = fixture();
+  assert.equal(controller.follow('Alex', { distance: 2 }).ok, true);
+  // This is the live race: the safety watchdog stops the controller while
+  // goNear is still awaiting. tick() used to resume and read this.mode
+  // (now null) with .toLowerCase(), which surfaced as
+  // "safety tick failed: Cannot read properties of null".
+  bot.goNear = async () => {
+    controller.stop();
+    return { ok: false, superseded: true, error: 'movement request was superseded' };
+  };
+  const tick = await controller.tick({ deadlineAt: Date.now() + 5000 });
+  assert.equal(tick.ok, true);
+  assert.equal(tick.cancelled, true, JSON.stringify(tick));
+  assert.equal(controller.isActive(), false);
+});
+
+test('player watch movement is bounded by the safety deadline and defers', async () => {
+  const { bot, controller } = fixture();
+  assert.equal(controller.follow('Alex', { distance: 2 }).ok, true);
+  const timeouts = [];
+  bot.goNear = async (_entity, _distance, options = {}) => {
+    timeouts.push(options.timeoutMs);
+    return { ok: false, error: 'path timeout' };
+  };
+  const first = await controller.tick({ deadlineAt: Date.now() + 2000 });
+  assert.equal(first.move.ok, false);
+  assert.equal(timeouts.length, 1);
+  assert.ok(timeouts[0] <= 1750, `move timeout ${timeouts[0]} must fit the remaining budget`);
+  assert.ok(timeouts[0] >= 750);
+  // The failed move starts a short cooldown; a low remaining budget defers
+  // instead of starting another path that the safety pass would cancel.
+  controller.lastMoveAt = 0;
+  const second = await controller.tick({ deadlineAt: Date.now() + 500 });
+  assert.equal(second.deferred, true, JSON.stringify(second));
+  assert.equal(timeouts.length, 1, 'no second movement was launched');
+});
+
 test('unfollow clears only a follow watch and leaves a guard alone', async () => {
   const { controller } = fixture();
   assert.equal(controller.follow('Alex', { distance: 2 }).ok, true);

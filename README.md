@@ -45,6 +45,16 @@ node src/index.js --simulate --host 0.0.0.0 --port 3000 --allow-insecure
 # or: DASHBOARD_TOKEN=<16+ chars> node src/index.js --simulate --host 0.0.0.0 --port 3000
 ```
 
+Stopping a live runtime: the single-instance guard names the existing pid and refuses to start a
+duplicate. Stop it by command line or pid:
+
+```bash
+pkill -f 'node src/index.js'   # matches the full command line
+kill 1730                      # or the pid printed by the guard
+```
+
+`pkill index.js` does **not** work: `pkill` matches the process *name* (`node`), not its argv.
+
 Useful scripts:
 
 | script | what it actually does |

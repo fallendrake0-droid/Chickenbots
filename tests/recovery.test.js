@@ -370,6 +370,33 @@ test('a failed close-range escape is retried on the next safety pass, not rate-l
   assert.equal(calls, 2, 'a failed retreat must not start a 1.2s cooldown while a zombie is in melee range');
 });
 
+test('a safety pass defers survival when player watch consumes the budget', async () => {
+  const world = new MockWorld({ flat: true });
+  const bot = new MockBot({ name: '10101000', world });
+  const actions = new BotActions({ bot, world });
+  const previous = config.survival.emergencyBudgetMs;
+  config.survival.emergencyBudgetMs = 1000;
+  let survivalCalled = false;
+  actions.players.tick = async ({ deadlineAt }) => {
+    const wait = Math.max(0, deadlineAt - Date.now()) + 20;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return { ok: true, active: true, target: 'Alex', mode: 'FOLLOW' };
+  };
+  actions.survival.tick = () => {
+    survivalCalled = true;
+    return { actions: [], status: { bot: bot.name } };
+  };
+  try {
+    const result = await actions.safetyTick();
+    assert.equal(survivalCalled, false, 'survival must not start after the budget is gone');
+    assert.equal(result.budgetExhausted, true, JSON.stringify(result));
+    assert.equal(result.deferredStage, 'player-watch');
+    assert.equal(result.timedOut, true, 'the runtime must not start task work on a deferred pass');
+  } finally {
+    config.survival.emergencyBudgetMs = previous;
+  }
+});
+
 test('a safety pass that hangs is released at the configured budget', async () => {
   const world = new MockWorld({ flat: true });
   const bot = new MockBot({ name: '00110000', world, position: { x: 0, y: 64, z: 0 }, inventory: {} });

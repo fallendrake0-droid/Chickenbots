@@ -68,6 +68,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     requires: { tool: 'axe', tier: 1 },
     params: { logType: 'oak', quota: q, replant: true },
     units: { target: q },
+    optional: true,
     maxAttempts: 4,
     estimatedMs: q * 1800,
     metadata: { resource: 'oak_log', risk: 'low' }
@@ -81,6 +82,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     requires: { tool: 'pickaxe', tier: 1, capability: 'mine' },
     params: { block: 'stone', quota: q, yRange: [-59, 62] },
     units: { target: q },
+    optional: true,
     maxAttempts: 4,
     estimatedMs: q * 900,
     metadata: { risk: 'normal' }
@@ -94,6 +96,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     requires: { tool: 'pickaxe', tier: 2, capability: 'mine' },
     params: { ore: 'iron_ore', quota: q, yRange: [-59, 62] },
     units: { target: q },
+    optional: true,
     maxAttempts: 4,
     estimatedMs: q * 4000,
     metadata: { risk: 'high', resource: 'iron_ore' }
@@ -106,6 +109,7 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     requires: { capability: 'farm' },
     params: { crop: 'wheat', count: 16, establish: true },
     units: { target: 16 },
+    optional: true,
     maxAttempts: 3,
     estimatedMs: 300000,
     metadata: { risk: 'low' }

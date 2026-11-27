@@ -76,9 +76,13 @@ class SurvivalController {
     return { ok: true, bot: this.bot.name, feature: name, enabled: this.features[name], features: { ...this.features } };
   }
 
-  async tick({ emergency = false } = {}) {
+  async tick({ emergency = false, deadlineAt = 0 } = {}) {
     const actions = [];
     const bot = this.bot;
+    // Equipment housekeeping is the part of survival that can consume a whole
+    // safety pass (four sequential equip awaits, then a craft). Eating and
+    // healing remain unconditional; armour and tool work stop at the deadline.
+    const expired = () => Boolean(deadlineAt && Date.now() >= deadlineAt - 200);
     if (!bot || bot.health <= 0) return { actions, status: this.status(), dead: true };
     // Lava / fall emergencies come first: they kill faster than hunger.
     if (bot.inLava || bot.onFire || bot.fallDistance > 3) {
@@ -97,12 +101,12 @@ class SurvivalController {
     // During a live threat, crafting a tool or cycling four armour slots is
     // not worth the milliseconds that could be spent moving out of reach.
     // Normal ticks still optimise equipment.
-    if (!emergency && this.features.armour) {
-      const armour = await this.equipArmour();
+    if (!emergency && this.features.armour && !expired()) {
+      const armour = await this.equipArmour({ deadlineAt });
       if (armour.length) actions.push(...armour);
     }
-    if (!emergency && this.features.tools) {
-      const tool = await this.ensureTool();
+    if (!emergency && this.features.tools && !expired()) {
+      const tool = await this.ensureTool({ deadlineAt });
       if (tool) actions.push(tool);
     }
     if (this.features.shield && bot.health <= this.thresholds.fleeHealth && bot.countItem('shield')) {
@@ -147,9 +151,10 @@ class SurvivalController {
     return null;
   }
 
-  async equipArmour() {
+  async equipArmour({ deadlineAt = 0 } = {}) {
     const actions = [];
     for (const { slot, names } of ARMOUR_SLOTS) {
+      if (deadlineAt && Date.now() >= deadlineAt - 200) break;
       const name = names.find((n) => this.bot.countItem(n) > 0);
       if (!name) continue;
       if (typeof this.bot.equipItem !== 'function') break;
@@ -162,10 +167,11 @@ class SurvivalController {
     return actions;
   }
 
-  async ensureTool() {
+  async ensureTool({ deadlineAt = 0 } = {}) {
     const bot = this.bot;
     const desired = ['pickaxe', 'axe', 'sword'];
     for (const category of desired) {
+      if (deadlineAt && Date.now() >= deadlineAt - 200) return null;
       if (bot.bestToolFor(category)) continue;
       const recipe = TOOL_RECIPES.find((r) => {
         if (!r.tool.includes(category)) return false;

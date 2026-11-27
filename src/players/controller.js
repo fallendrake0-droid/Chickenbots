@@ -252,11 +252,34 @@ class PlayerController {
     return { ok, bot: this.bot.name, target: target.name, ...move };
   }
 
-  async tick() {
+  async tick({ deadlineAt = 0 } = {}) {
     if (!this.isActive()) return { ok: true, active: false, status: this.status() };
     if (!this.bot.position) return { ok: true, active: true, visible: false, error: 'bot has no position', status: this.status() };
-    const seen = this.registry ? this.registry.getRow(this.target) : null;
-    const entity = this._entity(this.target);
+    // Snapshot the watch identity for this pass. stop()/unfollow() can run
+    // while a movement await is in flight (the safety watchdog cancels the
+    // action at its budget). Reading this.mode after that await produced the
+    // live "safety tick failed: Cannot read properties of null (reading
+    // 'toLowerCase')" and could also move a bot towards a target the operator
+    // had already cleared.
+    const mode = this.mode;
+    const target = this.target;
+    const stillActive = () => this.mode === mode && this.target === target;
+    const cancelled = () => ({
+      ok: true, active: false, cancelled: true, target, mode,
+      reason: 'player watch cleared while movement was in flight', status: this.status()
+    });
+    const remainingMs = () => (deadlineAt ? deadlineAt - Date.now() : null);
+    // Leave a small margin for bookkeeping after the adapter returns. A
+    // 9s goNear inside a 6s safety pass was the whole player-watch budget in
+    // the operator log, so the pass timed out and cancelled its own movement
+    // on every lap.
+    const budgetFor = (cap) => {
+      const left = remainingMs();
+      if (left === null) return cap;
+      return Math.max(0, Math.min(cap, left - 250));
+    };
+    const seen = this.registry ? this.registry.getRow(target) : null;
+    const entity = this._entity(target);
     if (!entity) {
       // The directory keeps a last-known position, but walking to a stale
       // position is worse than waiting: report invisibility and stay put.
@@ -286,11 +309,11 @@ class PlayerController {
     }
     this.offlineSince = null;
     const dist = Math.hypot(entity.position.x - this.bot.position.x, entity.position.y - this.bot.position.y, entity.position.z - this.bot.position.z);
-    if (this.mode === 'OBSERVE') {
+    if (mode === 'OBSERVE') {
       if (this.observing) this.observing.lastPosition = seen && seen.position ? { ...seen.position } : { ...entity.position };
-      return { ok: true, active: true, visible: true, target: this.target, mode: this.mode, distance: dist, observation: true, status: this.status() };
+      return { ok: true, active: true, visible: true, target, mode, distance: dist, observation: true, status: this.status() };
     }
-    if ((this.mode === 'GUARD' || this.mode === 'ESCORT') && this.combat) {
+    if ((mode === 'GUARD' || mode === 'ESCORT') && this.combat) {
       const threats = (typeof this.bot.entitiesNear === 'function' ? this.bot.entitiesNear(this.guardRadius, entity.position) : [])
         .filter((candidate) => isHostile(candidate)
           || (Boolean(candidate && (candidate.username || candidate.type === 'player'))
@@ -301,30 +324,50 @@ class PlayerController {
         const threat = threats[0];
         const reach = Math.hypot(threat.position.x - this.bot.position.x, threat.position.y - this.bot.position.y, threat.position.z - this.bot.position.z);
         if (reach > 3.5) {
-          const approach = await this.bot.goNear(threat, 2, {
-            timeoutMs: 6000, priority: 'operator', owner: `player-${this.mode.toLowerCase()}:${this.target}`
-          });
-          if (approach && approach.ok === false) this.lastError = approach.error || 'could not reach a threat near the player';
+          const approachBudget = budgetFor(3000);
+          if (approachBudget >= 500) {
+            const approach = await this.bot.goNear(threat, 2, {
+              timeoutMs: approachBudget, priority: 'operator', owner: `player-${mode.toLowerCase()}:${target}`
+            });
+            if (!stillActive()) return cancelled();
+            if (approach && approach.ok === false) this.lastError = approach.error || 'could not reach a threat near the player';
+          }
         }
         const attack = await this.combat.attackEntity(threat);
+        if (!stillActive()) return cancelled();
         if (attack && attack.ok) {
           this.stats.defences++;
-          this._note(`${this.mode.toLowerCase()} defence ${threats[0].name || threats[0].type}`);
-          return { ok: true, active: true, visible: true, target: this.target, mode: this.mode, defence: attack, distance: dist, status: this.status() };
+          this._note(`${mode.toLowerCase()} defence ${threats[0].name || threats[0].type}`);
+          return { ok: true, active: true, visible: true, target, mode, defence: attack, distance: dist, status: this.status() };
         }
         if (attack && attack.ok === false) this.lastError = attack.error || 'guard attack refused';
       }
     }
     if (dist > this.followDistance + 1.5 && Date.now() - this.lastMoveAt >= 1200) {
+      const moveBudget = budgetFor(4000);
+      if (moveBudget < 750) {
+        return {
+          ok: true, active: true, visible: true, target, mode, distance: dist,
+          deferred: true, budgetExhausted: true,
+          error: 'safety budget too low for another player-watch move', status: this.status()
+        };
+      }
       this.lastMoveAt = Date.now();
       const move = await this.bot.goNear(entity, this.followDistance, {
-        timeoutMs: 9000, priority: 'operator', owner: `player-${this.mode.toLowerCase()}:${this.target}`
+        timeoutMs: moveBudget, priority: 'operator', owner: `player-${mode.toLowerCase()}:${target}`
       });
-      if (move && move.ok === false) this.lastError = move.error || 'could not reach player';
-      this._note(`${this.mode.toLowerCase()} ${this.target}`, move && move.ok === false ? (move.error || 'move failed') : null);
-      return { ok: Boolean(move && move.ok !== false), active: true, visible: true, target: this.target, mode: this.mode, move, distance: dist, status: this.status() };
+      if (!stillActive()) return cancelled();
+      if (move && move.ok === false) {
+        this.lastError = move.error || 'could not reach player';
+        // The safety pass may have stopped this path at its own budget. Do not
+        // immediately re-issue the same goal on the next lap; that churn was
+        // logged as "movement request was superseded" for every follow.
+        this.lastMoveAt = Date.now() + 1500;
+      }
+      this._note(`${mode.toLowerCase()} ${target}`, move && move.ok === false ? (move.error || 'move failed') : null);
+      return { ok: Boolean(move && move.ok !== false), active: true, visible: true, target, mode, move, distance: dist, status: this.status() };
     }
-    return { ok: true, active: true, visible: true, target: this.target, mode: this.mode, distance: dist, status: this.status() };
+    return { ok: true, active: true, visible: true, target, mode, distance: dist, status: this.status() };
   }
 
   /**

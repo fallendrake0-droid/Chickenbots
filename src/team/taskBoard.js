@@ -95,7 +95,28 @@ class TaskBoard {
       target += t.units.target || 0;
     }
     obj.progress = { current, target: target || tasks.length, unit: obj.progress.unit || 'units' };
-    if (tasks.every((t) => t.status === TASK_STATUS.COMPLETED) && obj.status === OBJECTIVE_STATUS.ACTIVE) {
+    const done = (t) => t.status === TASK_STATUS.COMPLETED;
+    const terminal = (t) => [TASK_STATUS.COMPLETED, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED].includes(t.status);
+    const required = tasks.filter((t) => !t.optional);
+    const requiredDone = required.length > 0 && required.every(done);
+    if ((tasks.every(done) || requiredDone) && obj.status === OBJECTIVE_STATUS.ACTIVE) {
+      // Every required deliverable is verified. Remaining optional work no
+      // longer has a purpose in this objective; cancel it instead of leaving
+      // ACTIVE rows that block the planner from moving on.
+      for (const task of tasks) {
+        if (task.optional && !terminal(task)) this.cancel(task.id, 'required objective work is complete');
+      }
+      // Completed means the required deliverables are verified. Optional work
+      // that was cancelled or lost must not leave a 100%-complete objective
+      // displaying a misleading 62% bar.
+      const counted = tasks.filter((task) => !task.optional || done(task));
+      const countedCurrent = counted.reduce((sum, task) => sum + (task.units.current || 0), 0);
+      const countedTarget = counted.reduce((sum, task) => sum + (task.units.target || 0), 0);
+      obj.progress = {
+        current: countedCurrent,
+        target: countedTarget || counted.length || 1,
+        unit: obj.progress.unit || 'units'
+      };
       obj.status = OBJECTIVE_STATUS.COMPLETED;
       obj.completedAt = this.now();
       this._event('objective.completed', { objectiveId: id });
@@ -124,6 +145,12 @@ class TaskBoard {
       resources: spec.resources || [],
       dependsOn: spec.dependsOn ? spec.dependsOn.slice() : [],
       units: spec.units ? { current: spec.units.current || 0, target: spec.units.target || 1 } : { current: 0, target: 1 },
+      // Optional work contributes to an objective but cannot collapse it on its
+      // own. The survival-base plan's food/materials quotas are optional: a
+      // farm that finds no soil used to fail the whole base objective, cancel
+      // every sibling task and make the planner re-open it three times before
+      // pausing for 30 minutes.
+      optional: spec.optional === true,
       claimedBy: null,
       claimedAt: null,
       claimExpiresAt: null,
@@ -171,7 +198,13 @@ class TaskBoard {
   dependenciesSatisfied(task) {
     return task.dependsOn.every((depId) => {
       const dep = this.tasks.get(depId);
-      return dep && dep.status === TASK_STATUS.COMPLETED;
+      if (!dep) return false;
+      if (dep.status === TASK_STATUS.COMPLETED) return true;
+      // A failed optional quota is a degraded dependency, not a permanent
+      // block: the build phase may proceed with the materials that do exist
+      // and report its own verified result.
+      return dep.optional === true
+        && [TASK_STATUS.FAILED, TASK_STATUS.CANCELLED].includes(dep.status);
     });
   }
 
@@ -364,6 +397,21 @@ class TaskBoard {
     this._event('task.failed', { taskId, reason: task.lastError });
     if (task.objectiveId) {
       const obj = this.objectives.get(task.objectiveId);
+      if (obj && task.optional) {
+        // Degrade, do not destroy. Record the loss for the dashboard and the
+        // planner, leave every sibling running, and let the required tasks
+        // decide the objective's fate.
+        const degraded = Array.isArray(obj.degraded) ? obj.degraded : [];
+        degraded.push({
+          taskId: task.id, type: task.type, label: task.label,
+          reason: task.lastError, at: this.now()
+        });
+        obj.degraded = degraded.slice(-20);
+        obj.optionalFailure = obj.degraded[obj.degraded.length - 1];
+        this._event('task.failed.optional', { taskId, reason: task.lastError });
+        this.refreshObjectiveProgress(obj.id);
+        return { ok: true, retry: false, optional: true, task };
+      }
       if (obj) {
         obj.status = OBJECTIVE_STATUS.FAILED;
         obj.blockedReason = task.lastError;
