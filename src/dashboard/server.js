@@ -14,6 +14,16 @@ const { worldSnapshot } = require('./worldView');
 const { buildInfo } = require('./buildInfo');
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+const SHELL_ROUTES = Object.freeze(new Set([
+  'overview', 'world', 'activity', 'notifications',
+  'bots', 'players', 'team', 'profiles', 'connections',
+  'survival', 'inventory', 'mining', 'excavation', 'woodcutting', 'farming',
+  'fishing', 'exploration', 'sleep',
+  'combat', 'combat-team', 'combat-gear', 'combat-supplies', 'combat-targets',
+  'operations', 'builder-projects', 'site-survey', 'site-prep', 'lighting',
+  'material-plan', 'warehouse', 'crew', 'qa', 'home', 'building', 'builder',
+  'schematics', 'projects', 'history', 'tasks', 'logs', 'settings'
+]));
 
 /**
  * Download names come from route parameters or custom-catalogue ids. Strip
@@ -182,22 +192,21 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   // paths during navigation. A refresh on a typed-in deep link such as
   // `/players` should still boot the shell, but a genuinely unknown path must
   // stay a 404. Keep this list aligned with NAV_GROUPS in public/js/router.js.
-  const SHELL_ROUTES = new Set([
-    'overview', 'world', 'activity', 'notifications',
-    'bots', 'players', 'team', 'profiles', 'connections',
-    'survival', 'inventory', 'mining', 'excavation', 'woodcutting', 'farming',
-    'fishing', 'exploration', 'sleep',
-    'combat', 'combat-team', 'combat-gear', 'combat-supplies', 'combat-targets',
-    'operations', 'builder-projects', 'site-survey', 'site-prep', 'lighting',
-    'material-plan', 'warehouse', 'crew', 'qa', 'home', 'building', 'builder',
-    'schematics', 'projects', 'history', 'tasks', 'logs', 'settings'
-  ]);
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/') || req.path === '/healthz' || req.path.includes('.')) return next();
+  // Serve the shell for typed deep links and tab refreshes. This is a pathless
+  // middleware rather than a string wildcard route: Express 5 routes through
+  // path-to-regexp 8, which rejects a bare '*' with "Missing parameter name at
+  // index 1" while the route is being registered. A pathless app.use is parsed
+  // by neither version and is safe under both Express 4 and 5. It is registered
+  // after every API route below, so an API path can never fall through to HTML.
+  const serveShell = (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (req.path === '/api' || req.path.startsWith('/api/') || req.path === '/healthz') return next();
+    // A missing .js/.css/image/download must remain a 404, never the shell.
+    if (req.path.includes('.')) return next();
     const segment = req.path.split('/').filter(Boolean)[0] || '';
     if (!SHELL_ROUTES.has(segment)) return next();
     return renderIndex(req, res);
-  });
+  };
   // Snapshot assembly takes a few tens of milliseconds. Keep only a very
   // short coalescing cache for concurrent callers, and always force a fresh
   // build for the state endpoint and the SSE stream: a stale "online" card is
@@ -710,21 +719,20 @@ function createDashboard(services, { port = config.dashboard.port, host = config
     });
   });
 
-  // Never return Express's default HTML stack trace (which includes local
-  // filesystem paths) to a network client.
-  app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
-    const status = Number(err.status || err.statusCode) || 500;
-    const message = status === 413 ? 'request body too large' : status >= 500 ? 'internal server error' : (err.message || 'request failed');
-    if (status >= 500) services.logger?.error(`dashboard request failed: ${err.message}`);
-    if (res.headersSent) return res.end();
-    return res.status(status).json({ ok: false, error: message });
-  });
+  // Legal SPA navigation that survived every API and static route. The
+  // fallback is deliberately the last non-error middleware so a new API route
+  // added above can never be swallowed by the HTML shell.
+  app.use(serveShell);
 
   app.use((req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (req.path.startsWith('/api/')) return res.status(404).json({ ok: false, error: 'not found', path: req.path });
-    if (!req.accepts('html')) return res.status(404).type('text').send('Not found');
-    res.status(404).type('html').send(`<!doctype html>
+    const isApi = req.path === '/api' || req.path.startsWith('/api/');
+    if (isApi) return res.status(404).json({ ok: false, error: 'not found', path: req.path });
+    // A path with a filename extension is an asset/download request. Never
+    // smuggle the HTML shell into a missing JavaScript, CSS or image URL.
+    const assetLike = /\/[^/]*\.[^/]+$/.test(req.path);
+    if (assetLike || !req.accepts('html')) return res.status(404).type('text').send('Not found');
+    return res.status(404).type('html').send(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Not found · Chickenbots</title>
 <meta name="chickenbots-build" content="${build.buildId}">
@@ -737,6 +745,17 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   <p class="muted" style="margin-bottom:18px">No dashboard view matches <span class="mono">${escapeHtml(req.path)}</span>.</p>
   <a class="button button--primary" href="/">Return to overview</a>
 </main></body></html>`);
+  });
+
+  // Never return Express's default HTML stack trace (which includes local
+  // filesystem paths) to a network client. Error handling is the final layer
+  // so failures in the 404 path are also converted to JSON.
+  app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+    const status = Number(err.status || err.statusCode) || 500;
+    const message = status === 413 ? 'request body too large' : status >= 500 ? 'internal server error' : (err.message || 'request failed');
+    if (status >= 500) services.logger?.error(`dashboard request failed: ${err.message}`);
+    if (res.headersSent) return res.end();
+    return res.status(status).json({ ok: false, error: message });
   });
 
   const bindProblem = dashboardBindProblem({ host, token: accessToken, allowInsecure: config.dashboard.allowInsecure });
@@ -808,4 +827,4 @@ function topDownPreview(schematic) {
   return { width, length, height: schematic.dimensions.height, stride, cells: sampled };
 }
 
-module.exports = { createDashboard, dashboardBindProblem, worldSnapshot, attachmentFilename };
+module.exports = { createDashboard, dashboardBindProblem, worldSnapshot, attachmentFilename, SHELL_ROUTES };

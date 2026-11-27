@@ -426,3 +426,71 @@ test('repeated plan failures re-open the same objective and stop after three', (
   assert.equal(afterBackoff && afterBackoff.reopened !== undefined, true);
   assert.equal(afterBackoff.objective.id, objectiveId, 'the long backoff also re-opens, never re-creates');
 });
+
+test('a dashboard route-registration failure cannot stop the bot runtime', async () => {
+  const entries = [];
+  const logger = new Logger({ level: 'debug' });
+  logger.addSink((entry) => entries.push(entry));
+  const runtime = await createRuntime({
+    simulate: true,
+    connect: false,
+    dashboard: true,
+    logger,
+    createDashboard: () => { throw new Error('simulated route registration failure'); }
+  });
+  try {
+    const started = await runtime.start();
+    assert.equal(started.ok, true);
+    assert.equal(started.dashboard, null);
+    assert.match(started.dashboardError, /simulated route registration failure/);
+    assert.equal(runtime.bots.size, 5, 'the configured fleet still initialises');
+    assert.ok(runtime.board && runtime.coordinator && runtime.commands && runtime.actions, 'team, task, command and action systems still initialise');
+    assert.equal(runtime.board.listObjectives().length, 0, 'the task board is usable');
+    const logged = entries.map((entry) => `${entry.msg} ${entry.stack || ''}`).join('\n');
+    assert.match(logged, /dashboard initialisation failed/);
+    assert.match(logged, /simulated route registration failure/);
+  } finally {
+    await runtime.shutdown('test');
+  }
+});
+
+test('a dashboard bind failure reports degraded mode and leaves the fleet running', async () => {
+  const entries = [];
+  const logger = new Logger({ level: 'debug' });
+  logger.addSink((entry) => entries.push(entry));
+  let stopped = false;
+  const runtime = await createRuntime({
+    simulate: true,
+    connect: false,
+    dashboard: true,
+    logger,
+    createDashboard: () => ({
+      start: async () => { throw new Error('EADDRINUSE: simulated dashboard port collision'); },
+      stop: async () => { stopped = true; return { ok: true }; }
+    })
+  });
+  try {
+    const started = await runtime.start();
+    assert.equal(started.ok, true);
+    assert.equal(started.dashboard, null);
+    assert.match(started.dashboardError, /EADDRINUSE/);
+    assert.equal(stopped, true, 'a partially opened dashboard socket must be released');
+    assert.equal(runtime.bots.size, 5);
+    assert.match(entries.map((entry) => entry.msg).join('\n'), /dashboard failed to start/);
+  } finally {
+    await runtime.shutdown('test');
+  }
+});
+
+test('credentials idle under MC_AUTH_PROFILE=none are explained without being exposed', () => {
+  const candidate = JSON.parse(JSON.stringify(config));
+  candidate.server.loginPassword = 'test-only-password-42';
+  candidate.server.authProfile = 'none';
+  candidate.server.authMode = 'disabled';
+  const checked = validateConfig(candidate);
+  const warnings = checked.warnings.join('\n');
+  assert.match(warnings, /MC_AUTH_PROFILE=none/);
+  assert.match(warnings, /no \/login or \/register command will be sent/);
+  assert.match(warnings, /MC_AUTH_PROFILE=authme/);
+  assert.doesNotMatch(warnings, /test-only-password-42/, 'a warning must never echo a credential');
+});

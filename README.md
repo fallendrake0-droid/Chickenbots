@@ -107,7 +107,7 @@ src/
   builder/builder.js        cooperative phased construction with real material transfers
   actions/                  survival, combat, mining, woodcutting, farming, fishing, sleep, exploration, inventory, home base
   commands/                 registry.js (validation/confirmation) + index.js (all commands)
-  dashboard/                Express API + modular operations console (39 routed pages)
+  dashboard/                Express API + modular operations console (41 routed pages)
 scripts/                    lint, validation, schematic generation/statistics
 tests/                      team, excavation, construction, schematics, builder, survival, controllers, autonomy
 ```
@@ -495,7 +495,7 @@ node src/cli.js --simulate "task list"
 
 ## Dashboard
 
-A modular operations console served from `src/dashboard/public/` with 40 routed views, grouped so
+A modular operations console served from `src/dashboard/public/` with 41 routed views, grouped so
 that related tasks sit together rather than in one long tab strip:
 
 * **Overview** – fleet summary, live vitals chart, activity feed and objectives.
@@ -534,6 +534,13 @@ only for the current hash. `/api/build` and **Settings → Build & version** exp
 both build ids, and the shell raises a reload banner if the loaded module graph no longer matches
 the backend. There is no service worker, so a reload cannot resurrect a stale app shell. A typed
 deep link such as `/players` boots the shell for a known route; unknown paths still return 404.
+The deep-link fallback is a pathless middleware registered after every API route, not an
+`app.get('*')` wildcard: Express 4 and Express 5 (path-to-regexp 8) both accept it, while the old
+string wildcard crashes Express 5 during route registration with `Missing parameter name at index
+1: *`. Missing `.js`, `.css`, image and download URLs always return a plain 404, never the HTML
+shell; unknown `/api` paths always return JSON. If the dashboard itself cannot initialise or bind,
+the runtime logs the full stack, reports `Dashboard unavailable`, and keeps the bot fleet running
+headless rather than aborting the process.
 
 The shell is loaded per route (`js/app.js` + `js/router.js`) and hydrated from `/api/state`, `/api/logs`,
 `/api/commands`, `/api/settings` and `/api/schematics`. A single SSE feed (`/api/events`) drives live
@@ -682,7 +689,9 @@ commissioning.
   autonomy is paused. Connected bots send a real swing animation every 30s so a writable session is
   visible to idle plugins. Chickenbots does **not** fabricate movement or jump to defeat AFK checks; the
   real 20 tps client tick loop is the fix for a client that looks frozen.
-  The default `MC_AUTH_PROFILE=none` sends **no** `/login` or `/register`. The live 26.1 server
+  The default `MC_AUTH_PROFILE=none` sends **no** `/login` or `/register`. Credentials left in
+  `.env` while the profile is `none` are intentionally idle; startup warns and names the profiles
+  to select only if the server actually requires plugin authentication. The live 26.1 server
   answered `/login` with `Unknown or incomplete command`, so the password exchange was not merely
   failing — the server had no such command. Plugin authentication is now opt-in through an explicit
   profile. `authme`/`simpleauth` wait for the server's own challenge; a missing challenge returns

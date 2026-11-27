@@ -91,7 +91,10 @@ async function main() {
     logger
   });
   const started = await runtime.start();
-  if (started.dashboard) {
+  if (started.dashboardError) {
+    process.stdout.write(`\n  Dashboard unavailable: ${started.dashboardError}\n`);
+    process.stdout.write('  The bot runtime continues without a control plane; the full error is in the log above.\n\n');
+  } else if (started.dashboard) {
     process.stdout.write(`\n  Dashboard: http://127.0.0.1:${started.dashboard.port}  (bound ${started.dashboard.host}:${started.dashboard.port})\n`);
     if (started.dashboard.build) process.stdout.write(`  Build: ${started.dashboard.build.buildId}\n`);
     process.stdout.write('  Live preview uses the sandbox proxy; the server accepts the forwarded host.\n');

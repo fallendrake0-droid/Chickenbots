@@ -60,10 +60,12 @@ function shouldPauseAuthRetry(result) {
 }
 
 class TeamRuntime {
-  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion, now = Date.now, random = Math.random } = {}) {
+  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion, now = Date.now, random = Math.random, createDashboard: dashboardFactory = createDashboard } = {}) {
     this.simulate = Boolean(simulate);
     this.shouldConnect = connect;
     this.wantDashboard = dashboard;
+    this.dashboardFactory = dashboardFactory;
+    this.dashboardError = null;
     this.port = port;
     this.host = host;
     this.logger = logger || new Logger({ level: config.logging.level });
@@ -295,7 +297,22 @@ class TeamRuntime {
     this.services = services;
     this.commands = createCommandHandler(services);
     services.commands = this.commands;
-    this.dashboard = this.wantDashboard ? createDashboard(services, { port: this.port, host: this.host }) : null;
+    if (this.wantDashboard) {
+      try {
+        this.dashboard = this.dashboardFactory(services, { port: this.port, host: this.host });
+      } catch (err) {
+        // The control plane is an operator surface, not a dependency of the
+        // fleet. A bad route registration used to abort createRuntime, so five
+        // otherwise healthy bots never launched. Keep the exception visible
+        // (message and stack) and continue headless; the CLI reports the
+        // degraded state explicitly rather than claiming a normal dashboard.
+        this.dashboardError = err;
+        this.dashboard = null;
+        this.logger.error(`dashboard initialisation failed: ${err && err.stack ? err.stack : err}`);
+      }
+    } else {
+      this.dashboard = null;
+    }
     return this;
   }
 
@@ -414,9 +431,20 @@ class TeamRuntime {
       await this._warmStatusCaches();
     }
     if (this.dashboard) {
-      dashboardInfo = await this.dashboard.start();
-      this.logger.info(`dashboard listening on http://${dashboardInfo.host}:${dashboardInfo.port}`);
-      if (dashboardInfo.build) this.logger.info(`dashboard build ${dashboardInfo.build.buildId} (frontend ${dashboardInfo.build.frontendHash}, backend ${dashboardInfo.build.backendHash})`);
+      try {
+        dashboardInfo = await this.dashboard.start();
+        this.logger.info(`dashboard listening on http://${dashboardInfo.host}:${dashboardInfo.port}`);
+        if (dashboardInfo.build) this.logger.info(`dashboard build ${dashboardInfo.build.buildId} (frontend ${dashboardInfo.build.frontendHash}, backend ${dashboardInfo.build.backendHash})`);
+      } catch (err) {
+        // A bind failure must not prevent the fleet from running. Report it as
+        // a degraded control plane, release any partially opened socket and
+        // continue with the bot runtime rather than exiting as if the whole
+        // application failed.
+        this.dashboardError = err;
+        this.logger.error(`dashboard failed to start: ${err && err.stack ? err.stack : err}`);
+        try { await this.dashboard.stop(); } catch (_) { /* nothing was listening */ }
+        this.dashboard = null;
+      }
     }
     // Keep the one-shot startup cost (manifest/custom store/status warm-up)
     // visible without letting its few samples decide the routine p99 for the
@@ -446,7 +474,13 @@ class TeamRuntime {
       }, 1500);
       if (typeof this.supervisorTimer.unref === 'function') this.supervisorTimer.unref();
     }
-    return { ok: true, mode: this.mode, dashboard: dashboardInfo, autonomyAllowed: this.autonomyAllowed };
+    return {
+      ok: true,
+      mode: this.mode,
+      dashboard: dashboardInfo,
+      dashboardError: this.dashboardError ? (this.dashboardError.message || String(this.dashboardError)) : null,
+      autonomyAllowed: this.autonomyAllowed
+    };
   }
 
   /**

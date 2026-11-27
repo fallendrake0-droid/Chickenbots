@@ -21,6 +21,7 @@
     "test:excavation": "node --test --test-concurrency=1 tests/excavation.test.js tests/excavation-exec.test.js",
     "test:survival": "node --test --test-concurrency=1 tests/survival.test.js tests/controllers.test.js",
     "test:features": "node --test --test-concurrency=1 tests/v4-features.test.js",
+    "test:routing": "node --test --test-concurrency=1 tests/dashboard-routing.test.js",
     "test:construction": "node --test --test-concurrency=1 tests/construction.test.js",
     "test:schematics": "node --test --test-concurrency=1 tests/schematics.test.js tests/builder.test.js",
     "test:combat": "node --test --test-concurrency=1 tests/combat.test.js",

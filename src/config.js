@@ -574,7 +574,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   } else {
     if (server.authEnabled) warn('server.authEnabled', 'no auth profile is selected; no plugin command will be sent');
     if (server.credentialsError) warn('server.credentialsFile', server.credentialsError);
-    if (Object.keys(server.credentials || {}).length) warn('server.credentialsFile', 'credentials are present but MC_AUTH_PROFILE=none; they will not be used');
+    if (Object.keys(server.credentials || {}).length) warn('server.credentialsFile', 'per-bot credentials are present but MC_AUTH_PROFILE=none; they will not be used. Set MC_AUTH_PROFILE only for a server that actually requires /login or /register.');
   }
   text('server.loginCommand', server.loginCommand, 255);
   text('server.registerCommand', server.registerCommand, 255);
@@ -675,7 +675,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   // Credentials alone never send a command. The profile is the authority; the
   // default `none` keeps the live server's "no /login command" behaviour.
   if ((server.loginPassword || server.registerPassword) && (!server.authProfile || server.authProfile === 'none')) {
-    warn('server.loginPassword', 'credentials are present but MC_AUTH_PROFILE=none; they will not be sent');
+    warn('server.loginPassword', 'credentials are present but MC_AUTH_PROFILE=none; no /login or /register command will be sent. If this server requires plugin authentication, set MC_AUTH_PROFILE=authme, simpleauth, generic or manual (per-bot passwords belong in MC_CREDENTIALS_FILE).');
   }
   if (requireCredentials && simulate) {
     warn('server.loginPassword', 'ignored: plugin authentication is off in simulation');
