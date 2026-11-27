@@ -2075,22 +2075,52 @@ function registerCombat(registry, services) {
   });
 
   registry.register({
-    name: 'follow', category: 'combat', summary: 'Follow a teammate or visible player while defending against real threats', usage: 'follow <bot|player> [distance] | follow stop',
+    name: 'follow', category: 'combat', summary: 'Follow a player with a persistent verified watch, or a teammate in formation', usage: 'follow <player|bot> [distance] | follow stop',
     execute: async (args) => {
       const requested = String(args[0] || '').trim();
       if (!requested) throw new CommandError('usage: follow <bot|player> [distance] | follow stop');
       if (requested.toLowerCase() === 'stop') {
-        return { ok: true, stopped: combatControllers(services).map((controller) => ({ bot: controller.bot.name, ...controller.stopFollow() })) };
+        // `follow stop` must clear both implementations: the team-follow mode
+        // inside CombatController and an operator player watch inside
+        // PlayerController. Stopping only one left the other moving the bot.
+        const stopped = allActions(services).map((actions) => ({
+          bot: actions.bot.name,
+          player: actions.players ? actions.players.unfollow() : { ok: true, stopped: false },
+          combat: actions.combat ? actions.combat.stopFollow() : { ok: true }
+        }));
+        return { ok: true, command: 'follow stop', stopped };
       }
       const distance = args[1] === undefined ? 4 : intArg(args[1], 'distance', { min: 2, max: 16 });
       const targetBot = services.bots ? services.bots.get(requested) : null;
+      if (!targetBot) {
+        // A player is a real player watch: registry validation, persistent
+        // follow state, arrival verification and an honest offline timeout.
+        // The old path put a raw player name into CombatController, which
+        // silently searched entities within 32 blocks and backed off for up to
+        // 15 seconds with no way for the Players page to see the watch.
+        const results = allActions(services).map((actions) => ({
+          bot: actions.bot.name,
+          ...(actions.players
+            ? actions.players.follow(requested, { distance })
+            : { ok: false, error: 'player controller unavailable' })
+        }));
+        const accepted = results.filter((row) => row.ok !== false);
+        if (!accepted.length) {
+          const first = results[0] || {};
+          throw new CommandError(first.error || `player '${requested}' is not available to follow`);
+        }
+        return {
+          command: 'follow', kind: 'player', target: accepted[0].target || requested,
+          distance, ok: true, results,
+          skipped: results.length - accepted.length
+        };
+      }
       const results = [];
       for (const controller of combatControllers(services)) {
         if (targetBot && controller.bot === targetBot) { results.push({ bot: controller.bot.name, ok: true, skipped: 'follow target is this bot' }); continue; }
-        const target = targetBot || requested.toLowerCase();
-        results.push({ bot: controller.bot.name, ...(await controller.follow(target, { distance })) });
+        results.push({ bot: controller.bot.name, ...(await controller.follow(targetBot, { distance })) });
       }
-      return { ok: results.some((result) => result.ok !== false), target: targetBot ? targetBot.name : requested.toLowerCase(), distance, results };
+      return { ok: results.some((result) => result.ok !== false), command: 'follow', kind: 'bot', target: targetBot.name, distance, results };
     }
   });
 

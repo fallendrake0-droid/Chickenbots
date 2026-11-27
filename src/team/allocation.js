@@ -84,6 +84,22 @@ function scoreTaskForBot(task, bot, context = {}) {
       else score += 6;
     }
   }
+  // Some deliverables can only be performed by the bot that actually carries
+  // the item (a bed is placed from the claimant's own inventory). A normal
+  // requirement only lowers the score, which let an empty-handed quartermaster
+  // claim PLACE_BED, fail with "no bed available" and take the objective down
+  // with it even though a teammate was holding the bed. `held` is a near-hard
+  // gate: the holder wins the task, and while nobody holds the item the task
+  // waits (and, when optional, is cancelled by required work completing).
+  if (requires.held) {
+    for (const [item, count] of Object.entries(requires.held)) {
+      const have = item.startsWith('category:')
+        ? sumCategory(bot.inventory || {}, item.slice('category:'.length))
+        : ((bot.inventory || {})[item] || 0);
+      if (have < count) { score -= 1000; reasons.push(`must hold ${item} ${have}/${count}`); }
+      else score += 30;
+    }
+  }
   if (requires.minHealth !== undefined && health < requires.minHealth) { score -= 120; reasons.push('below minimum health'); }
   if (requires.minFood !== undefined && food < requires.minFood) { score -= 120; reasons.push('below minimum food'); }
   if (requires.armor) {

@@ -3,7 +3,7 @@
 const { Logger } = require('../logger');
 const { config } = require('../config');
 const { distance } = require('../util/vec');
-const { categoryOf, bestTool, FOODS, LOGS, PLANKS, inventorySlotUsage } = require('../world/items');
+const { categoryOf, bestTool, FOODS, LOGS, PLANKS, BED_NAMES, inventorySlotUsage } = require('../world/items');
 const { findBlocks } = require('./common');
 
 const TOOL_MATERIALS = {
@@ -191,6 +191,40 @@ class InventoryManager {
     if (this.ledger) this.ledger.updateStorage(storage.id, { position: storage.position, counts: remaining });
     if (result.ok) this.stats.withdrawn += Number(result.count) || 0;
     return result;
+  }
+
+  /**
+   * A bed placed by PLACE_BED must come from the placing bot's inventory. The
+   * team deposits spare beds in the shared home chest, so an empty-handed bot
+   * used to fail with "no bed available" while five beds sat in storage. Pull
+   * exactly one bed back out and prove it is held before the caller places it.
+   */
+  async ensureBedFromStorage() {
+    if (typeof this.bot.hasBed === 'function' && this.bot.hasBed()) {
+      return { ok: true, source: 'inventory', item: this.bot.hasBed() };
+    }
+    const storage = await this.findStorage();
+    if (!storage) return { ok: false, error: 'no bed in inventory and no verified storage' };
+    const move = await this.bot.goTo(storage.position, { range: 3 });
+    if (move && move.ok === false) return { ok: false, error: `cannot reach home storage: ${move.error}` };
+    const window = await this.bot.openContainer(storage.position);
+    if (!window.ok) return { ok: false, ...window, error: window.error || 'cannot open home storage' };
+    let contents = {};
+    let bedName = null;
+    try {
+      contents = { ...window.items() };
+      bedName = Object.keys(contents).find((name) => BED_NAMES.has(name) && Number(contents[name]) > 0) || null;
+      if (!bedName) return { ok: false, error: 'no bed in inventory or home storage', storage: storage.position };
+      const taken = await window.withdraw(bedName, 1);
+      if (!taken.ok) return { ok: false, error: taken.error || 'could not withdraw a bed', item: bedName };
+      const held = typeof this.bot.hasBed === 'function' ? this.bot.hasBed() : null;
+      return { ok: Boolean(held), item: bedName, count: 1, held, source: 'home storage', storage: storage.position };
+    } finally {
+      // Read before closing: a live mineflayer window is unreadable afterwards.
+      const remaining = { ...window.items() };
+      await window.close();
+      if (this.ledger) this.ledger.updateStorage(storage.id, { position: storage.position, counts: remaining });
+    }
   }
 
   async share(itemName, count, recipient) {

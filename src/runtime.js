@@ -1115,6 +1115,10 @@ class TeamRuntime {
       const elapsed = Date.now() - started;
       if (elapsed >= budget + 1000) this.logger.warn(`[${name}] safety task took ${(elapsed / 1000).toFixed(1)}s (budget ${budget}ms)`);
       if (this.botSafety.get(name) === task) this.botSafety.delete(name);
+      // Once no controller work is in flight, stop blaming the last safety
+      // pass for blocks that happen in timers, dashboard requests or the idle
+      // gap between ticks.
+      if (!this.botSafety.size && !this.botSteps.size) this._lastPhase = 'idle';
     });
     this.botSafety.set(name, task);
     return task;
@@ -1138,6 +1142,12 @@ class TeamRuntime {
     if (overdue && now - last >= 10000) {
       this._lastSafetyStageWarnAt.set(name, now);
       this.logger.warn(`[${name}] safety stages ${elapsed}ms over the ${budget}ms budget${parts.length ? `: ${parts.join(', ')}` : ''}`);
+    } else if (elapsed >= 1000 && now - last >= 10000) {
+      // A pass that fits the budget can still contain a one-second synchronous
+      // block. Record its stage breakdown so the event-loop warning names the
+      // subsystem instead of only "safety".
+      this._lastSafetyStageWarnAt.set(name, now);
+      this.logger.info(`[${name}] safety stages ${elapsed}ms${parts.length ? `: ${parts.join(', ')}` : ''}`);
     } else if (!overdue && parts.length && now - last >= 30000) {
       this._lastSafetyStageWarnAt.set(name, now);
       this.logger.debug(`[${name}] safety stages ${elapsed}ms${parts.length ? `: ${parts.join(', ')}` : ''}`);
@@ -1247,6 +1257,7 @@ class TeamRuntime {
           this.logger.info(`[${name}] long action ${assignment ? assignment.type : 'idle'} finished in ${(elapsed / 1000).toFixed(1)}s`);
         }
         if (this.botSteps.get(name) === task) this.botSteps.delete(name);
+        if (!this.botSafety.size && !this.botSteps.size) this._lastPhase = 'idle';
       }
     })();
     this.botSteps.set(name, task);

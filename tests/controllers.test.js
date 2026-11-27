@@ -189,8 +189,11 @@ test('dashboard serves the operations console, state, commands and schematic dow
     assert.ok(router.body.includes("case 'players'"), 'players route is missing');
     const playersPage = await httpGet(port, '/js/pages/players.js');
     assert.equal(playersPage.status, 200);
-    assert.ok(playersPage.body.includes('players follow'), 'players page controls are missing');
-    assert.ok(playersPage.body.includes('players unfollow'), 'players page unfollow controls are missing');
+    // Player-watch lines are built by the shared command builder so the preview
+    // and the executed command cannot drift. Check the builder calls rather
+    // than a hard-coded string that no longer appears in the module source.
+    assert.ok(playersPage.body.includes("playerWatchCommand('follow'"), 'players page controls are missing');
+    assert.ok(playersPage.body.includes("playerWatchCommand('unfollow'"), 'players page unfollow controls are missing');
     assert.ok(playersPage.body.includes('Following players'), 'players page following section is missing');
     for (const label of ['Overview', 'Live Activity', 'Notifications', 'All Bots', 'Players', 'Team Management', 'Bot Profiles', 'Connection Management', 'Survival', 'Combat', 'Inventory', 'Mining', 'Excavation', 'Woodcutting', 'Farming', 'Exploration', 'Sleep', 'Builder', 'Schematic Library', 'Build Projects', 'Project History', 'Task Manager', 'Logs & Diagnostics', 'Settings']) {
       assert.ok(router.body.includes(label), `missing page ${label}`);

@@ -1141,10 +1141,19 @@ class BotActions {
           result = { ok: true, quantity: wanted, verified: true, existing, reused: true };
           break;
         }
+        // A bed can be in the bot's pack or in the shared home chest. The
+        // action itself must acquire and verify it: the allocator cannot know
+        // what another bot deposited, and a held-only gate deadlocks the base.
+        let acquired = null;
+        if (!(typeof this.bot.hasBed === 'function' && this.bot.hasBed())) {
+          acquired = await this.inventory.ensureBedFromStorage();
+          if (!acquired.ok) { result = { ok: false, error: acquired.error || 'no bed available', acquisition: acquired }; break; }
+        }
         const bed = await this.sleep.ensureBed({ placeNew: true });
         result = {
           ok: Boolean(bed.ok),
           ...bed,
+          acquisition: acquired,
           quantity: bed.ok && bed.placed ? 1 : 0,
           verified: Boolean(bed.ok && bed.placed)
         };

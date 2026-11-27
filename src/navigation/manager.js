@@ -229,8 +229,14 @@ class NavigationManager {
     let last = null;
     let recovered = false;
     let attempts = 0;
+    // The pathfinder can report success while the entity stops a block or two
+    // short of the requested stance. A one-attempt task used to surface that
+    // as ARRIVAL_UNVERIFIED and abandon the move (notably the walk to home
+    // storage). Give that specific outcome one more attempt from where the bot
+    // actually is; every other failure keeps its configured retry budget.
+    let attemptLimit = maxAttempts;
     try {
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      for (let attempt = 0; attempt < attemptLimit; attempt++) {
         if (!this.arbiter.isCurrent(token)) {
           return finish({ ok: false, superseded: true, cancelled: true, error: 'movement request was superseded', attempts, position: this.bot && this.bot.position ? { ...this.bot.position } : null });
         }
@@ -293,7 +299,8 @@ class NavigationManager {
           if (verificationRequired(options) && !arrived) {
             last = { ...final, ok: false, error: `pathfinder reported success but the bot is not within ${range} blocks of the destination`, code: 'ARRIVAL_UNVERIFIED' };
             this.telemetry.recordCount('arrivalUnverified');
-            if (attempt + 1 >= maxAttempts) break;
+            if (attemptLimit === maxAttempts && maxAttempts < 2) attemptLimit = 2;
+            if (attempt + 1 >= attemptLimit) break;
           } else {
             return finish(final);
           }
@@ -301,7 +308,7 @@ class NavigationManager {
           last = result || { ok: false, error: 'movement failed' };
           if (last.cancelled || last.superseded) break;
         }
-        if (attempt + 1 >= maxAttempts) break;
+        if (attempt + 1 >= attemptLimit) break;
         const reason = last.stuck ? 'stuck' : last.timedOut ? 'timeout' : last.noPath ? 'no-path' : 'path-failed';
         this.telemetry.event('replanned', { id, attempt, reason, error: last.error || null });
         recovered = true;

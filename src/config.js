@@ -351,6 +351,11 @@ const config = {
     longDistance: envInt('NAV_LONG_DISTANCE', 64),
     segmentLength: envInt('NAV_SEGMENT_LENGTH', 32),
     maxNodes: envInt('NAV_MAX_NODES', 12000),
+    // Simulator-only wall-clock cap for one movement's route planning. A* is
+    // synchronous; without this a long or boxed-in route could block the
+    // event loop for tens of seconds while several stance candidates and up
+    // to 32 segments each spent the full maxNodes budget.
+    planBudgetMs: envInt('NAV_PLAN_BUDGET_MS', 350),
     // Pathfinder griefing controls: routine travel does not dig or scaffold.
     allowDig: envBool('NAV_ALLOW_DIG', false),
     allowScaffold: envBool('NAV_ALLOW_SCAFFOLD', false),
@@ -652,6 +657,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('navigation.longDistance', navigation.longDistance, 8, 512);
   integer('navigation.segmentLength', navigation.segmentLength, 8, 128);
   integer('navigation.maxNodes', navigation.maxNodes, 100, 200000);
+  integer('navigation.planBudgetMs', navigation.planBudgetMs, 50, 60000);
   boolean('navigation.allowDig', navigation.allowDig);
   boolean('navigation.allowScaffold', navigation.allowScaffold);
   boolean('navigation.openDoors', navigation.openDoors);

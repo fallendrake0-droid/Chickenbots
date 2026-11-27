@@ -61,6 +61,38 @@ class MinHeap {
 
 function key(pos) { return `${pos.x},${pos.y},${pos.z}`; }
 
+/**
+ * One read-through cache for the duration of a move. A* asks for the same
+ * feet/head/support cells many times per expansion and the stance search
+ * scans a whole shell before planning; without this the simulator repeated
+ * thousands of identical block reads. The cache is deliberately per-move (not
+ * global): a dug block must be visible to the next plan.
+ */
+function withBlockCache(reader) {
+  if (!reader || reader.__navigationBlockCache) return reader;
+  const cache = new Map();
+  const read = (pos) => {
+    const at = floorPosition(pos);
+    const k = key(at);
+    if (cache.has(k)) return cache.get(k);
+    let block = null;
+    try {
+      if (typeof reader.getBlock === 'function') block = reader.getBlock(at);
+      else if (typeof reader.blockAt === 'function') block = reader.blockAt(at);
+    } catch (_) {
+      block = null;
+    }
+    cache.set(k, block);
+    return block;
+  };
+  return {
+    getBlock: read,
+    blockAt: read,
+    __navigationBlockCache: cache,
+    position: reader.position
+  };
+}
+
 function octile(a, b) {
   const dx = Math.abs(a.x - b.x);
   const dy = Math.abs(a.y - b.y);
@@ -87,7 +119,8 @@ function clearAt(reader, pos, options) {
  */
 function planRoute({
   reader, from, to, range = 0, maxNodes = 12000, maxDrop = 3,
-  allowWater = true, allowHazard = false, allowClimb = true, maxDistance = 256
+  allowWater = true, allowHazard = false, allowClimb = true, maxDistance = 256,
+  deadline = Infinity, heuristicWeight = 1.2
 } = {}) {
   const startedAt = Date.now();
   if (!reader) return { ok: false, path: [], reason: 'no-reader', expanded: 0, visited: 0, cost: Infinity, ms: 0 };
@@ -95,9 +128,10 @@ function planRoute({
     return { ok: false, path: [], reason: 'invalid-position', expanded: 0, visited: 0, cost: Infinity, ms: 0 };
   }
   const target = floorPosition(to);
+  const scan = withBlockCache(reader);
   let start = floorPosition(from);
   const options = { maxDrop, allowWater, allowHazard };
-  let startVerdict = standableAt(reader, start, options);
+  let startVerdict = standableAt(scan, start, options);
   if (!startVerdict.ok) {
     // A bot can be a block or two above its support for a tick after a dig or
     // a server correction. Search the immediate column in both directions
@@ -109,7 +143,7 @@ function planRoute({
     let recovered = null;
     for (const dy of order) {
       const candidate = { x: start.x, y: start.y + dy, z: start.z };
-      const verdict = standableAt(reader, candidate, options);
+      const verdict = standableAt(scan, candidate, options);
       if (verdict.ok) { recovered = verdict; break; }
     }
     if (!recovered) {
@@ -131,15 +165,21 @@ function planRoute({
   const open = new Map();
   const best = new Map();
   const parent = new Map();
-  const startNode = { pos: start, g: 0, f: octile(start, target), order: 0 };
+  const weight = Math.max(1, Math.min(2, Number(heuristicWeight) || 1));
+  const startNode = { pos: start, g: 0, f: octile(start, target) * weight, order: 0 };
   heap.push(startNode);
   best.set(key(start), 0);
   let expanded = 0;
   let truncated = false;
+  let timedOut = false;
   let closest = start;
   let closestDistance = distance(start, target);
   while (heap.size) {
     if (expanded >= maxNodes) { truncated = true; break; }
+    // A caller with a wall-clock budget (the simulator's movement adapter)
+    // must not be able to block the event loop for seconds in A*. Stop on a
+    // coarse boundary so the clock check itself is not the hot path.
+    if ((expanded & 63) === 0 && Date.now() >= deadline) { timedOut = true; break; }
     const node = heap.pop();
     const k = key(node.pos);
     if (open.has(k) && open.get(k) < node.g) continue;
@@ -162,14 +202,14 @@ function planRoute({
         closest, closestDistance: Number(closestDistance.toFixed(3)), ms: Date.now() - startedAt
       };
     }
-    for (const step of neighbours(reader, node.pos, options, allowClimb)) {
+    for (const step of neighbours(scan, node.pos, options, allowClimb)) {
       if (octile(step.pos, target) > maxDetour) continue;
       const nk = key(step.pos);
       const g = node.g + step.cost;
       if (best.has(nk) && best.get(nk) <= g) continue;
       best.set(nk, g);
       parent.set(nk, { parent: k, pos: step.pos, move: step.move });
-      const f = g + octile(step.pos, target);
+      const f = g + octile(step.pos, target) * weight;
       heap.push({ pos: step.pos, g, f });
       open.set(nk, g);
     }
@@ -177,7 +217,7 @@ function planRoute({
   return {
     ok: false,
     path: [],
-    reason: truncated ? 'search-limit' : 'no-path',
+    reason: timedOut ? 'time-budget' : (truncated ? 'search-limit' : 'no-path'),
     expanded, visited: best.size, cost: Infinity, start, closest,
     closestDistance: Number(closestDistance.toFixed(3)), ms: Date.now() - startedAt
   };
@@ -243,4 +283,4 @@ function classifyColumn(reader, pos) {
   }
 }
 
-module.exports = { planRoute, goalTest, CARDINALS };
+module.exports = { planRoute, goalTest, withBlockCache, CARDINALS };

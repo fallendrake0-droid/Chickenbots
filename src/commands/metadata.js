@@ -22,7 +22,7 @@ const { SURVIVAL_FEATURES } = require('../actions/survival');
 const { FORMATIONS } = require('../team/formations');
 
 const VALID_TYPES = new Set([
-  'bot', 'botOrFleet', 'player', 'ore', 'block', 'mineTarget', 'integer', 'decimal',
+  'bot', 'botOrFleet', 'player', 'playerOrBot', 'ore', 'block', 'mineTarget', 'integer', 'decimal',
   'boolean', 'coordinates', 'distance', 'radius', 'item', 'count', 'enum', 'text',
   'confirmation', 'subcommand', 'target', 'role', 'schematic', 'buildId', 'taskId'
 ]);
@@ -328,7 +328,13 @@ const COMMAND_METADATA = Object.freeze({
     scope: 'bot', readOnly: true, mutates: false, confirmation: 'never', page: 'combat-supplies', palette: true
   },
   follow: {
-    args: [arg('target', 'player', { position: 0, required: true }), int('distance', { min: 2, max: 16, position: 1 })],
+    args: [arg('target', 'playerOrBot', { position: 0, required: true }), int('distance', { min: 2, max: 16, position: 1 })],
+    variants: [
+      { name: 'player', args: [arg('target', 'player'), int('distance', { min: 2, max: 16 })], command: '<player> [distance]' },
+      { name: 'teammate', args: [bot(), int('distance', { min: 2, max: 16 })], command: '<bot> [distance]' },
+      { name: 'stop', args: [enumArg('stop', ['stop'])], command: 'stop' }
+    ],
+    examples: ['follow Alex', 'follow Alex 3', 'follow 10101000 4', 'follow stop'],
     scope: 'fleet', mutates: true, readOnly: false, confirmation: 'never', cancellable: true, page: 'players', palette: true
   },
   guard: {

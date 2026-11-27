@@ -2415,6 +2415,7 @@ class RealBot extends BotAdapter {
         name: entity.name || entity.username || entity.type,
         username: entity.username,
         position: { ...entity.position },
+        velocity: entity.velocity ? { x: Number(entity.velocity.x) || 0, y: Number(entity.velocity.y) || 0, z: Number(entity.velocity.z) || 0 } : null,
         health: entity.health,
         hostile: Boolean(entity.hostile),
         blocking: Boolean(entity.usingItem || entity.blocking),

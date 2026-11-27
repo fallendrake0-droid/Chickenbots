@@ -8,7 +8,7 @@ const { BED_NAMES, FOODS, inventorySlotUsage } = require('../world/items');
 const { CROPS, TILLABLE, isMatureCrop } = require('../world/crops');
 const { config } = require('../config');
 const { NavigationManager } = require('../navigation/manager');
-const { planRoute } = require('../navigation/planner');
+const { planRoute, withBlockCache } = require('../navigation/planner');
 const { standableAt, nearestStandable, standableCandidates, floorPosition } = require('../navigation/standability');
 
 function finiteMockPosition(pos) {
@@ -62,6 +62,21 @@ const RECIPES = {
  * Deterministic mock bot with the same adapter contract as a live Mineflayer
  * bot. Used by the simulator, the dashboard demo and the unit/integration tests.
  */
+// All mock bots share one Node process and one event loop. Per-move A*
+// deadlines are not enough: five safety passes can each spend their full
+// budget back-to-back inside the same macrotask and add up to a multi-second
+// block. The window below lets the whole fleet plan for at most one budget
+// slice, then refuses further planning until the loop has had a turn.
+let planWindowUntil = 0;
+let planWindowDeadline = 0;
+function sharedPlanningDeadline(now) {
+  if (now >= planWindowUntil) {
+    planWindowUntil = now + 100;
+    planWindowDeadline = now + Math.max(50, Number(config.navigation.planBudgetMs) || 350);
+  }
+  return now < planWindowUntil ? planWindowDeadline : now;
+}
+
 class MockBot extends BotAdapter {
   constructor({ name, world = null, speed = 0, inventory = {}, position = null, logger = null } = {}) {
     super({ name, world, logger, speed });
@@ -344,10 +359,15 @@ class MockBot extends BotAdapter {
 
   async _walkNavigationPath(goal, context = {}) {
     this._settleToSupport();
+    // Share one block cache across footing checks, stance selection, every
+    // candidate trial and all segments of this move. The same cells are
+    // inspected repeatedly; a cold read for each one made complex routes
+    // several times slower.
+    const scan = withBlockCache(this);
     // Mock builders are deliberately placed in the air beside an elevated
     // build. If nothing supports the bot and the goal is already inside build
     // reach, the correct move is to stay put and place from here.
-    const footing = standableAt(this, this.position, { maxDrop: 0, allowWater: true });
+    const footing = standableAt(scan, this.position, { maxDrop: 0, allowWater: true });
     if (!footing.ok && footing.reason === 'no-support') {
       // A mock worker with no ground beneath it stands for a builder hovering
       // beside an elevated schematic. Real pathfinding cannot start there, so
@@ -356,7 +376,7 @@ class MockBot extends BotAdapter {
       // If the goal itself is a real stance (for example the stump spot after
       // felling a tree), drop to it. Otherwise hover at the current height so an
       // elevated build keeps its workers beside the structure.
-      const groundStance = standableAt(this, goal, { maxDrop: 32, allowWater: true });
+      const groundStance = standableAt(scan, goal, { maxDrop: 32, allowWater: true });
       if (groundStance.ok) {
         this.position = { ...groundStance.position };
         this.stats.moved++;
@@ -389,14 +409,20 @@ class MockBot extends BotAdapter {
     const start = { ...this.position };
     const range = Math.max(0, Number(context.range) || 0);
     const maxNodes = config.navigation.maxNodes || 12000;
+    // One wall-clock budget for the whole move, shared by every stance trial
+    // and segment. Planning is synchronous, so a per-call cap alone would
+    // still allow (candidates x segments) x budget of event-loop blocking.
+    const planBudgetMs = Math.max(50, Number(config.navigation.planBudgetMs) || 350);
+    const planStartedAt = Date.now();
+    const planDeadline = Math.min(planStartedAt + planBudgetMs, sharedPlanningDeadline(planStartedAt));
     const maxDrop = config.navigation.maxDrop === undefined ? 3 : config.navigation.maxDrop;
     const allowWater = context.allowWater === undefined ? config.navigation.allowWater !== false : context.allowWater;
-    const goalVerdict = standableAt(this, goal, { maxDrop, allowWater });
+    const goalVerdict = standableAt(scan, goal, { maxDrop, allowWater });
     // A target in a tree canopy or on a high, inaccessible ledge cannot be
     // stood in. Walk to a ground stance under it instead of expanding A* over
     // the whole neighbourhood; the pre-navigation mock did the same.
     if (!goalVerdict.ok && floorPosition(goal).y > floorPosition(this.position).y + 2 && range >= 2) {
-      const below = standableCandidates(this, floorPosition(goal), {
+      const below = standableCandidates(scan, floorPosition(goal), {
         maxNearbyRadius: 6, maxDrop: 32, allowWater: true, limit: 4, lowFirst: true
       });
       if (below.length) {
@@ -412,13 +438,13 @@ class MockBot extends BotAdapter {
     // ground-level cells come first because the nearest cell is often the roof
     // of a half-built structure that has no stairs yet. This avoids planning to
     // an unreachable roof only to fail after a full A* search.
-    const candidateStances = standableCandidates(this, floorPosition(goal), {
+    const candidateStances = standableCandidates(scan, floorPosition(goal), {
       maxNearbyRadius: Math.max(3, Math.min(8, Math.ceil(range) + 2)),
       maxDrop, allowWater, limit: range > 0 ? 12 : 8, lowFirst: range > 0,
       maxDistance: range > 0 ? range + 0.75 : undefined
     });
     if (range > 0 && candidateStances.length) {
-      const here = standableAt(this, this.position, { maxDrop, allowWater });
+      const here = standableAt(scan, this.position, { maxDrop, allowWater });
       planTarget = here.ok && distance(this.position, goal) <= range + 0.5
         ? floorPosition(this.position)
         : candidateStances[0].position;
@@ -448,15 +474,20 @@ class MockBot extends BotAdapter {
       ? Math.min(32, Math.ceil(totalDistance / segmentLength))
       : 1;
     let expanded = 0;
+    // A stance trial does not need the whole segment budget. Twelve
+    // candidates each allowed 12k nodes was a 144k-node synchronous worst
+    // case before the first segment even started.
+    const trialNodes = Math.max(1500, Math.floor(maxNodes / Math.min(4, Math.max(1, candidateStances.length))));
     if (!planTarget) {
       let chosen = null;
       for (const candidate of candidateStances) {
         const trial = planRoute({
-          reader: this, from: this.position, to: candidate.position, range: 0,
-          maxNodes, maxDrop, allowWater
+          reader: scan, from: this.position, to: candidate.position, range: 0,
+          maxNodes: trialNodes, maxDrop, allowWater, deadline: planDeadline
         });
         expanded += trial.expanded || 0;
         if (trial.ok) { chosen = { candidate, plan: trial }; break; }
+        if (trial.reason === 'time-budget') break;
       }
       if (!chosen) {
         return {
@@ -470,7 +501,7 @@ class MockBot extends BotAdapter {
       this.position = { ...(chosen.plan.start || this.position) };
       for (let i = 0; i < route.length; i++) {
         if (context.cancelToken && context.cancelToken.cancelled) throw new CancelledError(context.cancelToken.reason);
-        const verdict = standableAt(this, route[i], { maxDrop, allowWater });
+        const verdict = standableAt(scan, route[i], { maxDrop, allowWater });
         if (!verdict.ok) return { ok: false, noPath: true, error: `planned step is no longer standable: ${verdict.reason}`, position: { ...this.position } };
         this.position = { ...route[i] };
         this.stats.moved++;
@@ -491,28 +522,29 @@ class MockBot extends BotAdapter {
           y: planTarget.y,
           z: Math.round(start.z + (planTarget.z - start.z) * t)
         };
-        const stand = nearestStandable(this, raw, { maxNearbyRadius: 6, maxDrop, allowWater });
+        const stand = nearestStandable(scan, raw, { maxNearbyRadius: 6, maxDrop, allowWater });
         if (!stand.ok) {
           return { ok: false, noPath: true, error: `no standable waypoint at ${raw.x},${raw.y},${raw.z}`, position: { ...this.position } };
         }
         waypoint = stand.position;
       }
       let planned = planRoute({
-        reader: this,
+        reader: scan,
         from: cursor,
         to: waypoint,
         range: final ? planRange : 0,
         maxNodes,
         maxDrop,
-        allowWater
+        allowWater,
+        deadline: planDeadline
       });
       expanded += planned.expanded || 0;
       if (!planned.ok && final && alternateStances.length) {
         for (const candidate of alternateStances) {
           if (candidate.position.x === waypoint.x && candidate.position.y === waypoint.y && candidate.position.z === waypoint.z) continue;
           const trial = planRoute({
-            reader: this, from: cursor, to: candidate.position, range: 0,
-            maxNodes, maxDrop, allowWater
+            reader: scan, from: cursor, to: candidate.position, range: 0,
+            maxNodes: trialNodes, maxDrop, allowWater, deadline: planDeadline
           });
           expanded += trial.expanded || 0;
           if (!trial.ok) continue;
@@ -540,12 +572,16 @@ class MockBot extends BotAdapter {
       cursor = planned.goal || waypoint;
     }
     for (let i = 0; i < route.length; i++) {
+      // Long walks commit thousands of standability checks. Yield periodically
+      // so dashboard state, safety timers and command handlers are not held
+      // behind the whole route.
+      if (i > 0 && i % 64 === 0) await new Promise((resolve) => setImmediate(resolve));
       if (context.cancelToken && context.cancelToken.cancelled) throw new CancelledError(context.cancelToken.reason);
       if (context.token && this.navigation.arbiter && !this.navigation.arbiter.isCurrent(context.token)) {
         return { ok: false, cancelled: true, superseded: true, error: 'movement request was superseded', position: { ...this.position } };
       }
       const step = route[i];
-      const verdict = standableAt(this, step, { maxDrop, allowWater });
+      const verdict = standableAt(scan, step, { maxDrop, allowWater });
       if (!verdict.ok) {
         return {
           ok: false, noPath: true,

@@ -203,3 +203,28 @@ export function mineArguments({ bot = null, target = null, fleet = null, stop = 
 export function minePreview(options = {}) {
   return commandPreview('mine', mineArguments(options));
 }
+
+/**
+ * `follow <player|bot> [distance]` or `follow stop`. Both the Combat page form
+ * and its preview call this one builder so the operator cannot see one command
+ * and execute another.
+ */
+export function followArguments({ target = null, distance = 4, stop = false } = {}) {
+  if (stop) return ['stop'];
+  const args = [];
+  if (target) args.push(String(target));
+  const value = Number(distance);
+  if (Number.isFinite(value)) args.push(String(Math.max(2, Math.min(16, Math.round(value)))));
+  return args;
+}
+
+export function followPreview(options = {}) {
+  return commandPreview('follow', followArguments(options));
+}
+
+/** Full player-watch grammar used by the Players page. */
+export function playerWatchCommand(action, player, bot = 'all', value = null) {
+  const args = [action, player, bot];
+  if (value !== null && value !== undefined) args.push(String(value));
+  return commandPreview('players', args);
+}

@@ -1,7 +1,7 @@
 import { state, runCommand } from '../store.js';
-import { subcommandValues } from '../commands.js';
+import { subcommandValues, playerWatchCommand, commandPreview } from '../commands.js';
 import { icon } from '../icons.js';
-import { esc, num, timeAgo, humanize } from '../utils.js';
+import { esc, num, timeAgo, humanize, duration } from '../utils.js';
 import { badge, emptyState, pageHeader, statCard, kvRows, toast, setButtonLoading, resultMessage, confirmDialog } from '../ui.js';
 import { botNames } from './shared.js';
 
@@ -68,16 +68,16 @@ function playerButton(label, action, player, iconName, { primary = false, danger
 function playerCommand(root, action, player, args = '') {
   const bot = selectedBot(root);
   const distance = Math.max(1, Math.min(8, Number((root.querySelector('[data-player-distance]') || {}).value) || 3));
-  if (action === 'follow') return `players follow ${player} ${bot} ${distance}`;
-  if (action === 'unfollow') return `players unfollow ${player} ${bot}`;
-  if (action === 'guard') return `players guard ${player} ${bot} ${args || 8}`;
-  if (action === 'escort') return `players escort ${player} ${bot}`;
-  if (action === 'observe') return `players observe ${player} ${bot}`;
-  if (action === 'unwatch') return `players unwatch ${player} ${bot}`;
-  if (action === 'come') return `players come ${player} ${bot}`;
-  if (action === 'greet') return `players greet ${player} ${bot}`;
-  if (action === 'drop') return `players drop ${player} loot ${bot}`;
-  return 'players list';
+  if (action === 'follow') return playerWatchCommand('follow', player, bot, distance);
+  if (action === 'unfollow') return playerWatchCommand('unfollow', player, bot);
+  if (action === 'guard') return playerWatchCommand('guard', player, bot, args || 8);
+  if (action === 'escort') return playerWatchCommand('escort', player, bot);
+  if (action === 'observe') return playerWatchCommand('observe', player, bot);
+  if (action === 'unwatch') return playerWatchCommand('unwatch', player, bot);
+  if (action === 'come') return playerWatchCommand('come', player, bot);
+  if (action === 'greet') return playerWatchCommand('greet', player, bot);
+  if (action === 'drop') return commandPreview('players', ['drop', player, 'loot', bot]);
+  return commandPreview('players', ['list']);
 }
 
 function botOptions() {
@@ -260,13 +260,22 @@ function playersList() {
 function watchTable() {
   const list = watches();
   if (!list.length) return `<div class="card card--pad"><div class="card-title">No player watch reported</div><p class="muted">Per-bot follow, guard, escort and observe state appears here once a controller is registered.</p></div>`;
-  return `<div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Bot</th><th>Mode</th><th>Target</th><th>Distance</th><th>Presence</th><th>Last action</th><th></th></tr></thead><tbody>
+  const moveCell = (row) => {
+    const move = row.lastMoveResult;
+    if (!move) return '<span class="tiny muted">—</span>';
+    const ok = move.ok !== false;
+    const detail = [ok ? 'moved' : 'blocked', move.durationMs ? duration(move.durationMs) : null, move.attempts ? `${move.attempts} attempt${move.attempts === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+    return `<span class="tiny ${ok ? '' : 'muted'}" title="${esc(move.error || '')}">${badge(ok ? 'OK' : 'Failed', ok ? 'success' : 'warning')} ${esc(detail)}${row.lastMoveAt ? ` · ${timeAgo(row.lastMoveAt)}` : ''}</span>`;
+  };
+  return `<div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Bot</th><th>Mode</th><th>Target</th><th>Distance</th><th>Presence</th><th>Intercept</th><th>Last move</th><th>Last action</th><th></th></tr></thead><tbody>
     ${list.map((row) => `<tr>
       <td class="mono">${esc(row.bot)}</td>
-      <td>${badge(row.mode || 'IDLE', row.mode ? 'info' : 'neutral')}</td>
+      <td>${badge(row.mode || 'IDLE', row.mode ? 'info' : 'neutral')}${row.followCatchUp ? ` ${badge('Catch-up', 'warning')}` : ''}</td>
       <td>${esc(row.target || '—')}</td>
       <td>${row.distance === null || row.distance === undefined ? '—' : num(row.distance)}</td>
       <td>${row.visible ? badge('Visible', 'success') : row.targetOnline ? badge('Online', 'info') : badge('Offline', 'neutral')}</td>
+      <td class="tiny muted">${row.followLeadMs === null || row.followLeadMs === undefined ? '—' : `${num(row.followLeadMs)} ms lead`}${row.targetVelocityAgeMs !== null && row.targetVelocityAgeMs !== undefined ? `<br>velocity ${duration(row.targetVelocityAgeMs)} old` : ''}</td>
+      <td>${moveCell(row)}</td>
       <td class="tiny muted">${esc(row.lastAction || '—')}${row.lastActionAt ? ` · ${timeAgo(row.lastActionAt)}` : ''}</td>
       <td>${row.active ? `<button class="button button--sm button--danger-ghost" type="button" data-command="players stop ${esc(row.bot)}" data-danger="true" data-confirm-title="Stop watch" data-confirm-message="Stop the ${esc(row.mode || '')} watch on ${esc(row.bot)}?">${icon('stop')} Stop</button>` : ''}</td>
     </tr>`).join('')}
@@ -421,6 +430,10 @@ export const playersPage = {
           <div class="section-title">Following players &amp; watches</div>
           ${watchTable()}
           <div style="margin-top:12px">${eventList()}</div>
+          <div class="card card--pad" style="margin-top:12px">
+            <div class="card-title">Follow diagnostics</div>
+            <p class="muted tiny"><span class="mono">Intercept</span> is the lead used to meet a moving player, capped at 4 blocks and derived from per-tick velocity (or a positional delta under 2.5 s). <span class="mono">Catch-up</span> starts when the gap exceeds follow distance + 6 and shortens the movement cadence to 500 ms. A failed move is retried after an 800 ms penalty rather than every tick.</p>
+          </div>
           <div class="card card--pad" style="margin-top:12px">
             <div class="card-title">Safety model</div>
             <p class="muted">Follow, escort, guard and observe never grant PvP. Guard and escort attack hostile mobs only. A player is attacked only when named on the explicit target list, PvP is enabled, server PvP is on, the player is protected neither by trust nor protection, and the active targeting mode accepts the engagement.</p>

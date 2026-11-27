@@ -66,6 +66,31 @@ test('follow moves toward a real player and stop clears the watch', async () => 
   assert.equal(missing.code, 'PLAYER_NOT_SEEN');
 });
 
+test('follow leads a running player and switches to the catch-up cadence', async () => {
+  const { bot, controller, alex } = fixture();
+  alex.position = { x: 40, y: 65, z: 0 };
+  // Mineflayer reports velocity per tick. 0.3 blocks/tick is 6 blocks/s, far
+  // enough to make interception matter.
+  alex.velocity = { x: 0.3, y: 0, z: 0 };
+  assert.equal(controller.follow('Alex', { distance: 2 }).ok, true);
+  const calls = [];
+  bot.goNear = async (goal, distance, options = {}) => {
+    calls.push({ goal, distance, options });
+    return { ok: true, arrived: true, attempts: 1, durationMs: 120 };
+  };
+  const tick = await controller.tick({ deadlineAt: Date.now() + 5000 });
+  assert.equal(tick.ok, true, JSON.stringify(tick));
+  assert.equal(tick.catchUp, true, 'a 40-block gap must use catch-up');
+  assert.ok(tick.intercept.leadMs > 0, 'a moving target gets a lead');
+  assert.ok(calls[0].goal.position.x > alex.position.x, 'the goal is ahead of the player, not behind them');
+  assert.ok(calls[0].options.timeoutMs <= 3200);
+  const status = controller.status();
+  assert.equal(status.followCatchUp, true);
+  assert.ok(status.followLeadMs > 0);
+  assert.equal(status.lastMoveResult.ok, true);
+  assert.equal(status.lastMoveResult.durationMs, 120);
+});
+
 test('player watch stopped during movement cannot crash on a null mode', async () => {
   const { bot, controller } = fixture();
   assert.equal(controller.follow('Alex', { distance: 2 }).ok, true);
@@ -241,6 +266,44 @@ test('players command drives the fleet and reports every bot', async () => {
     await runtime.commands.execute('players stop all', { source: 'cli' });
   } finally {
     await runtime.shutdown('test');
+  }
+});
+
+test('follow <player> starts a persistent player watch and follow stop clears both layers', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  try {
+    const leader = runtime.bots.get('________');
+    runtime.world.entities.push(player('Alex', { x: leader.position.x + 5, y: leader.position.y, z: leader.position.z }));
+    runtime.players.observeBots(runtime.bots.values());
+    const follow = await runtime.commands.execute('follow Alex 16', { source: 'cli' });
+    assert.equal(follow.ok, true, JSON.stringify(follow.result));
+    assert.equal(follow.result.kind, 'player');
+    assert.equal(follow.result.results.length, runtime.bots.size);
+    assert.equal(follow.result.results.every((row) => row.ok !== false && row.distance === 16), true);
+    // A player follow is a PlayerController watch, not bare CombatController
+    // entity chasing: it must survive a temporary entity gap from the last
+    // known position and report its own movement state.
+    assert.equal(runtime.actions.list().every((actions) => actions.players.mode === 'FOLLOW' && actions.players.target === 'Alex'), true);
+    const watch = runtime.actions.list()[0].players.status();
+    assert.ok(Object.hasOwn(watch, 'followLeadMs'));
+    assert.ok(Object.hasOwn(watch, 'followCatchUp'));
+    assert.ok(Object.hasOwn(watch, 'lastMoveResult'));
+    await runtime._warmStatusCaches();
+    const { statusSnapshot } = require('../src/runtimeState');
+    const snapshot = statusSnapshot(runtime.services);
+    const row = snapshot.playerWatch.find((entry) => entry.mode === 'FOLLOW');
+    assert.ok(row, 'the Players page receives the watch row');
+    assert.ok(Object.hasOwn(row, 'followLeadMs'));
+    assert.ok(Object.hasOwn(row, 'followCatchUp'));
+    const botFollow = await runtime.commands.execute('follow 10101000 4', { source: 'cli' });
+    assert.equal(botFollow.ok, true, JSON.stringify(botFollow.result));
+    assert.equal(botFollow.result.kind, 'bot');
+    const stop = await runtime.commands.execute('follow stop', { source: 'cli' });
+    assert.equal(stop.ok, true, JSON.stringify(stop.result));
+    assert.equal(runtime.actions.list().every((actions) => actions.players.isActive() === false), true);
+    assert.equal(runtime.actions.list().every((actions) => actions.combat.followTarget === null), true);
+  } finally {
+    await runtime.shutdown('follow command test');
   }
 });
 

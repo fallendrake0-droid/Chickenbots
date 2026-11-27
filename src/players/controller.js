@@ -42,6 +42,11 @@ class PlayerController {
     this.lastActionAt = 0;
     this.lastError = null;
     this.lastMoveAt = 0;
+    this.lastMoveResult = null;
+    this.lastTargetPosition = null;
+    this.lastTargetAt = 0;
+    this.followLead = 0;
+    this.followCatchUp = false;
     this.lastDrop = null;
     this.lastMessage = null;
     this.offlineSince = null;
@@ -133,10 +138,49 @@ class PlayerController {
     return { ok: true, name: cleaned, entry, entity };
   }
 
+  /**
+   * A moving player is not where they were when the tick began. Lead the
+   * target by a fraction of the closing distance so a following bot walks
+   * toward where the player is going, not into the block they left. Mineflayer
+   * reports velocity per tick; MockBot and some proxies use blocks/second, so
+   * normalise both. The lead is capped at four blocks to keep one bad packet
+   * from sending a bot off a cliff.
+   */
+  _interceptPoint(entity, { previousPosition = null, previousAt = 0 } = {}) {
+    const base = entity && entity.position ? { ...entity.position } : null;
+    if (!base) return { position: null, leadMs: 0, speed: 0 };
+    const now = Date.now();
+    let vx = Number(entity.velocity && entity.velocity.x) || 0;
+    let vz = Number(entity.velocity && entity.velocity.z) || 0;
+    let bps = Math.hypot(vx, vz);
+    const elapsed = previousAt ? now - previousAt : 0;
+    if (previousPosition && elapsed >= 40 && elapsed <= 2500 && bps < 0.05) {
+      // No usable velocity vector: derive it from the last two sightings.
+      const dt = elapsed / 1000;
+      vx = (base.x - previousPosition.x) / dt;
+      vz = (base.z - previousPosition.z) / dt;
+      bps = Math.hypot(vx, vz);
+    } else if (bps > 0 && bps <= 4) {
+      // Blocks per tick -> blocks per second.
+      vx *= 20; vz *= 20; bps *= 20;
+    }
+    if (!Number.isFinite(bps) || bps < 0.6) return { position: base, leadMs: 0, speed: 0 };
+    const gap = Math.hypot(base.x - this.bot.position.x, base.z - this.bot.position.z);
+    const seconds = Math.max(0.12, Math.min(1.1, Math.max(0, gap - this.followDistance) / Math.max(1, bps) * 0.65));
+    const lead = Math.min(4, bps * seconds);
+    return {
+      position: { x: base.x + (vx / bps) * lead, y: base.y, z: base.z + (vz / bps) * lead },
+      leadMs: Math.round(seconds * 1000),
+      speed: Number(bps.toFixed(2))
+    };
+  }
+
   follow(name, { distance = FOLLOW_DISTANCE } = {}) {
     const target = this._target(name);
     if (!target.ok) return target;
-    const dist = Math.max(1, Math.min(8, Number(distance) || FOLLOW_DISTANCE));
+    // The top-level `follow` command supports 2-16; `players follow` keeps its
+    // narrower 1-8 UI range. Do not silently clamp an explicit operator value.
+    const dist = Math.max(1, Math.min(16, Number(distance) || FOLLOW_DISTANCE));
     this.mode = 'FOLLOW';
     this.target = target.name;
     this.followDistance = dist;
@@ -281,8 +325,10 @@ class PlayerController {
     const seen = this.registry ? this.registry.getRow(target) : null;
     const entity = this._entity(target);
     if (!entity) {
-      // The directory keeps a last-known position, but walking to a stale
-      // position is worse than waiting: report invisibility and stay put.
+      // The directory keeps a last-known position. A stale position is worse
+      // than waiting, but a *fresh* one (the player just walked past render
+      // distance) is worth closing: the watch should not freeze the instant the
+      // entity disappears for a tick.
       const online = Boolean(seen && seen.online);
       if (!online) {
         if (!this.offlineSince) this.offlineSince = Date.now();
@@ -302,12 +348,44 @@ class PlayerController {
       } else {
         this.offlineSince = null;
       }
+      // The directory can still hold a position fresher than the entity scan
+      // (a player walking just past render distance). Keep closing that gap
+      // instead of standing still until they reappear.
+      const fresh = Boolean(seen && seen.online && seen.positionFresh && seen.position);
+      const gap = fresh ? Math.hypot(seen.position.x - this.bot.position.x, seen.position.y - this.bot.position.y, seen.position.z - this.bot.position.z) : Infinity;
+      if (fresh && gap > this.followDistance + 1.5 && Date.now() >= this.lastMoveAt + 900) {
+        const moveBudget = budgetFor(1800);
+        if (moveBudget >= 500) {
+          this.lastMoveAt = Date.now();
+          const move = await this.bot.goNear({ name: target, position: seen.position }, this.followDistance, {
+            timeoutMs: moveBudget, priority: 'operator', owner: `player-${mode.toLowerCase()}:${target}`
+          });
+          if (!stillActive()) return cancelled();
+          this.lastMoveResult = move ? {
+            ok: move.ok !== false, error: move.error || null, attempts: move.attempts || null,
+            durationMs: move.durationMs || null, arrived: move.arrived === undefined ? null : move.arrived
+          } : null;
+          return {
+            ok: Boolean(move && move.ok !== false), active: true, visible: false, online,
+            target, mode, move, positionFresh: true, lastSeenPursuit: true, status: this.status()
+          };
+        }
+      }
       return {
         ok: true, active: true, visible: false, online, target: this.target, mode: this.mode,
         positionFresh: Boolean(seen && seen.positionFresh), status: this.status()
       };
     }
     this.offlineSince = null;
+    const observedAt = Date.now();
+    // Keep the sighting we are about to replace: it is the positional fallback
+    // when the adapter cannot supply a velocity vector.
+    const previousPosition = this.lastTargetPosition ? { ...this.lastTargetPosition } : null;
+    const previousAt = this.lastTargetAt || 0;
+    if (!this.lastTargetPosition || observedAt - this.lastTargetAt >= 150) {
+      this.lastTargetPosition = { ...entity.position };
+      this.lastTargetAt = observedAt;
+    }
     const dist = Math.hypot(entity.position.x - this.bot.position.x, entity.position.y - this.bot.position.y, entity.position.z - this.bot.position.z);
     if (mode === 'OBSERVE') {
       if (this.observing) this.observing.lastPosition = seen && seen.position ? { ...seen.position } : { ...entity.position };
@@ -343,31 +421,49 @@ class PlayerController {
         if (attack && attack.ok === false) this.lastError = attack.error || 'guard attack refused';
       }
     }
-    if (dist > this.followDistance + 1.5 && Date.now() - this.lastMoveAt >= 1200) {
-      const moveBudget = budgetFor(4000);
-      if (moveBudget < 750) {
+    // A far target gets a faster cadence and a longer move budget; a target
+    // already in range does not spend the safety pass pathfinding again.
+    this.followCatchUp = dist > this.followDistance + 6;
+    const cooldown = this.followCatchUp ? 500 : 800;
+    if (dist > this.followDistance + 1.5 && Date.now() >= this.lastMoveAt + cooldown) {
+      const moveBudget = budgetFor(this.followCatchUp ? 3200 : 2400);
+      if (moveBudget < 600) {
         return {
           ok: true, active: true, visible: true, target, mode, distance: dist,
           deferred: true, budgetExhausted: true,
           error: 'safety budget too low for another player-watch move', status: this.status()
         };
       }
+      const intercept = this._interceptPoint(entity, { previousPosition, previousAt });
+      this.followLead = intercept.leadMs;
+      const goal = { ...entity, position: intercept.position || entity.position };
       this.lastMoveAt = Date.now();
-      const move = await this.bot.goNear(entity, this.followDistance, {
+      const move = await this.bot.goNear(goal, this.followDistance, {
         timeoutMs: moveBudget, priority: 'operator', owner: `player-${mode.toLowerCase()}:${target}`
       });
       if (!stillActive()) return cancelled();
+      this.lastMoveResult = move ? {
+        ok: move.ok !== false, error: move.error || null, attempts: move.attempts || null,
+        durationMs: move.durationMs || null, arrived: move.arrived === undefined ? null : move.arrived
+      } : null;
       if (move && move.ok === false) {
         this.lastError = move.error || 'could not reach player';
         // The safety pass may have stopped this path at its own budget. Do not
         // immediately re-issue the same goal on the next lap; that churn was
         // logged as "movement request was superseded" for every follow.
-        this.lastMoveAt = Date.now() + 1500;
+        this.lastMoveAt = Date.now() + 800;
       }
       this._note(`${mode.toLowerCase()} ${target}`, move && move.ok === false ? (move.error || 'move failed') : null);
-      return { ok: Boolean(move && move.ok !== false), active: true, visible: true, target, mode, move, distance: dist, status: this.status() };
+      return {
+        ok: Boolean(move && move.ok !== false), active: true, visible: true, target, mode, move,
+        distance: dist, intercept: { leadMs: intercept.leadMs, speed: intercept.speed }, catchUp: this.followCatchUp,
+        status: this.status()
+      };
     }
-    return { ok: true, active: true, visible: true, target, mode, distance: dist, status: this.status() };
+    return {
+      ok: true, active: true, visible: true, target, mode, distance: dist,
+      inRange: dist <= this.followDistance + 1.5, catchUp: this.followCatchUp, status: this.status()
+    };
   }
 
   /**
@@ -554,6 +650,11 @@ class PlayerController {
       watching: Boolean(this.observing),
       lastAction: this.lastAction,
       lastActionAt: this.lastActionAt,
+      lastMoveAt: this.lastMoveAt || null,
+      lastMoveResult: this.lastMoveResult,
+      followLeadMs: this.followLead,
+      followCatchUp: this.followCatchUp,
+      targetVelocityAgeMs: this.lastTargetAt ? Math.max(0, Date.now() - this.lastTargetAt) : null,
       lastError: this.lastError,
       lastDrop: this.lastDrop,
       lastMessage: this.lastMessage,

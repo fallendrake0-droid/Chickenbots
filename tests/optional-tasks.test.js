@@ -81,7 +81,6 @@ test('the survival-base plan marks quotas optional but keeps the site and build 
   assert.equal(byType('CHOP_WOOD').every((task) => task.optional === true), true);
   assert.equal(byType('MINE_BLOCK').every((task) => task.optional === true), true);
   assert.equal(byType('STORE_ITEMS').every((task) => task.optional !== true), true, 'storage is named in the completion condition');
-  assert.equal(byType('PLACE_BED').every((task) => task.optional !== true), true, 'beds are named in the completion condition');
   const row = coordinator.objectiveBoard().find((objective) => objective.id === plan.objective.id);
   assert.equal(row.tasks.find((task) => task.type === 'FARM_CROP').optional, true);
   assert.equal(row.optionalFailure, null);
@@ -93,4 +92,22 @@ test('the survival-base plan marks quotas optional but keeps the site and build 
   assert.equal(degradedRow.optionalFailure.type, 'FARM_CROP');
   assert.match(degradedRow.optionalFailure.reason, /no tillable soil/);
   assert.equal(degradedRow.tasks.find((task) => task.id === farm.id).status, 'FAILED');
+});
+
+test('a bed task prefers a carrier but can be claimed when the bed is in shared storage', () => {
+  const { TaskBoard } = require('../src/team/taskBoard');
+  const { createSurvivalBasePlan } = require('../src/team/plans');
+  const { scoreTaskForBot } = require('../src/team/allocation');
+  const board = new TaskBoard({ now: () => 1000 });
+  const plan = createSurvivalBasePlan(board, { botNames: ['A', 'B'], bedStock: 1 });
+  const bed = plan.tasks.find((task) => task.type === 'PLACE_BED');
+  assert.ok(bed, 'bedStock: 1 must create a bed task');
+  assert.notEqual(bed.optional, true, 'a bed that exists is part of the required base');
+  assert.equal(bed.requires.held, undefined, 'a held-only gate deadlocks after the beds are stored');
+  assert.deepEqual(bed.requires.items, { 'category:bed': 1 });
+  const base = { capabilities: [], equipment: {}, health: 20, food: 20, threats: 0 };
+  const emptyScore = scoreTaskForBot(bed, { ...base, name: 'A', inventory: {} }, { now: 1000, dependenciesSatisfied: true }).score;
+  const holderScore = scoreTaskForBot(bed, { ...base, name: 'B', inventory: { white_bed: 1 } }, { now: 1000, dependenciesSatisfied: true }).score;
+  assert.ok(emptyScore > 0, `the task stays claimable so the action can withdraw a stored bed (score ${emptyScore})`);
+  assert.ok(holderScore > emptyScore, `the carrier still wins the claim (${holderScore} vs ${emptyScore})`);
 });

@@ -163,6 +163,11 @@ function createSurvivalBasePlan(board, { botNames = [], template = 'SURVIVAL_BAS
     type: 'PLACE_BED',
     label: `Install ${bedTarget} bed${bedTarget === 1 ? '' : 's'}`,
     priority: 74,
+    // Every bot starts with beds, but the overflow pass deposits surplus into
+    // the shared home chest. A hard `held` gate then left this task PENDING
+    // forever: no bot held a bed and none could ever claim the work. Requiring
+    // the item (not holding it) still prefers a carrier, while the action
+    // withdraws a stored bed and verifies it in hand before placing.
     requires: { items: { 'category:bed': 1 } },
     params: { count: bedTarget, reservedFor: botNames },
     dependsOn: foundation ? [foundation.id, roof ? roof.id : null].filter(Boolean) : [],

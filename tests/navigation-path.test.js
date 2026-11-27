@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 
 const { createRuntime } = require('../src/runtime');
 const { FleetCongestion } = require('../src/navigation/congestion');
+const { planRoute } = require('../src/navigation/planner');
+const { NavigationManager } = require('../src/navigation/manager');
 
 test('path plans a route without moving the bot', async () => {
   const runtime = await createRuntime({ simulate: true, dashboard: false });
@@ -56,4 +58,61 @@ test('fleet congestion relocates a second claim and still reports the conflict',
   assert.equal(fleet.snapshot().relocations, 1);
   now.at += 6000;
   assert.equal(fleet.snapshot().active.length, 0);
+});
+
+function flatReader(groundY = 63) {
+  return {
+    getBlock(pos) {
+      if (pos.y === groundY) return { name: 'stone' };
+      return { name: 'air' };
+    }
+  };
+}
+
+test('planner stops at its wall-clock deadline instead of the node limit', () => {
+  const result = planRoute({
+    reader: flatReader(),
+    from: { x: 0, y: 64, z: 0 },
+    to: { x: 40, y: 64, z: 40 },
+    maxNodes: 100000,
+    deadline: Date.now() - 1
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'time-budget');
+  assert.equal(result.expanded, 0, 'the deadline is checked before the first expansion');
+});
+
+test('planner without a deadline still returns an open-ground route', () => {
+  const result = planRoute({
+    reader: flatReader(),
+    from: { x: 0, y: 64, z: 0 },
+    to: { x: 12, y: 64, z: 12 }
+  });
+  assert.equal(result.ok, true, JSON.stringify(result).slice(0, 400));
+  assert.ok(result.path.length > 0);
+  assert.equal(result.reason, 'path');
+});
+
+test('a short arrival gets one re-path before reporting ARRIVAL_UNVERIFIED', async () => {
+  const bot = { name: 'A', position: { x: 0, y: 65, z: 0 }, health: 20 };
+  const reader = {
+    getBlock(pos) {
+      if (pos.y === 64) return { name: 'stone' };
+      return { name: 'air' };
+    }
+  };
+  const nav = new NavigationManager({ bot, reader, settings: { recoveryDelayMs: 0 } });
+  let calls = 0;
+  const result = await nav.navigate({ x: 5, y: 65, z: 0 }, { range: 1, timeoutMs: 5000, attempts: 1, verifyArrival: true }, async () => {
+    calls++;
+    // The first attempt claims success without moving: exactly the transient
+    // "stopped short of home storage" case. The retry moves the bot and is
+    // verified normally.
+    if (calls === 2) bot.position = { x: 5, y: 65, z: 0 };
+    return { ok: true, path: [], steps: 0 };
+  });
+  assert.equal(result.ok, true, JSON.stringify(result).slice(0, 500));
+  assert.equal(result.arrived, true);
+  assert.equal(result.attempts, 2);
+  assert.equal(calls, 2);
 });

@@ -3,7 +3,7 @@ import { icon } from '../icons.js';
 import { esc, num, humanize, timeAgo, sum } from '../utils.js';
 import { badge, progress, kvRows, emptyState, pageHeader, statCard, toast, setButtonLoading, resultMessage, confirmDialog } from '../ui.js';
 import { botNames, bots } from './shared.js';
-import { subcommandValues } from '../commands.js';
+import { subcommandValues, followPreview } from '../commands.js';
 
 function combatRows() {
   return (state.snapshot && state.snapshot.combat) || [];
@@ -148,6 +148,16 @@ function automationCard() {
 
 function wireCombatForms() {
   for (const form of document.querySelectorAll('[data-combat-form]')) {
+    if (form.dataset.combatForm === 'follow') {
+      const preview = form.querySelector('[data-follow-preview]');
+      const update = () => {
+        const data = new FormData(form);
+        const target = String(data.get('target') || '').trim();
+        if (preview) preview.textContent = target ? followPreview({ target, distance: data.get('distance') || 4 }) : 'follow <player|bot> [distance]';
+      };
+      form.querySelectorAll('input,select').forEach((field) => field.addEventListener('input', update));
+      update();
+    }
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const data = new FormData(form);
@@ -168,7 +178,7 @@ function wireCombatForms() {
       try {
         let line;
         if (form.dataset.combatForm === 'protect') line = `target protect ${name}`;
-        else if (form.dataset.combatForm === 'follow') line = `follow ${name} ${Number(data.get('distance') || 4)}`;
+        else if (form.dataset.combatForm === 'follow') line = followPreview({ target: name, distance: data.get('distance') || 4 });
         else if (form.dataset.combatForm === 'duel') line = `duel ${name}`;
         else line = `target add ${name}`;
         if (form.dataset.combatForm === 'duel') {
@@ -317,13 +327,15 @@ export const combatTeamPage = {
         </div>
       </div>
       <div class="card card--pad"><div class="card-title">Follow</div>
-        <p class="muted">Follow a teammate or a visible player at a safe distance. Following never authorises PvP by itself.</p>
+        <p class="muted">Follow a teammate in formation, or a player with a persistent verified watch. A player watch keeps its own state, survives short render-distance gaps from the last known position, and reports on the Players page. Following never authorises PvP by itself.</p>
         <form class="form-row" data-combat-form="follow">
-          <div class="field"><label class="field-label" for="combat-follow-target">Bot or player</label><input class="input" id="combat-follow-target" name="target" maxlength="32" placeholder="e.g. 10101000 or an exact player name" required></div>
+          <div class="field"><label class="field-label" for="combat-follow-target">Player or teammate</label><input class="input" id="combat-follow-target" name="target" maxlength="32" placeholder="exact player name or e.g. 10101000" required></div>
           <div class="field"><label class="field-label" for="combat-follow-distance">Distance</label><select class="input" id="combat-follow-distance" name="distance"><option value="3">3</option><option value="4" selected>4</option><option value="6">6</option><option value="8">8</option></select></div>
           <button class="button button--primary" type="submit">${icon('users')} Follow</button>
           ${commandButton('Stop following', 'follow stop', 'pause')}
         </form>
+        <div class="tiny muted mono" data-follow-preview>follow &lt;player|bot&gt; [distance]</div>
+        <p class="tiny muted">Players: follow 2–16 blocks, catch-up when the gap exceeds distance + 6. Teammates: formation follow. <span class="mono">follow stop</span> clears both.</p>
       </div>
     </div>`;
   },

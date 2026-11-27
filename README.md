@@ -224,9 +224,13 @@ pops, no hidden aim assist.
 * **Team fight.** `TeamCombatCoordinator` assigns COORDINATOR, FRONTLINE, FLANKER, RANGED and SUPPORT
   from real loadouts, picks one shared focus target, spaces the bots with role offsets, assigns a
   non-victim rescuer, hands a spare golden apple to the most injured teammate, and supports
-  DEFENSIVE, GUARD, FOLLOW, ARENA, ESCORT and RETREAT modes. `follow <bot|player>` moves the team
-  behind a leader at a safe distance and never authorises PvP by itself. Death clears the stale target
-  and releases that bot's target locks before respawn recovery.
+  DEFENSIVE, GUARD, FOLLOW, ARENA, ESCORT and RETREAT modes. `follow <bot>` moves the team behind a
+  leader; `follow <player>` starts a persistent, verified player watch instead. The watch leads a moving
+  player from measured velocity (or the last two sightings), switches to a 500 ms / 3.2 s catch-up pass
+  once the gap exceeds distance + 6, keeps closing a fresh last-known position when the entity briefly
+  leaves render distance, and reports lead, catch-up and last-move state on the Players page.
+  `follow stop` clears both the player watch and combat follow. Following never authorises PvP by
+  itself. Death clears the stale target and releases that bot's target locks before respawn recovery.
 * **Action priority.** Dead → totem emergency → critical heal → teammate rescue → retreat → dodge →
   eat → potion → shield → attack → reposition → loot → recover. Higher-priority safety always wins.
 
@@ -235,7 +239,7 @@ Commands (all real state):
 ```
 combat [status|on|off|start|stop|mode <TEAM_FIGHT|DEFENSIVE|GUARD|FOLLOW|ARENA|BOSS|ESCORT|RETREAT>|guard x y z|duel <player>|rescue|heal]
 pve [on|off|status]            pvp [on|off|status]         target [add|remove|protect|unprotect|clear|list] <player>
-follow <bot|player> [distance] | follow stop
+follow <player|bot> [distance 2-16] | follow stop
 players [list [category]|near [radius]|info <player>|history <player>|events|refresh|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|observe <player> [bot|all]|unwatch [player] [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>|note <player> <text>|tag <player> <tag>|untag <player> <tag>|forget <player>|pvp [status|on|off]|mode <EXPLICIT|ARENA|DEFENSIVE>|target [add|remove|list] [player]|protect|trust|unprotect|untrust <player>|arena [list|on [radius] [name]|add <name> <x1 y1 z1 x2 y2 z2>|remove <name>|clear]]
 gear [status|optimise|durability|progression|layout] [bot]         totem [status|reserve [n]|refill]
 food [status] [bot]            potions [status] [bot]        guard x y z [bot] | guard stop
@@ -445,7 +449,7 @@ defend [bot|stop]              explore [bot] [steps] | explore stop [bot|all]
 # Every command accepts --help (side-effect free); `npm run commands:audit` exercises the surface.
 combat [status|on|off|start|stop|mode|guard|duel|rescue]   pve [on|off|status]   pvp [on|off|status]
 target [add|remove|protect|unprotect|clear|list] <player>                   arena on [radius]|off
-follow <bot|player> [distance] | follow stop
+follow <player|bot> [distance 2-16] | follow stop
 players [list [category]|near [radius]|info <player>|history <player>|events|refresh|follow <player> [bot|all] [distance]|unfollow [player] [bot|all]|guard <player> [bot|all] [radius]|escort <player> [bot|all]|observe <player> [bot|all]|unwatch [player] [bot|all]|come <player> [bot|all]|stop [bot|all]|give <player> <item> [count] [bot|all]|drop <player> [loot|item] [count] [bot|all]|message <player> <text>|greet <player>|note <player> <text>|tag <player> <tag>|untag <player> <tag>|forget <player>|pvp [status|on|off]|mode <EXPLICIT|ARENA|DEFENSIVE>|target [add|remove|list] [player]|protect|trust|unprotect|untrust <player>|arena [list|on [radius] [name]|add <name> <x1 y1 z1 x2 y2 z2>|remove <name>|clear]]
 gear [status|optimise|durability|progression|layout] [bot]    totem [status|reserve [n]|refill]   food|potions [status] [bot]
 guard x y z [bot] | guard stop             duel <player> confirm

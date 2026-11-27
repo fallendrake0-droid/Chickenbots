@@ -136,6 +136,9 @@ class BotAdapter {
         name: e.name || e.username || e.type,
         username: e.username,
         position: { ...e.position },
+        // Follow interception needs the raw motion vector. Dropping it here
+        // made every entity snapshot look stationary to PlayerController.
+        velocity: e.velocity ? { x: Number(e.velocity.x) || 0, y: Number(e.velocity.y) || 0, z: Number(e.velocity.z) || 0 } : null,
         health: e.health,
         hostile: Boolean(e.hostile),
         alive: e.alive !== false
