@@ -240,3 +240,19 @@ test('action scans are near-first and hard-bounded on a slow world', () => {
   assert.ok(elapsed < ACTION_SCAN_BUDGET_MS + 150, `action scan took ${elapsed}ms`);
   assert.ok(lookups < 2000, `bounded scan visited ${lookups} positions`);
 });
+
+test('a continuously refreshed cache tolerates one slow sweep but still reports a stopped one', async () => {
+  const runtime = await createRuntime({ simulate: true, dashboard: false });
+  await runtime._warmStatusCaches();
+  const actions = runtime.actions.list();
+  const baseline = performance.now();
+  for (const entry of actions) entry.monoNow = () => baseline + 25_000;
+  const slowSweep = statusSnapshot(runtime.services);
+  assert.equal(slowSweep.freshness.actionStatusFresh, true, '25s is inside a slow but live sweep');
+  assert.equal(slowSweep.overview.alerts.some((alert) => /status cache is stale/.test(alert.message)), false);
+
+  for (const entry of actions) entry.monoNow = () => baseline + 31_000;
+  const stopped = statusSnapshot(runtime.services);
+  assert.equal(stopped.freshness.actionStatusFresh, false, 'a stopped refresh must still be visible');
+  assert.equal(stopped.overview.alerts.some((alert) => /status cache is stale/.test(alert.message)), true);
+});

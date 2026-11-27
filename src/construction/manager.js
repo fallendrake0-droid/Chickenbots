@@ -183,6 +183,10 @@ class ConstructionManager {
       origin: { ...(project.origin || {}) }, rotation: project.rotation || 0, dimensions: { ...(project.dimensions || {}) },
       priority: project.priority, progress: project.progress, createdAt: project.createdAt,
       updatedAt: project.updatedAt, completedAt: project.completedAt,
+      // An unarmed project legitimately sits at PLANNING forever. The summary
+      // has to carry that fact so the dashboard can offer "start" instead of
+      // presenting an idle project as if the pipeline were running.
+      autonomyEnabled: Boolean(project.autonomyEnabled), paused: Boolean(project.paused),
       phases: project.buildPhases.map((entry) => ({ id: entry.id, name: entry.name, status: entry.status })),
       assignments: clone(project.teamAssignments || {}), materialsReady: project.materialPlan ? project.materialPlan.ready : false,
       phase: phase ? phase.id : 'COMPLETE', blockedReason: project.blockedReason || null

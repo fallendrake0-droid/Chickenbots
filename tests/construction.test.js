@@ -307,9 +307,11 @@ test('builder, site, materials and storage command families operate on the real 
   const gated = await run('builder run');
   assert.equal(gated.ok, false);
   assert.equal(gated.result.code, 'CONFIRMATION_REQUIRED');
+  assert.equal(manager.summary(manager.activeProject()).autonomyEnabled, false, 'a new project reports that it is not armed');
   const arming = await run('builder auto on');
   assert.equal(arming.ok, true);
   assert.equal(manager.activeProject().autonomyEnabled, true);
+  assert.equal(manager.summary(manager.activeProject()).autonomyEnabled, true);
   fs.rmSync(statePath, { force: true });
 });
 

@@ -96,4 +96,15 @@ function buildInfo({ publicDir = PUBLIC_DIR, root = ROOT } = {}) {
   };
 }
 
-module.exports = { buildInfo, hashFiles, walk, gitRevision, PUBLIC_DIR };
+/**
+ * Uptime for /healthz and /api/build. `process.uptime()` excludes time the
+ * host was suspended, while the runtime's own uptime includes it, so the two
+ * endpoints disagreed after a suspended sandbox resumed. Both now measure the
+ * same calendar interval: now minus the process/build start time.
+ */
+function buildUptimeMs(build, now = Date.now()) {
+  const started = Date.parse(build && build.builtAt);
+  return Number.isFinite(started) ? Math.max(0, now - started) : 0;
+}
+
+module.exports = { buildInfo, buildUptimeMs, hashFiles, walk, gitRevision, PUBLIC_DIR };

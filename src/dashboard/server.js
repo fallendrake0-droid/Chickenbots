@@ -11,7 +11,7 @@ const { toSpongeSchematic, toJSON } = require('../schematics/format');
 const { exportSchematic } = require('../building/schematicIO');
 const logStore = require('../logStore');
 const { worldSnapshot } = require('./worldView');
-const { buildInfo } = require('./buildInfo');
+const { buildInfo, buildUptimeMs } = require('./buildInfo');
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const SHELL_ROUTES = Object.freeze(new Set([
@@ -306,11 +306,11 @@ function createDashboard(services, { port = config.dashboard.port, host = config
   };
 
   app.get('/healthz', (req, res) => {
-    res.json({ ok: true, uptimeMs: process.uptime() * 1000, mode: services.mode || 'live', build });
+    res.json({ ok: true, uptimeMs: buildUptimeMs(build), mode: services.mode || 'live', build });
   });
 
   app.get('/api/build', (req, res) => {
-    res.json({ ok: true, build: { ...build, uptimeMs: process.uptime() * 1000, mode: services.mode || 'live' } });
+    res.json({ ok: true, build: { ...build, uptimeMs: buildUptimeMs(build), mode: services.mode || 'live' } });
   });
 
   app.get('/api/state', (req, res) => {

@@ -26,6 +26,7 @@ const { resolveServerVersion } = require('./bot/serverVersion');
 const { WoodcuttingTeam } = require('./woodcutting/team');
 const { connectionStatus } = require('./bot/status');
 const { FleetCongestion } = require('./navigation/congestion');
+const { monotonicMs } = require('./util/clock');
 
 const STARTER_KIT = {
   bread: 32, cooked_beef: 16, stone_pickaxe: 2, iron_pickaxe: 1, iron_axe: 1, iron_sword: 1, iron_hoe: 1,
@@ -60,7 +61,7 @@ function shouldPauseAuthRetry(result) {
 }
 
 class TeamRuntime {
-  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion, now = Date.now, random = Math.random, createDashboard: dashboardFactory = createDashboard } = {}) {
+  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion, now = Date.now, monoNow = monotonicMs, random = Math.random, createDashboard: dashboardFactory = createDashboard } = {}) {
     this.simulate = Boolean(simulate);
     this.shouldConnect = connect;
     this.wantDashboard = dashboard;
@@ -71,6 +72,7 @@ class TeamRuntime {
     this.logger = logger || new Logger({ level: config.logging.level });
     this.mode = this.simulate ? 'simulation' : 'live';
     this.now = typeof now === 'function' ? now : () => Date.now();
+    this.monoNow = typeof monoNow === 'function' ? monoNow : monotonicMs;
     this.random = typeof random === 'function' ? random : Math.random;
     this.board = new TaskBoard({ claimTtlMs: config.team.claimTtlMs, lockTtlMs: config.team.lockTtlMs, now: this.now });
     this.memory = new TeamMemory({ maxObservations: config.team.maxObservations, defaultTtlMs: config.team.observationTtlMs, now: this.now });
@@ -240,7 +242,7 @@ class TeamRuntime {
       memory: this.memory, taskBoard: this.board, ledger: this.ledger, team: this.coordinator,
       home: this.home, library: this.library, logger: this.logger, builders: this.builders,
       excavationManager: this.excavation, world: this.world, players: this.players,
-      reservations: this.reservations
+      reservations: this.reservations, monoNow: this.monoNow
     });
     let index = 0;
     for (const bot of this.bots.values()) {
@@ -356,7 +358,7 @@ class TeamRuntime {
   _dispatchTeamWork(label, fn) {
     if (this.teamDispatches.size >= 4) return null;
     if ([...this.teamDispatches].some((entry) => entry.label === label)) return null;
-    const entry = { label, startedAt: Date.now() };
+    const entry = { label, startedAt: this.monoNow() };
     // setImmediate, not a microtask: Promise.resolve().then(fn) still runs the
     // function's synchronous prefix in this event-loop turn and is attributed
     // to launch-actions / the tick that dispatched it.
@@ -364,7 +366,7 @@ class TeamRuntime {
       .then(fn)
       .catch((err) => this.logger.warn(`team ${label}: ${err.message}`))
       .finally(() => {
-        const elapsed = Date.now() - entry.startedAt;
+        const elapsed = this.monoNow() - entry.startedAt;
         if (elapsed >= 5000) this.logger.warn(`team ${label} took ${(elapsed / 1000).toFixed(1)}s`);
         this.teamDispatches.delete(entry);
       });
@@ -381,7 +383,7 @@ class TeamRuntime {
    */
   async _warmStatusCaches() {
     if (!this.actions || typeof this.actions.list !== 'function') return 0;
-    const started = Date.now();
+    const started = this.monoNow();
     let calls = 0;
     const yieldLoop = async () => {
       calls++;
@@ -414,7 +416,7 @@ class TeamRuntime {
       try { builder?.status?.(); } catch (_) { /* status is advisory */ }
       await yieldLoop();
     }
-    const elapsed = Date.now() - started;
+    const elapsed = this.monoNow() - started;
     if (elapsed >= 100 && this.logger) this.logger.info(`controller status caches warmed in ${elapsed}ms (yielded every four calls)`);
     return elapsed;
   }
@@ -422,15 +424,15 @@ class TeamRuntime {
   async start() {
     if (this.running) return { ok: true, already: true };
     this.running = true;
-    this.startedAt = Date.now();
+    this.startedAt = this.now();
     let dashboardInfo = null;
     if (this.dashboard && this.library) {
       // Build the library index/summary before the first dashboard request or
       // bot socket. Parsing the 20 MB manifest inside a live status snapshot
       // blocked the event loop for >1 s while logins were in flight.
-      const started = Date.now();
+      const started = this.monoNow();
       const libraryStats = this.library.stats();
-      this.logger.info(`schematic library ready: ${libraryStats.count} designs in ${Date.now() - started}ms${libraryStats.fromSummary ? ' (aggregate summary; manifest stays lazy)' : ''}`);
+      this.logger.info(`schematic library ready: ${libraryStats.count} designs in ${this.monoNow() - started}ms${libraryStats.fromSummary ? ' (aggregate summary; manifest stays lazy)' : ''}`);
       await this._warmStatusCaches();
     }
     if (this.dashboard) {
@@ -687,7 +689,7 @@ class TeamRuntime {
       // handshake, so a 0 ms join interval really means no artificial delay.
       release();
       if (this.shutdownRequested) { return { ok: false, error: 'shutting down' }; }
-      const startedAt = Date.now();
+      const startedAt = this.monoNow();
       this.logger.info(`[${bot.name}] connect attempt ${attempt}: ${config.server.host}:${config.server.port} version=${bot.version} auth=${bot.authProfile ? bot.authProfile.id : 'none'}${bot.passwordRequired ? ' (credential)' : ''} budgets: dns=${config.server.dnsTimeoutMs}ms tcp=${config.server.connectTimeoutMs}ms login=${config.server.loginTimeoutMs}ms configuration=${config.server.configurationTimeoutMs}ms spawn=${config.server.spawnTimeoutMs}ms`);
       let result;
       try {
@@ -695,7 +697,7 @@ class TeamRuntime {
       } catch (err) {
         result = { ok: false, error: err.message, code: err.code };
       }
-      const elapsed = Date.now() - startedAt;
+      const elapsed = this.monoNow() - startedAt;
       this._registerJoinFailure(bot, result);
       if (this.intentionalDisconnects.has(bot.name)) {
         return { ok: false, error: 'disconnected by operator', stopped: true };
@@ -777,14 +779,14 @@ class TeamRuntime {
    * because coordinator state is only refreshed inside the autonomous path.
    */
   _syncBots() {
-    const snapshotStarted = Date.now();
+    const snapshotStarted = this.monoNow();
     this.stateSyncTicks += 1;
     // Inventory metadata is the most expensive part of the snapshot. Actions
     // refresh it after their own writes; a 1.5s fleet-wide cadence is enough
     // for the dashboard and halves the per-tick allocation.
     const refreshInventory = this.stateSyncTicks % 2 === 1;
     for (const bot of this.bots.values()) {
-      const started = Date.now();
+      const started = this.monoNow();
       try {
         if (typeof bot.setNavigationFleet === 'function' && bot.navigationFleet !== this.navigationFleet) bot.setNavigationFleet(this.navigationFleet);
         if (refreshInventory && typeof bot._syncInventory === 'function') bot._syncInventory();
@@ -829,7 +831,7 @@ class TeamRuntime {
           this.disconnectedNotified.add(bot.name);
         }
       }
-      const elapsed = Date.now() - started;
+      const elapsed = this.monoNow() - started;
       if (elapsed >= 250 && Date.now() - this._lastSlowSyncWarnAt >= 10000) {
         this._lastSlowSyncWarnAt = Date.now();
         this.logger.warn(`[${bot.name}] state sync took ${elapsed}ms; the snapshot for one bot is blocking the tick`);
@@ -842,7 +844,7 @@ class TeamRuntime {
       try { this.players.observeBots(this.bots.values()); }
       catch (err) { this.logger.warn(`player observation failed: ${err.message}`); }
     }
-    this.lastSyncMs = Date.now() - snapshotStarted;
+    this.lastSyncMs = this.monoNow() - snapshotStarted;
   }
 
   _scheduleStatusRefreshes() {
@@ -852,18 +854,18 @@ class TeamRuntime {
     if (!list.length) return;
     this._statusRefreshBusy = true;
     setImmediate(() => {
-      const started = Date.now();
+      const started = this.monoNow();
       try {
         for (const actions of list) {
           if (typeof actions.refreshStatus !== 'function') continue;
-          const one = Date.now();
+          const one = this.monoNow();
           try { actions.refreshStatus({ limit: 1 }); }
           catch (err) { this.logger.warn(`[${actions.bot.name}] status cache refresh failed: ${err.message}`); }
-          const ms = Date.now() - one;
+          const ms = this.monoNow() - one;
           if (ms >= 250) this.logger.warn(`[${actions.bot.name}] cached status refresh took ${ms}ms for one controller`);
         }
       } finally {
-        const total = Date.now() - started;
+        const total = this.monoNow() - started;
         if (total >= 500) this.logger.warn(`fleet status cache refresh took ${total}ms (off the state-sync path)`);
         this._statusRefreshBusy = false;
       }
@@ -872,7 +874,7 @@ class TeamRuntime {
 
   async _tick() {
     if (!this.running || this.ticking) return;
-    const tickStarted = Date.now();
+    const tickStarted = this.monoNow();
     // Hold the guard for the whole tick, including the pre-join safety path.
     // Previously the gate-closed path returned before setting this.ticking, so
     // the 750ms interval could stack dozens of overlapping safety ticks, each
@@ -900,9 +902,9 @@ class TeamRuntime {
       // tick's launch-actions phase, which sent the live investigation to the
       // wrong subsystem.
       this._lastPhase = 'state-sync';
-      const syncStarted = Date.now();
+      const syncStarted = this.monoNow();
       this._syncBots();
-      const syncMs = Date.now() - syncStarted;
+      const syncMs = this.monoNow() - syncStarted;
       if (syncMs >= 1000) this.logger.warn(`state sync took ${syncMs}ms; the event loop was blocked inside _syncBots`);
       // Status-cache refresh is deliberately outside _syncBots and outside the
       // dashboard request: one controller per bot per tick, on a setImmediate.
@@ -954,11 +956,11 @@ class TeamRuntime {
         // tick itself, and never overlap two passes.
         this._assignRolesBusy = true;
         setImmediate(() => {
-          const startedRole = Date.now();
+          const startedRole = this.monoNow();
           try { this.combatTeam.assignRoles(); }
           catch (err) { this.logger.warn(`combat role assignment failed: ${err.message}`); }
           finally {
-            const ms = Date.now() - startedRole;
+            const ms = this.monoNow() - startedRole;
             if (ms >= 500) this.logger.warn(`combat role assignment took ${ms}ms; it no longer blocks the autonomy tick`);
             this._assignRolesBusy = false;
           }
@@ -977,20 +979,20 @@ class TeamRuntime {
       if (this.combatTeam) this.combatTeam.home = this.home;
       if (this.construction && config.construction.autoAdvance && !this.constructionBusy && this.ticks % Math.max(2, config.construction.tickEvery) === 0) {
         this.constructionBusy = true;
-        const startedBuild = Date.now();
+        const startedBuild = this.monoNow();
         // The synchronous prefix of advance() (phase bookkeeping, project
         // serialisation) used to be charged to launch-actions.
         new Promise((resolve) => setImmediate(resolve))
           .then(() => this.construction.autoAdvance())
           .catch((err) => this.logger.warn(`construction auto-advance: ${err.message}`))
           .finally(() => {
-            const ms = Date.now() - startedBuild;
+            const ms = this.monoNow() - startedBuild;
             if (ms >= 1000) this.logger.warn(`construction auto-advance took ${ms}ms (off the tick)`);
             this.constructionBusy = false;
           });
       }
     } finally {
-      this.lastTickMs = Date.now() - tickStarted;
+      this.lastTickMs = this.monoNow() - tickStarted;
       this.ticking = false;
     }
   }
@@ -1085,7 +1087,7 @@ class TeamRuntime {
 
   _startBotSafety(actions) {
     const name = actions.bot.name;
-    const started = Date.now();
+    const started = this.monoNow();
     const budget = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
     // Belt-and-braces: the controllers receive the same deadline and return at
     // it. If a third-party await still fails to settle, cancel its movement so
@@ -1104,7 +1106,7 @@ class TeamRuntime {
       // controller await is not mis-attributed to launch-actions.
       this._lastPhase = 'safety';
       try {
-        const safetyStarted = Date.now();
+        const safetyStarted = this.monoNow();
         const result = await actions.safetyTick();
         this._recordSafetyStages(name, result, safetyStarted);
       } catch (err) {
@@ -1112,7 +1114,7 @@ class TeamRuntime {
       }
     })().finally(() => {
       clearTimeout(watchdog);
-      const elapsed = Date.now() - started;
+      const elapsed = this.monoNow() - started;
       if (elapsed >= budget + 1000) this.logger.warn(`[${name}] safety task took ${(elapsed / 1000).toFixed(1)}s (budget ${budget}ms)`);
       if (this.botSafety.get(name) === task) this.botSafety.delete(name);
       // Once no controller work is in flight, stop blaming the last safety
@@ -1127,7 +1129,7 @@ class TeamRuntime {
   /** Keep each safety stage's real duration, not just one aggregate total. */
   _recordSafetyStages(name, result, started) {
     if (!result || !result.stages) return;
-    const elapsed = Date.now() - started;
+    const elapsed = this.monoNow() - started;
     const totalMs = result.totalMs === undefined ? elapsed : result.totalMs;
     this.safetyStages.set(name, { at: Date.now(), totalMs, stages: { ...result.stages } });
     const budget = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
@@ -1180,7 +1182,7 @@ class TeamRuntime {
   _startBotStep(actions) {
     const bot = actions.bot;
     const name = bot.name;
-    const started = Date.now();
+    const started = this.monoNow();
     let inTask = false;
     let taskStartedAt = 0;
     let preempted = false;
@@ -1223,7 +1225,7 @@ class TeamRuntime {
       try {
         // Safety and death bookkeeping must run for a dead bot too; the
         // controller returns early without moving it.
-        const safetyStarted = Date.now();
+        const safetyStarted = this.monoNow();
         const safetyResult = await actions.safetyTick();
         clearTimeout(safetyWatchdog);
         this._recordSafetyStages(name, safetyResult, safetyStarted);
@@ -1251,7 +1253,7 @@ class TeamRuntime {
         clearInterval(preemptTimer);
         clearTimeout(watchdog);
         clearTimeout(safetyWatchdog);
-        const elapsed = Date.now() - started;
+        const elapsed = this.monoNow() - started;
         if (elapsed >= 10000) {
           const assignment = this.coordinator.getAssignment(name);
           this.logger.info(`[${name}] long action ${assignment ? assignment.type : 'idle'} finished in ${(elapsed / 1000).toFixed(1)}s`);
@@ -1553,7 +1555,10 @@ class TeamRuntime {
       serverVersionError: this.serverVersionError,
       autonomyArmed: this.autonomyArmed,
       ticks: this.ticks,
-      uptimeMs: this.startedAt ? Date.now() - this.startedAt : 0,
+      // Uptime is a calendar duration: it includes a suspended VM, matching
+      // /api/build and the process start time. Work durations below use the
+      // monotonic clock instead.
+      uptimeMs: this.startedAt ? Math.max(0, this.now() - this.startedAt) : 0,
       home: this.home,
       bots: [...this.bots.values()].map((bot) => {
         const status = connectionStatus(bot);

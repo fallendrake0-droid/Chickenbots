@@ -138,6 +138,68 @@ class InventoryManager {
     return { ok: true, position: site, placed: true };
   }
 
+  /**
+   * A pathfinder can stop one or two blocks short of a container and still be
+   * inside Minecraft's ~4.5-block container reach. Treating that as a failed
+   * trip made the overflow pass abort with ARRIVAL_UNVERIFIED even though the
+   * chest could be opened. Only a move that leaves the bot outside reach is a
+   * real failure; the open itself remains the verification.
+   */
+  async _reachContainer(position, { range = 3, timeoutMs = 15000 } = {}) {
+    const move = await this.bot.goTo(position, { range, timeoutMs });
+    if (!move || move.ok !== false) return { ok: true, move };
+    let reach = Infinity;
+    try { reach = distance(this.bot.position, position); } catch (_) { /* keep Infinity */ }
+    // ARRIVAL_UNVERIFIED means the route completed but the entity settled short
+    // of the requested range. It is not evidence that the container is out of
+    // reach: a narrow base corridor can end the route five blocks out while the
+    // chest is still openable. Try the open; its result is the verification.
+    if (move.code === 'ARRIVAL_UNVERIFIED' || move.arrivalUnverified) {
+      return { ok: true, tolerated: true, distance: reach, code: move.code || null, move };
+    }
+    return { ok: false, error: move.error || 'cannot reach the container', move };
+  }
+
+  /**
+   * Every storage the fleet has registered, ordered by evidence that it holds a
+   * bed and then by distance. `findStorage()` deliberately returns the nearest
+   * chest for deposits; a bed task cannot use that rule because the nearest
+   * chest may be an empty construction cache while the homes' beds sit in
+   * another chest twenty blocks away.
+   */
+  _storageCandidates({ limit = 8 } = {}) {
+    const candidates = new Map();
+    const add = (id, position, counts = null) => {
+      if (!position || !Number.isFinite(Number(position.x)) || !Number.isFinite(Number(position.z))) return;
+      const key = `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
+      const bedCount = counts
+        ? Object.entries(counts).reduce((sum, [name, count]) => sum + (BED_NAMES.has(name) ? Number(count) || 0 : 0), 0)
+        : 0;
+      const existing = candidates.get(key);
+      const distanceFromBot = distance(this.bot.position, position);
+      if (existing) {
+        existing.bedCount = Math.max(existing.bedCount, bedCount);
+        existing.distance = Math.min(existing.distance, distanceFromBot);
+        if (id) existing.id = existing.id || id;
+        return;
+      }
+      candidates.set(key, { id: id || `world:${key}`, position: { ...position }, bedCount, distance: distanceFromBot });
+    };
+    if (this.ledger && this.ledger.storages) {
+      for (const [id, storage] of this.ledger.storages.entries()) add(id, storage && storage.position, storage && storage.counts);
+    }
+    if (this.homeStorage && Array.isArray(this.homeStorage.positions)) {
+      for (const position of this.homeStorage.positions) add(null, position, this.homeStorage.counts);
+    }
+    const remembered = this.memory && typeof this.memory.getFact === 'function' ? this.memory.getFact('home_storage') : null;
+    if (remembered && Array.isArray(remembered.positions)) {
+      for (const position of remembered.positions) add(null, position, remembered.counts);
+    }
+    return [...candidates.values()]
+      .sort((a, b) => b.bedCount - a.bedCount || a.distance - b.distance)
+      .slice(0, Math.max(1, limit));
+  }
+
   async findStorage() {
     if (!this.ledger) return null;
     let best = null;
@@ -165,8 +227,8 @@ class InventoryManager {
   async deposit(itemName, count, position = null) {
     const storage = position ? { id: `manual:${position.x},${position.y},${position.z}`, position } : await this.findStorage();
     if (!storage) return { ok: false, error: 'no verified storage' };
-    const move = await this.bot.goTo(storage.position, { range: 3 });
-    if (move && move.ok === false) return { ok: false, error: move.error };
+    const reach = await this._reachContainer(storage.position);
+    if (!reach.ok) return { ok: false, error: reach.error };
     const window = await this.bot.openContainer(storage.position);
     if (!window.ok) return window;
     const result = await window.deposit(itemName, count);
@@ -181,8 +243,8 @@ class InventoryManager {
   async withdraw(itemName, count, position = null) {
     const storage = position ? { id: `manual:${position.x},${position.y},${position.z}`, position } : await this.findStorage();
     if (!storage) return { ok: false, error: 'no verified storage' };
-    const move = await this.bot.goTo(storage.position, { range: 3 });
-    if (move && move.ok === false) return { ok: false, error: move.error };
+    const reach = await this._reachContainer(storage.position);
+    if (!reach.ok) return { ok: false, error: reach.error };
     const window = await this.bot.openContainer(storage.position);
     if (!window.ok) return window;
     const result = await window.withdraw(itemName, count);
@@ -203,28 +265,53 @@ class InventoryManager {
     if (typeof this.bot.hasBed === 'function' && this.bot.hasBed()) {
       return { ok: true, source: 'inventory', item: this.bot.hasBed() };
     }
-    const storage = await this.findStorage();
-    if (!storage) return { ok: false, error: 'no bed in inventory and no verified storage' };
-    const move = await this.bot.goTo(storage.position, { range: 3 });
-    if (move && move.ok === false) return { ok: false, error: `cannot reach home storage: ${move.error}` };
-    const window = await this.bot.openContainer(storage.position);
-    if (!window.ok) return { ok: false, ...window, error: window.error || 'cannot open home storage' };
-    let contents = {};
-    let bedName = null;
-    try {
-      contents = { ...window.items() };
-      bedName = Object.keys(contents).find((name) => BED_NAMES.has(name) && Number(contents[name]) > 0) || null;
-      if (!bedName) return { ok: false, error: 'no bed in inventory or home storage', storage: storage.position };
-      const taken = await window.withdraw(bedName, 1);
-      if (!taken.ok) return { ok: false, error: taken.error || 'could not withdraw a bed', item: bedName };
-      const held = typeof this.bot.hasBed === 'function' ? this.bot.hasBed() : null;
-      return { ok: Boolean(held), item: bedName, count: 1, held, source: 'home storage', storage: storage.position };
-    } finally {
-      // Read before closing: a live mineflayer window is unreadable afterwards.
-      const remaining = { ...window.items() };
-      await window.close();
-      if (this.ledger) this.ledger.updateStorage(storage.id, { position: storage.position, counts: remaining });
+    const candidates = this._storageCandidates({ limit: 8 });
+    if (!candidates.length) {
+      // No storage has been registered yet (fresh process, existing world).
+      // Fall back to the old single-container discovery so a home chest made
+      // before this process started is still usable.
+      const discovered = await this.findStorage();
+      if (discovered) candidates.push(discovered);
     }
+    if (!candidates.length) return { ok: false, error: 'no bed in inventory and no verified storage' };
+    let lastError = null;
+    const searched = [];
+    for (const candidate of candidates) {
+      // A chest that the fleet recorded as holding a bed is checked first; the
+      // rest are still checked because a live container's ledger counts can be
+      // older than its real contents.
+      const reach = await this._reachContainer(candidate.position, { timeoutMs: 8000 });
+      if (!reach.ok) { lastError = reach.error; searched.push({ position: candidate.position, error: reach.error }); continue; }
+      const window = await this.bot.openContainer(candidate.position);
+      if (!window.ok) {
+        lastError = window.error || 'cannot open storage';
+        searched.push({ position: candidate.position, error: lastError });
+        continue;
+      }
+      let bedName = null;
+      try {
+        const contents = { ...window.items() };
+        bedName = Object.keys(contents).find((name) => BED_NAMES.has(name) && Number(contents[name]) > 0) || null;
+        if (!bedName) { searched.push({ position: candidate.position, beds: 0 }); continue; }
+        const taken = await window.withdraw(bedName, 1);
+        if (!taken.ok) return { ok: false, error: taken.error || 'could not withdraw a bed', item: bedName, storage: candidate.position };
+        const held = typeof this.bot.hasBed === 'function' ? this.bot.hasBed() : null;
+        return {
+          ok: Boolean(held), item: bedName, count: 1, held, source: 'home storage',
+          storage: candidate.position, searched: searched.length + 1
+        };
+      } finally {
+        // Read before closing: a live mineflayer window is unreadable afterwards.
+        const remaining = { ...window.items() };
+        await window.close();
+        if (this.ledger) this.ledger.updateStorage(candidate.id, { position: candidate.position, counts: remaining });
+      }
+    }
+    return {
+      ok: false,
+      error: lastError ? `no bed in inventory or home storage (${lastError})` : 'no bed in inventory or home storage',
+      searched
+    };
   }
 
   async share(itemName, count, recipient) {
@@ -465,8 +552,8 @@ class InventoryManager {
   }
 
   async _depositSurplusAt(position, { exclude = null } = {}) {
-    const move = await this.bot.goTo(position, { range: 3, timeoutMs: 15000 });
-    if (move && move.ok === false) return { ok: false, error: move.error };
+    const reach = await this._reachContainer(position);
+    if (!reach.ok) return { ok: false, error: reach.error };
     const window = await this.bot.openContainer(position);
     if (!window.ok) return window;
     const before = { ...(this.bot.inventory || {}) };

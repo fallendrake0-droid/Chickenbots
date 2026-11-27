@@ -49,6 +49,10 @@ export const operationsOverview = {
     const pipeline = p ? p.pipeline : [];
     const ready = p?.materialPlan?.ready;
     const coverage = p?.sitePreparation?.lighting?.coverage;
+    const terminal = Boolean(summary && ['COMPLETE', 'CANCELLED'].includes(summary.status));
+    const unarmed = Boolean(summary && !summary.autonomyEnabled);
+    const idleUnarmed = Boolean(unarmed && !terminal);
+    const autonomyContext = summary ? (summary.autonomyEnabled ? (summary.paused ? ' · paused' : '') : ' · not armed') : '';
     return `
       <div class="page">
         ${pageHeader({
@@ -58,7 +62,7 @@ export const operationsOverview = {
         })}
         <div class="grid grid--stats">
           ${statCard({ label: 'Projects', value: num(c.projects.length), iconName: 'folder', tone: c.projects.length ? 'accent' : 'neutral', context: `${c.projects.filter((entry) => entry.status === 'COMPLETE').length} complete` })}
-          ${statCard({ label: 'Active status', value: summary ? summary.status : 'IDLE', iconName: 'activity', tone: summary ? statusTone(summary.status) : 'neutral', context: summary ? summary.phase : 'No active project' })}
+          ${statCard({ label: 'Active status', value: summary ? summary.status : 'IDLE', iconName: 'activity', tone: summary ? statusTone(summary.status) : 'neutral', context: summary ? `${summary.phase}${autonomyContext}` : 'No active project' })}
           ${statCard({ label: 'Pipeline', value: summary ? `${summary.progress}%` : '—', iconName: 'git-branch', tone: 'info', context: p ? `${pipeline.filter((phase) => phase.status === 'COMPLETE').length}/${pipeline.length} phases complete` : 'Not started' })}
           ${statCard({ label: 'Materials', value: ready === true ? 'READY' : ready === false ? 'DEFICIT' : '—', iconName: 'package', tone: ready === true ? 'success' : ready === false ? 'warning' : 'neutral', context: p?.materialPlan ? `${Object.keys(p.materialPlan.deficit || {}).length} short item(s)` : 'Not calculated' })}
           ${statCard({ label: 'Storage', value: num(c.warehouse?.capacity?.containers || 0), iconName: 'archive', tone: (c.warehouse?.capacity?.containers || 0) ? 'success' : 'neutral', context: `${num(c.warehouse?.capacity?.items || 0)} stored items` })}
@@ -95,6 +99,7 @@ export const operationsOverview = {
                     ['Tier', esc(summary.tier || '—')],
                     ['Priority', num(summary.priority)],
                     ['Phases done', `${p.buildPhases.filter((phase) => phase.status === 'COMPLETE').length}/${p.buildPhases.length}`],
+                    ['Autonomy', summary.autonomyEnabled ? (summary.paused ? 'paused' : 'armed') : 'not armed'],
                     ['Blockers', summary.blockedReason || 'None']
                   ])}
                   <div class="row gap-2" style="margin-top:12px">
@@ -127,6 +132,7 @@ export const operationsOverview = {
                   ['Persisted state', c.persisted || '—']
                 ])}
                 ${p && ['BLOCKED', 'AWAITING_MATERIALS', 'AWAITING_STORAGE'].includes(summary.status) ? `<div class="callout callout--warn" style="margin-top:10px">${icon('alert')}<div>${esc(summary.blockedReason || summary.status)}</div></div>` : ''}
+                ${idleUnarmed ? `<div class="callout callout--warn" style="margin-top:10px">${icon('alert')}<div><strong>Pipeline not armed.</strong> ${esc(summary.phase)} is the first phase, but autonomous world changes stay off until this project is explicitly started.</div><button class="button button--sm button--primary" type="button" data-command="builder auto on" style="margin-top:8px">${icon('play')} Start pipeline</button></div>` : ''}
               </div>
             </section>
           </aside>

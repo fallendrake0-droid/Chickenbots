@@ -258,3 +258,26 @@ test('the overview and combat-team snapshot agree on how many bots are engaged',
     await runtime.shutdown('test');
   }
 });
+
+test('a failed task in a completed objective does not raise a permanent fleet alert', async () => {
+  const runtime = await createRuntime({ simulate: true, connect: false, dashboard: false });
+  try {
+    const board = runtime.board;
+    const objective = board.createObjective({ id: 'obj-alert-terminal', title: 'finished plan', priority: 10, progress: { current: 1, target: 1, unit: 'phases' } });
+    const task = board.addTask({ objectiveId: objective.id, type: 'MINE_BLOCK', label: 'stalled chop', units: { target: 1 } }).task;
+    board.fail(task.id, 'no verified progress in 45s; released for re-planning', { by: null, retry: false });
+    objective.status = 'COMPLETED';
+
+    const quiet = statusSnapshot(runtime.services);
+    assert.equal(quiet.overview.alerts.some((alert) => /failed task/.test(alert.message)), false);
+
+    const active = board.createObjective({ id: 'obj-alert-active', title: 'active plan', priority: 10, progress: { current: 0, target: 1, unit: 'phases' } });
+    const activeTask = board.addTask({ objectiveId: active.id, type: 'MINE_BLOCK', label: 'real failure', units: { target: 1 } }).task;
+    board.fail(activeTask.id, 'real failure', { by: null, retry: false });
+    active.status = 'ACTIVE';
+    const loud = statusSnapshot(runtime.services);
+    assert.equal(loud.overview.alerts.some((alert) => /failed task/.test(alert.message)), true);
+  } finally {
+    await runtime.shutdown('test complete');
+  }
+});

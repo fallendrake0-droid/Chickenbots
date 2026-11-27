@@ -5,6 +5,12 @@ const { catalogue } = require('./woodcutting/catalog');
 const { validateLibrary } = require('./schematics/validate');
 const { connectionStatus } = require('./bot/status');
 
+// Twelve controllers are refreshed one per bot per autonomy tick. At the
+// simulation's real cadence (750ms tick plus scans that can take a few hundred
+// milliseconds) a full sweep takes 12-20s. Thirty seconds still detects a
+// refresh that has genuinely stopped, without warning on ordinary jitter.
+const ACTION_STATUS_STALE_MS = 30000;
+
 /**
  * One coherent snapshot for the dashboard, CLI and command results. All values
  * come from live objects; nothing is synthesised to look healthy.
@@ -343,9 +349,9 @@ function statusSnapshot(services) {
     actionStatus: actionCache,
     maxActionStatusAgeMs: cacheAges.length ? Math.max(...cacheAges) : null,
     // True when every controller section in `actions` is present and was
-    // refreshed within two runtime state-sync periods (12 controllers at one
-    // per tick). Anything older is surfaced instead of silently rendered.
-    actionStatusFresh: cacheAges.length > 0 && Math.max(...cacheAges) < 12000
+    // refreshed within one full sweep plus scheduling jitter. Anything older
+    // is surfaced instead of silently rendered.
+    actionStatusFresh: cacheAges.length > 0 && Math.max(...cacheAges) < ACTION_STATUS_STALE_MS
   };
   if (!snapshot.freshness.actionStatusFresh) {
     // A cache that stopped refreshing must be visible, not silently rendered
@@ -395,10 +401,15 @@ function buildAlerts(summaries, board, services, { excavationStatus = null, boar
     alerts.push({ level: 'error', message: `server version: ${services.runtime.serverVersionError}` });
   }
   if (board) {
-    const failed = boardStats && boardStats.byStatus && Number.isFinite(boardStats.byStatus.FAILED)
-      ? boardStats.byStatus.FAILED
-      : board.listTasks({ status: 'FAILED' }).length;
-    if (failed) alerts.push({ level: 'warn', message: `${failed} failed task(s)` });
+    // A failed task is only actionable while its objective can still be worked.
+    // The autonomous planner reuses a finished base objective every fifteen
+    // seconds, so one stall inside a completed plan used to leave a permanent
+    // "1 failed task(s)" warning even though there was nothing left to retry.
+    const failedTasks = board.listTasks({ status: 'FAILED' }).filter((task) => {
+      const objective = task.objectiveId && board.getObjective(task.objectiveId);
+      return !objective || !['COMPLETED', 'CANCELLED'].includes(objective.status);
+    });
+    if (failedTasks.length) alerts.push({ level: 'warn', message: `${failedTasks.length} failed task(s)` });
     const stalled = deadlocks === null ? board.detectDeadlocks() : deadlocks;
     if (stalled.length) alerts.push({ level: 'error', message: `${stalled.length} deadlock(s)` });
   }

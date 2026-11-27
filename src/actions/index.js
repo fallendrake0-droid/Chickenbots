@@ -27,6 +27,7 @@ const { PlayerController } = require('../players/controller');
 const { ResourceReservations } = require('./reservations');
 const { distance } = require('../util/vec');
 const { clampToWorkZone } = require('../world/workZone');
+const { monotonicMs } = require('../util/clock');
 
 /**
  * Per-bot action layer. Wires every controller to the same adapter and routes
@@ -38,7 +39,7 @@ class BotActions {
   constructor({
     bot, index = 0, memory = null, taskBoard = null, ledger = null, team = null, home = null,
     library = null, logger = null, builders = null, excavationManager = null, world = null,
-    combatTeam = null, comms = null, players = null, reservations = null
+    combatTeam = null, comms = null, players = null, reservations = null, monoNow = monotonicMs
   } = {}) {
     if (!bot) throw new Error('BotActions requires a bot');
     this.bot = bot;
@@ -83,6 +84,7 @@ class BotActions {
     // The tool bootstrap needs to craft/place and, if wood is missing, chop.
     this.mining.attachHelpers({ inventory: this.inventory, woodcutting: this.woodcutting });
     this.homeBase = new HomeBaseManager({ bots: [bot], world, memory, taskBoard, ledger, library, logger: this.logger });
+    this.monoNow = typeof monoNow === 'function' ? monoNow : monotonicMs;
     this._statusCache = new Map();
     this._statusCursor = 0;
     this._statusWarmedAt = 0;
@@ -122,11 +124,11 @@ class BotActions {
         continue;
       }
       try {
-        this._statusCache.set(target, { status: controller.status(), at: Date.now() });
+        this._statusCache.set(target, { status: controller.status(), at: Date.now(), monoAt: this.monoNow() });
         this._statusRefreshedAt = Date.now();
         refreshed++;
       } catch (err) {
-        this._statusCache.set(target, { status: { bot: this.bot.name, error: err.message }, at: Date.now() });
+        this._statusCache.set(target, { status: { bot: this.bot.name, error: err.message }, at: Date.now(), monoAt: this.monoNow() });
         refreshed++;
       }
       if (name) break;
@@ -151,7 +153,9 @@ class BotActions {
     // inside the first dashboard request, which is how a 5.2s snapshot froze
     // the Minecraft sockets.
     const at = (name) => this._statusCache.get(name);
-    const ages = [...this._statusCache.values()].map((entry) => Date.now() - entry.at);
+    // Cache age is a measure of how much work this process has done since the
+    // refresh, so a VM suspension must not make a just-warmed cache look stale.
+    const ages = [...this._statusCache.values()].map((entry) => this.monoNow() - (Number.isFinite(entry.monoAt) ? entry.monoAt : this.monoNow()));
     return {
       bot: this.bot.name,
       survival: at('survival') ? at('survival').status : null,
@@ -218,7 +222,7 @@ class BotActions {
    * ignored.
    */
   async safetyTick() {
-    const startedAt = Date.now();
+    const monoStartedAt = this.monoNow();
     const budgetMs = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
     let timer = null;
     const timedOut = new Promise((resolve) => {
@@ -229,7 +233,7 @@ class BotActions {
         this.logger.warn(`[${this.bot.name}] ${reason}; released the safety slot and cancelled movement`);
         resolve({
           ok: false, timedOut: true, stages: { deadline: budgetMs },
-          totalMs: Date.now() - startedAt, recovery: this.recovery.status()
+          totalMs: this.monoNow() - monoStartedAt, recovery: this.recovery.status()
         });
       }, budgetMs + 250);
     });
@@ -246,20 +250,24 @@ class BotActions {
   async _safetyTickBody() {
     const bot = this.bot;
     const startedAt = Date.now();
+    const monoStartedAt = this.monoNow();
     const budgetMs = Math.max(1000, Number(config.survival.emergencyBudgetMs) || 6000);
     const deadlineAt = startedAt + budgetMs;
     const stages = {};
-    let cursor = startedAt;
+    // Deadlines and spawn guards stay on the wall clock; the stage durations are
+    // process work and must not include a suspension.
+    let cursor = monoStartedAt;
     const lap = (name) => {
       const at = Date.now();
-      stages[name] = at - cursor;
-      cursor = at;
+      const monoAt = this.monoNow();
+      stages[name] = monoAt - cursor;
+      cursor = monoAt;
       return at;
     };
     if (!bot.ready) {
       this._spawnAssessed = false;
       lap('gate');
-      return { ok: false, notReady: true, stages, totalMs: Date.now() - startedAt, recovery: this.recovery.status() };
+      return { ok: false, notReady: true, stages, totalMs: this.monoNow() - monoStartedAt, recovery: this.recovery.status() };
     }
     if (bot.health <= 0) {
       this._recordDeath();
@@ -268,7 +276,7 @@ class BotActions {
       // A dead bot still needs recovery bookkeeping, but cannot act.
       this.recovery.update({ health: 0, food: bot.food, threats: 0 });
       lap('dead');
-      return { ok: false, dead: true, stages, totalMs: Date.now() - startedAt, recovery: this.recovery.status() };
+      return { ok: false, dead: true, stages, totalMs: this.monoNow() - monoStartedAt, recovery: this.recovery.status() };
     }
     let equipmentRescan = null;
     if (this._deathHandled || this.combat.state === 'DEAD') {
@@ -351,7 +359,7 @@ class BotActions {
         action: emergency,
         threatCount: assessment.threats.length,
         stages,
-        totalMs: Date.now() - startedAt,
+        totalMs: this.monoNow() - monoStartedAt,
         recovery: this.recovery.status()
       };
     }
@@ -360,7 +368,7 @@ class BotActions {
       lap('recovery-action');
       return {
         ok: recovery.ok !== false, recovering: true, recovery,
-        threatCount: assessment.threats.length, stages, totalMs: Date.now() - startedAt,
+        threatCount: assessment.threats.length, stages, totalMs: this.monoNow() - monoStartedAt,
         equipmentRescan
       };
     }
@@ -379,7 +387,7 @@ class BotActions {
       return {
         ok: true, timedOut: true, budgetExhausted: true, deferredStage: 'player-watch',
         playerWatch, threatCount: assessment.threats.length, stages,
-        totalMs: Date.now() - startedAt, equipmentRescan, recovery: this.recovery.status()
+        totalMs: this.monoNow() - monoStartedAt, equipmentRescan, recovery: this.recovery.status()
       };
     }
     const survival = await this.survival.tick({ deadlineAt });
@@ -388,7 +396,7 @@ class BotActions {
       return {
         ok: true, timedOut: true, budgetExhausted: true, deferredStage: 'survival',
         playerWatch, survival, threatCount: assessment.threats.length, stages,
-        totalMs: Date.now() - startedAt, equipmentRescan, recovery: this.recovery.status()
+        totalMs: this.monoNow() - monoStartedAt, equipmentRescan, recovery: this.recovery.status()
       };
     }
     const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
@@ -400,7 +408,7 @@ class BotActions {
     lap('defend');
     const result = {
       ok: true, survival, follow, defence, threatCount: assessment.threats.length,
-      playerWatch, stages, totalMs: Date.now() - startedAt, equipmentRescan,
+      playerWatch, stages, totalMs: this.monoNow() - monoStartedAt, equipmentRescan,
       recovery: this.recovery.status()
     };
     if (survival.actions.length || defence) {

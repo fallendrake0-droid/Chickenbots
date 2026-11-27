@@ -6,7 +6,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const { buildInfo, PUBLIC_DIR } = require('../src/dashboard/buildInfo');
+const { buildInfo, buildUptimeMs, PUBLIC_DIR } = require('../src/dashboard/buildInfo');
 const { createRuntime } = require('../src/runtime');
 const { createDashboard } = require('../src/dashboard/server');
 
@@ -111,4 +111,12 @@ test('dashboard serves a no-store shell, immutable hashed assets and bounded dee
     await dash.stop();
     await runtime.shutdown('test');
   }
+});
+
+test('health and build uptime use the same calendar interval as runtime uptime', () => {
+  const builtAt = new Date(1_700_000_000_000).toISOString();
+  const now = Date.parse(builtAt) + 38 * 60 * 1000;
+  assert.equal(buildUptimeMs({ builtAt }, now), 38 * 60 * 1000);
+  assert.equal(buildUptimeMs({}, now), 0, 'missing build identity never reports a fake uptime');
+  assert.equal(buildUptimeMs({ builtAt: 'not a date' }, now), 0);
 });
