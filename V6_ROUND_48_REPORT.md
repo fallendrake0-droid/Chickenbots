@@ -130,3 +130,9 @@ the simulator; they still need a live five-bot run.
 - Task-level scaffolding for genuinely unreachable high trunks/ledges is a task
   decision (`allowScaffold` is still false by default), not a hidden movement
   trick.
+- Deep vertical mine shafts are not traversable back to the surface. The
+  movement layer now reports that honestly (`no-path`) instead of teleporting,
+  but the mining controller still sinks a straight 1x1 shaft. Sinking a
+  stair/ladder shaft (or crafting an escape route) is a mining-task change, not
+  a pathfinding change, and remains open. A bot that ends a run at y≈-56
+  therefore cannot complete a home-storage trip.

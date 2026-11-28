@@ -321,4 +321,8 @@ headless Chromium pass against the simulator. **Live-server result UNVERIFIED.**
 
 **Still open:** live five-bot pathfinding against the real server; scaffold-based
 access for genuinely unreachable high work targets; the mock-only unsupported
-builder stance fallback. All pre-existing live criteria remain UNVERIFIED.
+builder stance fallback; and traversable deep-mine return access. Mining still
+sinks a straight 1x1 shaft, which cannot be climbed. The movement layer now
+reports `no-path` for the home trip instead of teleporting; changing the mining
+shaft to stairs/ladders is a task change. All pre-existing live criteria remain
+UNVERIFIED.
