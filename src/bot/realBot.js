@@ -2886,7 +2886,7 @@ class RealBot extends BotAdapter {
         totalMs: Math.max(0, this.now() - startedAt),
         setupMs,
         planMs,
-        followMs: planMs === null ? null : Math.max(0, this.now() - startedAt - planMs),
+        followMs: pathStarted && planMs !== null ? Math.max(0, this.now() - startedAt - planMs) : null,
         thinkTimeoutMs: budget.thinkTimeoutMs,
         tickTimeoutMs: budget.tickTimeoutMs
       }
@@ -3039,6 +3039,12 @@ class RealBot extends BotAdapter {
       }
     } else if (result && result.ok === false) {
       result = { ...result, searchRadius: effectiveSearchRadius };
+    }
+    // A rejected plan never emits path_update, but it still spent real time in
+    // A*. Record that as the plan phase so the terminal can distinguish an
+    // 8000ms PATH_PLAN_TIMEOUT from a fast PATH_NOT_FOUND.
+    if (!pathStarted && planMs === null && result && (result.pathRejected || result.noPath || result.pathPlanTimeout || result.timedOut)) {
+      planMs = Math.max(0, this.now() - startedAt - setupMs);
     }
     const live = this.bot.entity?.position;
     if (finitePosition(live)) this.position = this._vec(live);

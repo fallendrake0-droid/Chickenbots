@@ -976,4 +976,6 @@ test('a pathfinder NoPath rejection is reported as PATH_NOT_FOUND', async () => 
   assert.equal(result.code, 'PATH_NOT_FOUND');
   assert.equal(result.noPath, true);
   assert.ok(result.timings, 'the failed plan still reports how long it took');
+  assert.equal(result.timings.followMs, null, 'a rejected plan never started following');
+  assert.equal(typeof result.timings.planMs, 'number');
 });
