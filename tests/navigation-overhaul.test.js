@@ -299,3 +299,27 @@ test('an exact destination is never faked by shrinking to a different stance', a
   assert.deepEqual(bot.position, start, 'a failed exact move must not relocate the bot');
   assert.notDeepEqual(bot.position, target);
 });
+
+test('a destination in an unloaded chunk is reached by walking the loaded frontier', async () => {
+  const world = flatWorld(128);
+  const bot = new MockBot({ name: 'A', world, position: { x: 0, y: 65, z: 0 } });
+  const realGetBlock = bot.getBlock.bind(bot);
+  // Simulate a server view distance of one chunk: only chunks touching the
+  // bot's current chunk are loaded. Walking reveals the next chunk.
+  bot.getBlock = (pos) => {
+    if (!pos) return null;
+    const cx = Math.floor(Number(pos.x) / 16);
+    const cz = Math.floor(Number(pos.z) / 16);
+    const bx = Math.floor(Number(bot.position.x) / 16);
+    const bz = Math.floor(Number(bot.position.z) / 16);
+    if (Math.max(Math.abs(cx - bx), Math.abs(cz - bz)) > 1) return null;
+    return realGetBlock(pos);
+  };
+  const target = { x: 40, y: 65, z: 0 };
+  const result = await bot.goTo(target, { range: 0, priority: 'operator', timeoutMs: 30000 });
+  assert.equal(result.ok, true, JSON.stringify(result).slice(0, 700));
+  assert.ok(result.worldStages > 0, 'the move must stage through at least one loaded frontier');
+  assert.ok(bot.navigation.telemetry.summary().worldStages > 0, 'frontier stages must be counted in telemetry');
+  assert.ok(Math.abs(bot.position.x - target.x) <= 1, `expected to finish near the target, got ${JSON.stringify(bot.position)}`);
+  assert.ok(bot.position.x > 16, 'the bot must actually travel into the previously unloaded chunk');
+});

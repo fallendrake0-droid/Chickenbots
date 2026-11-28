@@ -158,6 +158,7 @@ export const navigationPage = {
               <div class="card-body">${kvRows([
                 ['Route mode', policy.routeMode || 'BALANCED'],
                 ['Dimension', policy.dimension ? `${policy.dimension.name} · Y ${policy.dimension.minY}..${policy.dimension.maxY} · max drop ${policy.dimension.maxDrop}` : '—'],
+                ['World loading', `${num(totals.worldStages || 0)} frontier stage(s)`],
                 ['Modes used', Object.keys(totals.modes || {}).length ? Object.entries(totals.modes).map(([mode, count]) => `${mode} ${num(count)}`).join(' · ') : '—'],
                 ['Strict destinations', policy.strictDestinations ? 'on' : 'off'],
                 ['Max safe drop', `${policy.maxDrop ?? '—'} blocks`],

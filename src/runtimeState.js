@@ -90,7 +90,7 @@ function statusSnapshot(services) {
     const rows = summaries.map((bot) => ({ name: bot.name, navigation: bot.navigation || null }));
     const counts = {
       attempts: 0, success: 0, failed: 0, stuck: 0, noPath: 0, arrivalUnverified: 0,
-      recovered: 0, replanned: 0
+      recovered: 0, replanned: 0, worldStages: 0
     };
     const modes = {};
     let p95 = 0;

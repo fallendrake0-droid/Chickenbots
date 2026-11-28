@@ -15,7 +15,7 @@ function emptyCounts() {
     stuck: 0, recovered: 0, replanned: 0, arrivalUnverified: 0,
     waterSteps: 0, drops: 0, climbs: 0, longDistance: 0,
     invalidRange: 0, connectionChanged: 0, doorBlocked: 0,
-    fallRejected: 0, goalCandidates: 0, corridorSteps: 0
+    fallRejected: 0, goalCandidates: 0, corridorSteps: 0, worldStages: 0
   };
 }
 

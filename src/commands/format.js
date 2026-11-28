@@ -11,13 +11,14 @@
  * invents numbers.
  */
 
-const POSITION_KEYS = new Set(['from', 'position', 'target', 'goal', 'requested', 'anchor']);
+const POSITION_KEYS = new Set(['from', 'position', 'target', 'goal', 'requested', 'anchor', 'stageGoal']);
 const SCALAR_KEYS = [
   'bot', 'code', 'error', 'reason', 'owner', 'priority',
   'arrived', 'verified', 'arrivalUnverified', 'recovered', 'already', 'resumed',
   'descended', 'reachable', 'inRange', 'shortBy', 'attempts', 'steps', 'route',
   'searchRadius', 'durationMs', 'elapsedMs', 'commandMs',
   'mode', 'dimension', 'terrainSummary', 'expanded', 'visited', 'ms',
+  'worldStages', 'staged', 'unloaded',
   'closestDistance', 'distance', 'moved',
   'mined', 'chopped', 'placed', 'planted', 'harvested', 'replanted', 'collected',
   'count', 'quantity', 'failed', 'completed'

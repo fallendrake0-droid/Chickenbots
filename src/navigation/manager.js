@@ -6,7 +6,7 @@ const { MotionArbiter, movePriority } = require('./arbiter');
 const { NavigationTelemetry } = require('./telemetry');
 const { StuckDetector } = require('./stuck');
 const { recoveryGoal, describeRecovery } = require('./recovery');
-const { goalPosition, finitePosition, floorPosition, nearestStandable } = require('./standability');
+const { goalPosition, finitePosition, floorPosition, nearestStandable, standableCandidates } = require('./standability');
 const { routeMode, routeModeNames } = require('./policy');
 const { dimensionProfile } = require('./dimension');
 const { FleetCongestion } = require('./congestion');
@@ -200,10 +200,147 @@ class NavigationManager {
   }
 
   /**
-   * Execute a move. `execute(goal, context)` must resolve to
-   * `{ok, error?, timedOut?, pathRejected?, stuck?, cancelled?, superseded?}`.
+   * Find a loaded stance that moves the bot toward an unloaded destination.
+   *
+   * Minecraft only reveals chunk data near the bot. A destination in an
+   * unloaded chunk is therefore not "no such place": the bot must walk to the
+   * loaded frontier, which makes the next chunk load, and repeat. This helper
+   * samples points along the straight line toward the target and returns the
+   * furthest loaded stance that is genuinely closer. It never invents terrain.
+   */
+  _stageToward(target, { mode = null } = {}) {
+    if (!this.bot || !this.bot.position || !hasBlockReader(this.reader)) return null;
+    if (!finitePosition(this.bot.position) || !finitePosition(target)) return null;
+    const from = floorPosition(this.bot.position);
+    const to = floorPosition(target);
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    const horizontal = Math.hypot(dx, dz);
+    if (horizontal < 0.75) return null;
+    const settings = routeMode(mode || this.settings.mode || 'balanced');
+    const maxDrop = Math.min(this.settings.maxDrop, settings.maxDrop);
+    const allowWater = this.settings.allowWater && settings.allowWater;
+    // Chunk loading is horizontal. Compare progress on the X/Z plane: a target
+    // 200 blocks below the surface has a huge 3D distance that can hide a real
+    // horizontal advance.
+    const currentHorizontal = horizontal;
+    const maxStep = Math.min(24, Math.max(2, Math.ceil(horizontal / 2)));
+    const ux = dx / horizontal;
+    const uz = dz / horizontal;
+    for (let step = maxStep; step >= 1; step--) {
+      const raw = {
+        x: Math.round(from.x + ux * step),
+        // Keep the probe near the bot's feet. A destination deep in a cave is
+        // loaded by the horizontal chunk, not by probing its eventual Y.
+        y: from.y,
+        z: Math.round(from.z + uz * step)
+      };
+      const candidates = standableCandidates(this.reader, raw, {
+        maxNearbyRadius: 2,
+        maxDrop,
+        allowWater,
+        allowHazard: false,
+        limit: 8,
+        maxDistance: 4
+      });
+      const valid = candidates
+        .filter((candidate) => candidate && candidate.position
+          && Math.hypot(candidate.position.x - to.x, candidate.position.z - to.z) < currentHorizontal - 0.5)
+        .sort((a, b) => Math.hypot(a.position.x - to.x, a.position.z - to.z)
+          - Math.hypot(b.position.x - to.x, b.position.z - to.z));
+      if (valid.length) return { position: { ...valid[0].position }, from, target: to };
+    }
+    return null;
+  }
+
+  /**
+   * Walk toward an unloaded destination in bounded stages. Each stage is a real
+   * loaded stance; reaching it reveals the next chunk area. The original
+   * destination is still the only success condition.
    */
   async navigate(pos, options = {}, execute = null) {
+    const startedAt = this.now();
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs) || this.settings.defaultTimeoutMs);
+    const range = options.range === undefined ? 1 : Number(options.range);
+    const maxStages = Math.max(1, Math.min(128, Number(this.settings.worldStageMax) || 64));
+    let stages = 0;
+    let last = null;
+    while (stages < maxStages) {
+      const remaining = startedAt + timeoutMs - this.now();
+      if (remaining <= 100) {
+        return {
+          ...(last || {}), ok: false, timedOut: true, code: last && last.code ? last.code : 'PATH_PLAN_TIMEOUT',
+          error: 'world-loading travel exhausted its timeout', target: pos, requested: floorPosition(pos),
+          worldStages: stages, staged: stages > 0,
+          position: this.bot && this.bot.position ? { ...this.bot.position } : null
+        };
+      }
+      const validation = this.validate(pos, { ...options, range });
+      if (validation.ok || validation.code !== 'DESTINATION_UNLOADED') {
+        const final = await this._navigateOnce(pos, { ...options, timeoutMs: remaining }, execute);
+        if (final.code === 'DESTINATION_UNLOADED' && stages + 1 < maxStages) {
+          stages++;
+          continue;
+        }
+        return { ...final, worldStages: stages, staged: stages > 0 };
+      }
+      const stageGoal = this._stageToward(pos, { mode: options.mode || this.settings.mode });
+      if (!stageGoal) break;
+      stages++;
+      this.telemetry.recordCount('worldStages');
+      const stageStart = this.bot && this.bot.position ? { ...this.bot.position } : null;
+      const stageResult = await this._navigateOnce(stageGoal.position, {
+        ...options,
+        range: 0,
+        timeoutMs: Math.max(1000, Math.min(remaining, timeoutMs)),
+        __worldStage: stages
+      }, execute);
+      last = stageResult;
+      if (!stageResult.ok) {
+        return {
+          ...stageResult,
+          ok: false,
+          target: pos,
+          requested: floorPosition(pos),
+          unloaded: true,
+          worldStages: stages,
+          staged: true,
+          stageGoal: stageGoal.position,
+          error: stageResult.error || `could not reach the loaded world frontier at ${stageGoal.position.x},${stageGoal.position.y},${stageGoal.position.z}`,
+          code: stageResult.code || 'WORLD_NOT_LOADED'
+        };
+      }
+      if (stageStart && this.bot && this.bot.position
+        && Math.hypot(this.bot.position.x - stageStart.x, this.bot.position.y - stageStart.y, this.bot.position.z - stageStart.z) < 0.25) {
+        return {
+          ...stageResult, ok: false, target: pos, requested: floorPosition(pos),
+          unloaded: true, worldStages: stages, staged: true, stageGoal: stageGoal.position,
+          code: 'WORLD_NOT_LOADED',
+          error: 'loaded-world staging made no progress; the next chunk did not load'
+        };
+      }
+      // Loop: the next validate() sees whatever the server has now loaded.
+    }
+    // No stage could be found. Let the normal path validate/fail once so the
+    // caller receives the existing DESTINATION_UNLOADED evidence.
+    const fallback = await this._navigateOnce(pos, { ...options, timeoutMs: Math.max(1000, startedAt + timeoutMs - this.now()) }, execute);
+    return {
+      ...fallback,
+      target: pos,
+      requested: floorPosition(pos),
+      unloaded: fallback.code === 'DESTINATION_UNLOADED',
+      worldStages: stages,
+      staged: stages > 0,
+      code: fallback.code || (stages ? 'WORLD_NOT_LOADED' : null)
+    };
+  }
+
+  /**
+   * Execute one move against a destination that is already loaded.
+   * `execute(goal, context)` must resolve to
+   * `{ok, error?, timedOut?, pathRejected?, stuck?, cancelled?, superseded?}`.
+   */
+  async _navigateOnce(pos, options = {}, execute = null) {
     const startedAt = this.now();
     const priorityName = options.priority || 'task';
     const priority = movePriority(priorityName);

@@ -215,8 +215,10 @@ numbers enforced.
   conflict but never yield.
 * **Standable destinations.** A coordinate is resolved to feet/head/support with the real block
   reader. A solid block becomes the stance above it, a nearby standable stance is used when the exact
-  column is blocked, and a chunk that has not loaded is reported as `DESTINATION_UNLOADED` and retried
-  for `NAV_WAIT_FOR_WORLD_MS` rather than invented. Routine travel never digs or scaffolds.
+  column is blocked. A destination in an unloaded chunk is **not rejected**: the bot walks a real loaded
+  stance toward it, which reveals the next chunk, and repeats until the destination loads. The short
+  `NAV_WAIT_FOR_WORLD_MS` wait is only the fallback when the bot is already at the loaded frontier; it
+  never invents a stance. Routine travel never digs or scaffolds.
 * **Task targets are not stances.** A tree trunk, ore block or air coordinate is resolved to a real
   stance before planning; the mock adapter walks there like the live one. It no longer snaps onto a
   target in the air.
@@ -462,6 +464,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `NAV_ADAPTIVE_SEARCH_RADIUS` / `NAV_SEARCH_RADIUS_SCALE` / `NAV_SEARCH_RADIUS_MAX` | `true` / `1.5` / `512` | scale the pathfinder detour budget with distance (`scale × straight + 16`), clamped between the floor and the ceiling |
 | `NAV_TASK_ATTEMPTS` / `NAV_OPERATOR_ATTEMPTS` | `2` / `3` | bounded attempts: a task gets one recovery retry, an operator move three, before an honest failure |
 | `NAV_STUCK_WINDOW_MS` / `NAV_RECOVERY_DELAY_MS` | `2500` / `250` | no-progress window that stops a stale path, and delay between recovery attempts |
+| `NAV_WAIT_FOR_WORLD_MS` | `750` | short fallback wait when the destination chunk has not loaded at the bot's current loaded frontier. Moving to a loaded frontier stance normally loads it sooner; the wait never treats unknown terrain as air |
 | `NAV_ROUTE_MODE` | `balanced` | route profile: `safe`, `fast`, `balanced`, `cautious`, `follow`, `combat`, `retreat`, `task`. It changes drop depth, water/hazard costs and narrow-corridor cost, never the standability rule |
 | `NAV_PLAN_BUDGET_MS` | `700` | ceiling for one deterministic plan. A shared deadline covers every segment of one move, so a long route cannot exceed it. 700 ms is the measured value that keeps a five-bot build inside the shared window under test load; 350-500 ms starved it |
 | `NAV_DIMENSION` | `overworld` | dimension envelope: `overworld`, `nether` or `end`. It caps safe drops in the Nether/End and rejects targets outside the dimension's build height |
