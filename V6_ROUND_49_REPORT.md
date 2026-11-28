@@ -1,6 +1,6 @@
 # V6 Round 49 — beds, spawn points, crops and the live-log defects
 
-**Evidence:** 559/559 tests, `npm run lint` 208 files (0 errors), `npm run
+**Evidence:** 561/561 tests, `npm run lint` 208 files (0 errors), `npm run
 validate` 10/10 consistency and 36/36 pages, `npm run commands:audit` 48/49
 with 0 failures, a deterministic five-bot simulator run, and a headless
 Chromium pass against `http://127.0.0.1:4179`. The operator's live server
