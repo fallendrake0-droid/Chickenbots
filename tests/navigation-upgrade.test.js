@@ -133,3 +133,15 @@ test('movement overrides reach the pathfinder weights, including a zero drop lim
   assert.equal(movements.exclusionAreasStep[0]({ name: 'water', type: 2 }), 1000);
   assert.equal(movements.exclusionAreasStep[0]({ name: 'lava', type: 1, liquid: true }), 1000);
 });
+
+test('operator pathfinding gets a larger planning slice than autonomous tasks', () => {
+  const { pathfinderBudgets } = require('../src/navigation/policy');
+  const task = pathfinderBudgets('task');
+  const operator = pathfinderBudgets('operator');
+  const retry = pathfinderBudgets('operator', { attempt: 2 });
+  assert.equal(task.operator, false);
+  assert.equal(operator.operator, true);
+  assert.ok(operator.thinkTimeoutMs > task.thinkTimeoutMs, JSON.stringify({ task, operator }));
+  assert.ok(operator.tickTimeoutMs > task.tickTimeoutMs, JSON.stringify({ task, operator }));
+  assert.ok(retry.thinkTimeoutMs > operator.thinkTimeoutMs, 'a second attempt may plan longer');
+});

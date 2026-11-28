@@ -353,12 +353,24 @@ function travelTimeoutMs(bot, pos) {
 
 async function runBotAction(services, bot, args, context = {}) {
   const action = (args[1] || 'status').toLowerCase();
+  const startedAt = Date.now();
   // Read-only views must stay instant. Every gameplay action takes an
   // exclusive slot so it cannot fight an autonomous pathfinder on the same bot.
+  let result;
+  let exclusive = false;
   if (QUERY_ACTIONS.has(action) || !services.runtime || typeof services.runtime.runExclusive !== 'function') {
-    return runBotActionExclusive(services, bot, args, context);
+    result = await runBotActionExclusive(services, bot, args, context);
+  } else {
+    exclusive = true;
+    result = await services.runtime.runExclusive(bot.name, () => runBotActionExclusive(services, bot, args, context));
   }
-  return services.runtime.runExclusive(bot.name, () => runBotActionExclusive(services, bot, args, context));
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const scheduling = exclusive && typeof services.runtime?.commandTiming === 'function'
+      ? services.runtime.commandTiming(bot.name)
+      : null;
+    return { ...result, commandMs: Math.max(0, Date.now() - startedAt), scheduling };
+  }
+  return result;
 }
 
 async function runBotActionExclusive(services, bot, args, context = {}) {
@@ -392,6 +404,8 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
   }
   if (action === 'goto') {
     const pos = parseOrigin(args, 2);
+    const from = { ...bot.position };
+    const straight = Math.hypot(Number(pos.x) - Number(from.x), Number(pos.z) - Number(from.z));
     const result = await bot.goTo(pos, {
       range: 2,
       // A 100-block walk can legitimately take longer than the old 30 s cap.
@@ -401,7 +415,16 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
       owner: 'operator-goto',
       adjustY: true
     });
-    return { ok: result.ok !== false, ...result, position: { ...bot.position } };
+    return {
+      ok: result.ok !== false,
+      action: 'goto',
+      bot: bot.name,
+      from,
+      requested: { ...pos },
+      distance: Number.isFinite(straight) ? Math.round(straight * 10) / 10 : null,
+      ...result,
+      position: { ...bot.position }
+    };
   }
   if (action === 'come' || action === 'follow') {
     const destination = leader && leader !== bot ? leader.position : bot.position;

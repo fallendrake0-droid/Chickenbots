@@ -7,6 +7,7 @@ const { createRuntime } = require('./runtime');
 const { Logger } = require('./logger');
 const { printStartupBanner } = require('./branding');
 const { acquireLiveLock } = require('./liveLock');
+const { commandReport } = require('./commands/format');
 
 function usage() {
   process.stdout.write(`Chickenbots V6 CLI
@@ -24,11 +25,15 @@ Examples:
 }
 
 function printResult(result) {
+  // Show the operator-facing summary first, then the full JSON contract for
+  // scripts. The summary names the command, its duration, every per-bot row
+  // and the navigation planning/follow split instead of a bare ✓.
+  process.stdout.write(`${commandReport(result).join('\n')}\n`);
   const payload = result.result || result;
   const text = JSON.stringify(payload, null, 2);
-  const ok = payload.ok !== false;
-  process.stdout.write(`${ok ? '✓' : '✗'} ${result.command || ''}\n`);
-  process.stdout.write(text.length > 8000 ? `${text.slice(0, 8000)}\n… truncated` : text);
+  if (process.env.CHICKENBOTS_RAW_JSON !== '0') {
+    process.stdout.write(text.length > 8000 ? `${text.slice(0, 8000)}\n… truncated\n` : `${text}\n`);
+  }
   process.stdout.write('\n');
 }
 

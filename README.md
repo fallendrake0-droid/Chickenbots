@@ -430,7 +430,8 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `ACTION_TIMEOUT_MS` | `60000` | hard budget for one autonomous controller step. A hung path or dig is cancelled, movement is stopped and the concurrency slot is released. Operator commands run in their own exclusive slot and cancel the autonomous step instead of racing it |
 | `EMERGENCY_BUDGET_MS` | `6000` | hard budget for one safety pass (eat, flee, defend). It is propagated to combat and pathfinding as a deadline, and a watchdog cancels movement at `budget + 750ms`; routine task work keeps the longer `ACTION_TIMEOUT_MS` |
 | `SAFETY_PREEMPT_MS` | `500` | while a task is running, check for damage, lava, fire, a fall or critical health this often. A hit cancels a non-combat task so the next safety pass owns movement; combat tasks still yield to critical health and hazards |
-| `PATHFINDER_THINK_TIMEOUT_MS` / `PATHFINDER_TICK_TIMEOUT_MS` / `PATHFINDER_SEARCH_RADIUS` | `2500` / `10` / `64` | cooperative A* budget: total decision time, slice per event-loop turn, and the adaptive search-radius floor |
+| `PATHFINDER_THINK_TIMEOUT_MS` / `PATHFINDER_TICK_TIMEOUT_MS` / `PATHFINDER_SEARCH_RADIUS` | `2500` / `10` / `64` | cooperative A* budget for autonomous tasks: total decision time, slice per event-loop turn, and the adaptive search-radius floor |
+| `PATHFINDER_OPERATOR_THINK_TIMEOUT_MS` / `PATHFINDER_OPERATOR_TICK_TIMEOUT_MS` | `8000` / `25` | a larger A* budget for operator `goto`/`come`/`follow`. The old shared 2.5 s/10 ms budget made long go-to requests fail with “Took to long to decide path to goal”. The terminal reports the measured plan/follow split |
 | `NAV_ADAPTIVE_SEARCH_RADIUS` / `NAV_SEARCH_RADIUS_SCALE` / `NAV_SEARCH_RADIUS_MAX` | `true` / `1.5` / `512` | scale the pathfinder detour budget with distance (`scale × straight + 16`), clamped between the floor and the ceiling |
 | `NAV_TASK_ATTEMPTS` / `NAV_OPERATOR_ATTEMPTS` | `2` / `3` | bounded attempts: a task gets one recovery retry, an operator move three, before an honest failure |
 | `NAV_STUCK_WINDOW_MS` / `NAV_RECOVERY_DELAY_MS` | `2500` / `250` | no-progress window that stops a stale path, and delay between recovery attempts |
@@ -479,6 +480,13 @@ output-only: dangerous or confirmation-gated commands are refused from `source: 
 lines are tokenised with quote support; shell metacharacters (`; | & $ < > \``, backslash, newlines,
 `../`) are rejected before dispatch. Numeric arguments are bounded and every destructive command
 requires an explicit `confirm` token or `confirmed:true`.
+
+Every command is reported in the terminal: an accepted/start line, then status, duration, source/operator, the key result fields,
+up to twelve per-bot rows, and (for movement) the setup/plan/follow split plus any queue or
+cancellation wait. The CLI prints that human report first and then the full JSON contract; set
+`CHICKENBOTS_RAW_JSON=0` to suppress the JSON. A `goto` now uses an operator-sized A* budget, reports
+`from`, `requested`, `distance` and `commandMs`, and fails immediately with `PATH_NOT_FOUND` (rather
+than re-planning the same map three times) when the pathfinder honestly finds no route.
 
 ```
 help [command]                 status                         diagnostics

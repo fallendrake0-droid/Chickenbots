@@ -318,6 +318,14 @@ const config = {
     // the event loop long enough for the server to time the client out.
     pathfinderThinkTimeoutMs: envInt('PATHFINDER_THINK_TIMEOUT_MS', 2500),
     pathfinderTickTimeoutMs: envInt('PATHFINDER_TICK_TIMEOUT_MS', 10),
+    // Operator go-to must actually finish planning for long walks. The task
+    // budget above is deliberately tiny to protect the event loop; giving the
+    // same 10ms slice/2.5s wall budget to a 100-block request produced the
+    // pathfinder's "Took to long to decide path to goal!" before it had
+    // explored enough of the map. Operator requests get a larger slice and a
+    // longer wall budget, and the terminal reports the measured plan time.
+    pathfinderOperatorThinkTimeoutMs: envInt('PATHFINDER_OPERATOR_THINK_TIMEOUT_MS', 8000),
+    pathfinderOperatorTickTimeoutMs: envInt('PATHFINDER_OPERATOR_TICK_TIMEOUT_MS', 25),
     pathfinderSearchRadius: envInt('PATHFINDER_SEARCH_RADIUS', 64),
     // A timer callback that arrives this late means the process was frozen
     // (event-loop block or host suspend). Movement is dropped until the client
@@ -657,6 +665,8 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('autonomy.maxConcurrentActions', autonomy.maxConcurrentActions, 1, 50);
   integer('autonomy.pathfinderThinkTimeoutMs', autonomy.pathfinderThinkTimeoutMs, 100, 60000);
   integer('autonomy.pathfinderTickTimeoutMs', autonomy.pathfinderTickTimeoutMs, 1, 50);
+  integer('autonomy.pathfinderOperatorThinkTimeoutMs', autonomy.pathfinderOperatorThinkTimeoutMs, 500, 60000);
+  integer('autonomy.pathfinderOperatorTickTimeoutMs', autonomy.pathfinderOperatorTickTimeoutMs, 1, 50);
   integer('autonomy.pathfinderSearchRadius', autonomy.pathfinderSearchRadius, 8, 512);
   integer('autonomy.stallGuardMs', autonomy.stallGuardMs, 500, 120000);
   integer('autonomy.stallResumeMs', autonomy.stallResumeMs, 0, 30000);

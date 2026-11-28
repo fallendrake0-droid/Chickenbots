@@ -352,7 +352,21 @@ UNVERIFIED.**
 | BUG-49-14 | P0 | Unclimbable shafts | `no path from 2,33,2 to -1,64,4` after mining | Vertical 1×1 shaft removed the only return route | 1×2 staircase access shaft, floor kept, regression mines then climbs out | 14 mining tests | FIXED (unit); live UNVERIFIED |
 | BUG-49-13 | P0 | Long mining actions | `action cancelled: exceeded 60000ms` | Every move/dig used the 12 s/20 s default, so one quota outlived the watchdog | One action deadline; move/dig timeouts and branch/mineOre loops clamp to the remaining budget | 35 mining/audit tests | FIXED (unit); live UNVERIFIED |
 
+## Round 50 — detailed command terminal and responsive goto
+
+**Evidence:** simulator + CLI command reports, unit tests for budgets/no-path/
+formatting, `npm test` 568/568. **Live-server result UNVERIFIED.**
+
+| ID | Priority | Area | Symptom | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-50-01 | P0 | goto reliability | goto reported “took too long to decide path” | Long operator walks shared the 2.5 s / 10 ms autonomy A* budget | Operator budget 8 s / 25 ms, scaled on retry; task budget unchanged | policy + RealBot budget tests | FIXED (unit); live UNVERIFIED |
+| BUG-50-02 | P0 | goto failure latency | same goto re-planned three times | `NoPath` was retried like a transient stuck path | Stop immediately on `noPath`/`PATH_NOT_FOUND`; empty unreached paths are not success | navigation + RealBot tests | FIXED (unit); live UNVERIFIED |
+| BUG-50-03 | P0 | Command terminal | successful commands produced no terminal detail | Registry logged only failures; CLI printed a bare checkmark | Shared report formatter; success logging with rows/timings; CLI summary before JSON | command-format tests; simulator log | FIXED (unit/sim) |
+| BUG-50-04 | P1 | goto diagnostics | no way to tell queue time from planning time | Navigation returned no timing split | `setupMs`, `planMs`, `followMs`, budgets; `from`/`requested`/`distance`; `commandMs`/`scheduling` | RealBot timing test; CLI/simulator output | FIXED (unit/sim); live UNVERIFIED |
+| BUG-50-05 | P2 | Operator queue | commands could wait invisibly behind another command | `runExclusive` measured nothing | Per-bot queued/cancel/exec metrics exposed read-only | runtime-safety tests still pass | FIXED (unit) |
+
+
 **Still open:** live confirmation of every item above; event-loop profiling on
 the real host (construction site surveys/chunk parsing); climbable deep-mine
-shafts; live night-time death-loop and `MINE_BLOCK` duration. All pre-existing
-live criteria remain UNVERIFIED.
+shafts (staircase fix is simulator-proven); live night-time death-loop and
+`MINE_BLOCK` duration. All pre-existing live criteria remain UNVERIFIED.

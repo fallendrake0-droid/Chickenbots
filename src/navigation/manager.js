@@ -267,7 +267,7 @@ class NavigationManager {
         try {
           result = await execute(goal, {
             attempt, timeoutMs: attemptTimeout, token, motion: claim.motion,
-            goal, requested: pos, range, priority, owner,
+            goal, requested: pos, range, priority, priorityName, owner,
             validateGoal: (candidate) => this.validate(candidate, { ...options, range })
           });
         } catch (err) {
@@ -304,7 +304,9 @@ class NavigationManager {
             descended: result.descended,
             already: result.already,
             searchRadius: result.searchRadius === undefined ? null : Number(result.searchRadius),
-            shortBy: Number.isFinite(shortBy) ? shortBy : null
+            shortBy: Number.isFinite(shortBy) ? shortBy : null,
+            timings: result.timings || null,
+            code: result.code || null
           };
           if ((verificationRequired(options) || grossShort) && !arrived) {
             last = {
@@ -324,6 +326,18 @@ class NavigationManager {
         } else {
           last = result || { ok: false, error: 'movement failed' };
           if (last.cancelled || last.superseded) break;
+          // A deterministic no-path answer does not improve by planning the
+          // same map again. The old operator ladder spent all three attempts
+          // (and several seconds) on exactly the same search; fail now with the
+          // pathfinder's reason and the measured planning time instead.
+          if (last.noPath || last.code === 'PATH_NOT_FOUND') {
+            last = {
+              ...last,
+              code: last.code || 'PATH_NOT_FOUND',
+              error: last.error || 'pathfinder found no route to the destination'
+            };
+            break;
+          }
         }
         if (attempt + 1 >= attemptLimit) break;
         const reason = last.stuck ? 'stuck' : last.timedOut ? 'timeout' : last.noPath ? 'no-path' : 'path-failed';
@@ -347,6 +361,8 @@ class NavigationManager {
       attempts,
       owner,
       priority,
+      code: (last && last.code) || null,
+      timings: (last && last.timings) || null,
       position: this.bot && this.bot.position ? { ...this.bot.position } : null,
       goal: requestedGoal
     });

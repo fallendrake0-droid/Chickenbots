@@ -952,3 +952,28 @@ test('the server anchor is read after relative teleport flags are applied', () =
   assert.equal(anchor.yaw, 0.75);
   assert.equal(anchor.pitch, -0.25);
 });
+
+test('operator movement uses the larger pathfinder budget and reports a timing split', async () => {
+  const { real } = movementBot();
+  const result = await real.goTo({ x: 2, y: 64, z: 2 }, { priority: 'operator', timeoutMs: 500 });
+  assert.equal(result.ok, true);
+  assert.equal(real.bot.pathfinder.thinkTimeout, 8000);
+  assert.equal(real.bot.pathfinder.tickTimeout, 25);
+  assert.equal(result.timings.thinkTimeoutMs, 8000);
+  assert.equal(result.timings.tickTimeoutMs, 25);
+  assert.equal(typeof result.timings.totalMs, 'number');
+});
+
+test('a pathfinder NoPath rejection is reported as PATH_NOT_FOUND', async () => {
+  const { real } = movementBot();
+  real.bot.pathfinder.goto = () => {
+    const err = new Error('No path to the goal!');
+    err.name = 'NoPath';
+    return Promise.reject(err);
+  };
+  const result = await real.goTo({ x: 2, y: 64, z: 2 }, { priority: 'operator', timeoutMs: 500 });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'PATH_NOT_FOUND');
+  assert.equal(result.noPath, true);
+  assert.ok(result.timings, 'the failed plan still reports how long it took');
+});

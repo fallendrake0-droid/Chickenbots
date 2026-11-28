@@ -37,7 +37,27 @@ function navigationPolicy(settings = null) {
     searchRadiusScale: Number(nav.searchRadiusScale || 1.5),
     searchRadiusMax: Number(nav.searchRadiusMax || 512),
     thinkTimeoutMs: Number(autonomy.pathfinderThinkTimeoutMs || 2500),
-    tickTimeoutMs: Number(autonomy.pathfinderTickTimeoutMs || 10)
+    tickTimeoutMs: Number(autonomy.pathfinderTickTimeoutMs || 10),
+    operatorThinkTimeoutMs: Number(autonomy.pathfinderOperatorThinkTimeoutMs || 8000),
+    operatorTickTimeoutMs: Number(autonomy.pathfinderOperatorTickTimeoutMs || 25)
+  };
+}
+
+/**
+ * A* budgets for one planning attempt. Operator moves get a bigger slice and a
+ * bigger wall-clock budget; each subsequent attempt may scale the wall budget
+ * once more so a long walk is not abandoned at the first timeout while the
+ * autonomous task budget stays small.
+ */
+function pathfinderBudgets(priority = 'task', { attempt = 0, settings = null } = {}) {
+  const policy = navigationPolicy(settings);
+  const operator = String(priority).toLowerCase() === 'operator';
+  const baseThink = operator ? policy.operatorThinkTimeoutMs : policy.thinkTimeoutMs;
+  const scale = operator ? Math.min(2, 1 + Math.max(0, Number(attempt) || 0) * 0.5) : 1;
+  return {
+    thinkTimeoutMs: Math.round(Math.max(100, baseThink * scale)),
+    tickTimeoutMs: operator ? policy.operatorTickTimeoutMs : policy.tickTimeoutMs,
+    operator
   };
 }
 
@@ -61,4 +81,4 @@ function adaptiveSearchRadius(base, from, to, {
   return Math.max(floor, Math.min(ceiling, wanted));
 }
 
-module.exports = { navigationPolicy, adaptiveSearchRadius };
+module.exports = { navigationPolicy, adaptiveSearchRadius, pathfinderBudgets };

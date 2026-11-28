@@ -131,6 +131,11 @@ class TeamRuntime {
     // excluded autonomy; two dashboard clicks could still both call into the
     // same pathfinder/eat/drop sequence at once.
     this.commandWaiters = new Map();
+    // Per-bot timing of the last operator command: queue wait, cancellation
+    // grace and execution. Exposed in the command result so the terminal can
+    // distinguish "the pathfinder was slow" from "the command waited behind an
+    // autonomous action for two seconds".
+    this.commandMetrics = new Map();
     // Fleet-wide tree/ore leases. Shared by every BotActions instance so two
     // bots never walk to the same trunk or vein.
     this.reservations = new ResourceReservations();
@@ -1274,14 +1279,20 @@ class TeamRuntime {
    */
   async runExclusive(name, fn) {
     if (typeof fn !== 'function') throw new TypeError('runExclusive needs a command function');
+    const queuedAt = Date.now();
+    let queuedMs = 0;
+    let cancelWaitMs = 0;
+    let execMs = 0;
     // Queue behind an earlier operator command for this bot. Resolving one
     // waiter on release preserves FIFO order without an unbounded array scan.
     while (this.commandLocks.has(name)) {
+      const waitStartedAt = Date.now();
       await new Promise((resolve) => {
         const waiters = this.commandWaiters.get(name) || [];
         waiters.push(resolve);
         this.commandWaiters.set(name, waiters);
       });
+      queuedMs += Date.now() - waitStartedAt;
     }
     this.commandLocks.add(name);
     try {
@@ -1292,6 +1303,7 @@ class TeamRuntime {
       const safety = this.botSafety.get(name);
       if (prior || safety) {
         this._cancelBotWork(name, 'operator command');
+        const cancelStartedAt = Date.now();
         const grace = new Promise((resolve) => {
           const timer = setTimeout(resolve, 3000);
           if (timer.unref) timer.unref();
@@ -1300,9 +1312,17 @@ class TeamRuntime {
           Promise.allSettled([prior, safety].filter(Boolean)),
           grace
         ]);
+        cancelWaitMs = Date.now() - cancelStartedAt;
       }
-      return await fn();
+      const execStartedAt = Date.now();
+      const value = await fn();
+      execMs = Date.now() - execStartedAt;
+      return value;
     } finally {
+      this.commandMetrics.set(name, {
+        queuedMs, cancelWaitMs, execMs,
+        totalMs: Date.now() - queuedAt
+      });
       this.commandLocks.delete(name);
       const waiters = this.commandWaiters.get(name);
       if (waiters && waiters.length) {
@@ -1311,6 +1331,11 @@ class TeamRuntime {
         next();
       }
     }
+  }
+
+  /** Timing of the last runExclusive() command for one bot. */
+  commandTiming(name) {
+    return this.commandMetrics.get(name) || null;
   }
 
   /** Wait for in-flight controller work (tests, shutdown, diagnostics). */

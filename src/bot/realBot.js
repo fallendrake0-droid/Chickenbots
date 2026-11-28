@@ -17,7 +17,7 @@ const { TILLABLE } = require('../world/crops');
 const { NavigationManager } = require('../navigation/manager');
 const { resolveStandableY } = require('../navigation/standability');
 const { configureMovements } = require('../navigation/movements');
-const { navigationPolicy, adaptiveSearchRadius } = require('../navigation/policy');
+const { navigationPolicy, adaptiveSearchRadius, pathfinderBudgets } = require('../navigation/policy');
 const { StuckDetector } = require('../navigation/stuck');
 
 const HOSTILE = new Set([
@@ -2867,12 +2867,30 @@ class RealBot extends BotAdapter {
     }
     const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
     if (!this.bot.pathfinder) this.bot.loadPlugin(pathfinder);
-    if (Number.isFinite(Number(config.autonomy.pathfinderThinkTimeoutMs))) {
-      this.bot.pathfinder.thinkTimeout = config.autonomy.pathfinderThinkTimeoutMs;
-    }
-    if (Number.isFinite(Number(config.autonomy.pathfinderTickTimeoutMs))) {
-      this.bot.pathfinder.tickTimeout = config.autonomy.pathfinderTickTimeoutMs;
-    }
+    // Operator moves get a bigger A* slice and wall budget than autonomous
+    // tasks. The old shared 2.5s/10ms budget made a 100-block goto time out in
+    // planning ("Took to long to decide path to goal!") before A* had explored
+    // a useful part of the route. Later attempts scale the operator budget.
+    const budget = pathfinderBudgets(context.priorityName || options.priority || 'task', {
+      attempt: context.attempt || 0
+    });
+    this.bot.pathfinder.thinkTimeout = budget.thinkTimeoutMs;
+    this.bot.pathfinder.tickTimeout = budget.tickTimeoutMs;
+    const startedAt = this.now();
+    let setupMs = 0;
+    let planMs = null;
+    let effectiveSearchRadius = null;
+    const withTimings = (out) => ({
+      ...out,
+      timings: {
+        totalMs: Math.max(0, this.now() - startedAt),
+        setupMs,
+        planMs,
+        followMs: planMs === null ? null : Math.max(0, this.now() - startedAt - planMs),
+        thinkTimeoutMs: budget.thinkTimeoutMs,
+        tickTimeoutMs: budget.tickTimeoutMs
+      }
+    });
     const radius = Math.max(1, Number(options.range) || 1);
     const target = {
       x: Math.floor(Number(goal.x)), y: Math.floor(Number(goal.y)), z: Math.floor(Number(goal.z))
@@ -2881,13 +2899,14 @@ class RealBot extends BotAdapter {
     // walks to a mine, a village or home need a budget that grows with the
     // actual distance; otherwise A* gives up even though the target is legal.
     const policy = navigationPolicy(config.navigation);
-    const effectiveSearchRadius = adaptiveSearchRadius(policy.baseSearchRadius, this.position, target, {
+    effectiveSearchRadius = adaptiveSearchRadius(policy.baseSearchRadius, this.position, target, {
       enabled: policy.adaptiveSearchRadius,
       scale: policy.searchRadiusScale,
       max: policy.searchRadiusMax
     });
     this.bot.pathfinder.searchRadius = effectiveSearchRadius;
     if (this.bot.registry) {
+      const setupStartedAt = this.now();
       const movements = new Movements(this.bot);
       configureMovements(movements, {
         bot: this.bot,
@@ -2896,6 +2915,7 @@ class RealBot extends BotAdapter {
         options
       });
       this.bot.pathfinder.setMovements(movements);
+      setupMs = Math.max(0, this.now() - setupStartedAt);
     }
     const goalObject = new goals.GoalNear(target.x, target.y, target.z, radius);
     let timer = null;
@@ -2911,6 +2931,7 @@ class RealBot extends BotAdapter {
     const onPathUpdate = (results) => {
       if (pathStarted || !results || !Array.isArray(results.path) || results.path.length === 0) return;
       pathStarted = true;
+      planMs = Math.max(0, this.now() - startedAt);
       const live = this.bot.entity && this.bot.entity.position;
       if (live) this.navigation.stuck.reset(live);
       this.navigation.telemetry.event('path-ready', {
@@ -2921,7 +2942,19 @@ class RealBot extends BotAdapter {
     if (typeof this.bot.on === 'function') this.bot.on('path_update', onPathUpdate);
     const pathPromise = this.bot.pathfinder.goto(goalObject).then(
       () => ({ ok: true }),
-      (err) => ({ ok: false, error: err && err.message ? err.message : String(err), pathRejected: true })
+      (err) => {
+        const name = String((err && err.name) || '');
+        const noPath = name === 'NoPath' || /no path/i.test(err && err.message || '');
+        const planTimeout = name === 'Timeout' || /took to long|took too long/i.test(err && err.message || '');
+        return {
+          ok: false,
+          error: err && err.message ? err.message : String(err),
+          pathRejected: true,
+          noPath,
+          pathPlanTimeout: planTimeout,
+          code: noPath ? 'PATH_NOT_FOUND' : planTimeout ? 'PATH_PLAN_TIMEOUT' : undefined
+        };
+      }
     );
     // Sample progress while the pathfinder is following its route. The grace
     // period additionally covers the first few movement ticks.
@@ -2961,16 +2994,29 @@ class RealBot extends BotAdapter {
     // A newer owner may own the pathfinder now. Never stop its path from the
     // losing request's cleanup path.
     if (this._motion && this._motion.token !== context.token) {
-      return { ...result, ok: false, superseded: true, error: 'movement request was superseded' };
+      return withTimings({ ...result, ok: false, superseded: true, error: 'movement request was superseded' });
     }
     if (stoppedForStuck) {
-      return {
-        ok: false, stuck: true, pathRejected: false,
+      return withTimings({
+        ok: false, stuck: true, pathRejected: false, code: 'PATH_STUCK',
         error: `movement stalled near ${target.x},${target.y},${target.z}`
-      };
+      });
     }
     if (result.ok === false && !timedOut && !stoppedForStuck) {
       try { this.bot.pathfinder.stop(); } catch (_) { /* pathfinder may not be running */ }
+    }
+    if (result.ok === true && !pathStarted) {
+      // mineflayer-pathfinder resolves `goto()` without error when it receives
+      // an empty path. That is only success if the bot is already at the goal.
+      const live = this.bot.entity?.position || this.position;
+      const alreadyThere = finitePosition(live) && distance(live, target) <= radius + 0.75;
+      if (!alreadyThere) {
+        result = {
+          ok: false, code: 'PATH_NOT_FOUND', noPath: true, pathRejected: true,
+          error: `pathfinder returned no route to ${target.x},${target.y},${target.z}`,
+          searchRadius: effectiveSearchRadius
+        };
+      }
     }
     if (result.ok === true && !timedOut && !stoppedForStuck) {
       // `goal_reached` is emitted against the pathfinder's floored path node.
@@ -2996,7 +3042,7 @@ class RealBot extends BotAdapter {
     }
     const live = this.bot.entity?.position;
     if (finitePosition(live)) this.position = this._vec(live);
-    return result;
+    return withTimings(result);
   }
   /** Move near an entity (mineflayer-pathfinder companion; the mock has one). */
   async goNear(entity, range = 2, options = {}) {

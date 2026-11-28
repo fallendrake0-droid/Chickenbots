@@ -3,6 +3,7 @@
 const FORBIDDEN = /[;&|`$<>\\\n\r\t]|\.\.\//;
 const NAME_PATTERN = /^[a-z][a-z0-9:_-]{0,31}$/;
 const { redactString, redactValue } = require('../util/redact');
+const { commandReport } = require('./format');
 
 /**
  * Serialise one already-validated argument for the tokenizer. This is the only
@@ -285,6 +286,13 @@ class CommandRegistry {
         code: 'CONFIRMATION_REQUIRED', requiresConfirmation: true
       }, { line, source, operator, started });
     }
+    // Announce the accepted command before a long handler starts. A goto can
+    // legitimately spend seconds in A*; without this line the terminal looked
+    // idle after Enter until the whole walk finished.
+    if (this.logger && source !== 'cli') {
+      const preview = redactString(line).slice(0, 240);
+      try { this.logger.info(`command start "${preview}" [${source}/${operator}]`); } catch (_) { /* optional */ }
+    }
     try {
       const result = await command.execute(args.filter((a) => a !== 'confirm' && a !== '--confirm'), { source, operator, confirmed: explicitConfirm, line }, this);
       return this._record({ command: command.name, ...(result || { ok: true }) }, { line, source, operator, started });
@@ -376,6 +384,20 @@ class CommandRegistry {
     };
     this.history.push(entry);
     if (this.history.length > 300) this.history.shift();
+    // The terminal used to show only failures (and the CLI only a bare ✓).
+    // Log every operator command with its measured duration, per-bot rows and
+    // navigation timing breakdown. Keeping this at info level makes a silent
+    // successful command visible without turning on packet tracing.
+    // The CLI prints its own detailed report for the command it just ran;
+    // logging it here as well would duplicate every line in the same terminal.
+    if (this.logger && meta.source !== 'cli') {
+      const report = commandReport({ ...entry, command: result.command }, { maxRows: 12 });
+      const text = report.join('\n');
+      try {
+        if (entry.ok) this.logger.info(text);
+        else this.logger.warn(text);
+      } catch (_) { /* logging must never fail a command */ }
+    }
     return entry;
   }
 

@@ -163,7 +163,7 @@
 .log-level--error { color: var(--danger); }
 .log-level--debug { color: var(--text-faint); }
 .log-scope { color: var(--text-muted); flex: 0 0 auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-msg { color: var(--text-secondary); flex: 1; overflow-wrap: anywhere; }
+.log-msg { color: var(--text-secondary); flex: 1; overflow-wrap: anywhere; white-space: pre-wrap; }
 .log-meta { color: var(--text-faint); font-size: 10px; }
 .log-line--error .log-msg { color: #f1a3aa; }
 

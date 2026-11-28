@@ -116,3 +116,20 @@ test('a short arrival gets one re-path before reporting ARRIVAL_UNVERIFIED', asy
   assert.equal(result.attempts, 2);
   assert.equal(calls, 2);
 });
+
+test('a deterministic no-path result is not re-planned', async () => {
+  const bot = { name: 'A', position: { x: 0, y: 65, z: 0 }, health: 20 };
+  const reader = {
+    getBlock(pos) { return pos.y === 64 ? { name: 'stone' } : { name: 'air' }; }
+  };
+  const nav = new NavigationManager({ bot, reader, settings: { recoveryDelayMs: 0 } });
+  let calls = 0;
+  const result = await nav.navigate({ x: 20, y: 65, z: 0 }, { range: 1, timeoutMs: 5000 }, async () => {
+    calls++;
+    return { ok: false, noPath: true, code: 'PATH_NOT_FOUND', error: 'No path to the goal!', timings: { totalMs: 120, planMs: null } };
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'PATH_NOT_FOUND');
+  assert.equal(calls, 1, 'the same map must not be searched three times');
+  assert.equal(result.timings.totalMs, 120);
+});
