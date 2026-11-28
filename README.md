@@ -117,7 +117,7 @@ src/
   builder/builder.js        cooperative phased construction with real material transfers
   actions/                  survival, combat, mining, woodcutting, farming, fishing, sleep, exploration, inventory, home base
   commands/                 registry.js (validation/confirmation) + index.js (all commands)
-  dashboard/                Express API + modular operations console (41 routed pages)
+  dashboard/                Express API + modular operations console (42 routed pages)
 scripts/                    lint, validation, schematic generation/statistics
 tests/                      team, excavation, construction, schematics, builder, survival, controllers, autonomy
 ```
@@ -191,6 +191,39 @@ tests/                      team, excavation, construction, schematics, builder,
   board assignment. The chest is registered in the resource ledger as 54-slot `home overflow` storage;
   build phases withdraw their materials back out instead of failing with an empty inventory.
 * Sleep reserves a bed through the shared task board (TTL lock) so two bots cannot claim one bed.
+
+### Navigation and pathfinding
+
+Every move — task, recovery, safety or operator command — goes through one navigation manager per bot
+and one fleet arbiter. The dashboard's **Fleet → Navigation** page and every bot's Navigation tab read
+the same `navigation.policy` and telemetry that the pathfinder uses, so the numbers shown are the
+numbers enforced.
+
+* **One motion owner.** Emergency > operator > recovery > task > routine. A lower-priority request is
+  refused as `MOVEMENT_BUSY` instead of silently replacing the path that owns the bot. Fleet stance
+  claims relocate two task paths that target the same stance; operator/emergency moves report the
+  conflict but never yield.
+* **Standable destinations.** A coordinate is resolved to feet/head/support with the real block
+  reader. A solid block becomes the stance above it, a nearby standable stance is used when the exact
+  column is blocked, and a chunk that has not loaded is reported as `DESTINATION_UNLOADED` and retried
+  for `NAV_WAIT_FOR_WORLD_MS` rather than invented. Routine travel never digs or scaffolds.
+* **Task targets are not stances.** A tree trunk, ore block or air coordinate is resolved to a real
+  stance before planning; the mock adapter walks there like the live one. It no longer snaps onto a
+  target in the air.
+* **Adaptive search budget.** `mineflayer-pathfinder`'s `searchRadius` is a detour budget, not a route
+  length. It now scales with the straight-line distance (`1.5 × distance + 16`), with a 64-block floor
+  and a 512-block ceiling, so long walks around a base or ravine are not abandoned at the old fixed 64.
+* **Stuck detection on a time window.** Samples slide over `NAV_STUCK_WINDOW_MS` (2.5s), not the last
+  32 samples. A bot that stops after one small step is flagged about 2.5s after its last real
+  movement; sampling starts only after a non-empty `path_update`, so A* thinking is never called stuck.
+* **Arrival evidence and recovery.** `goal_reached` is accepted only after a 300ms settle and a real
+  distance check. A success reported more than `range + 3` blocks short is an `ARRIVAL_UNVERIFIED`
+  failure and triggers one retry even when the caller did not ask for strict verification. Recovery is
+  deterministic: restart, a standable stance **around the real target**, a stance near the start, then
+  abort. Tasks default to two attempts; operator moves to three.
+* **Simulator honesty.** The mock planner uses the same standability, diagonal corner guard, bounded
+  drops, swimming and ladder rules. Its route preview on the Navigation page is a real backend plan and
+  does not move the bot.
 
 ### Combat engine (V6)
 
@@ -387,7 +420,10 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `ACTION_TIMEOUT_MS` | `60000` | hard budget for one autonomous controller step. A hung path or dig is cancelled, movement is stopped and the concurrency slot is released. Operator commands run in their own exclusive slot and cancel the autonomous step instead of racing it |
 | `EMERGENCY_BUDGET_MS` | `6000` | hard budget for one safety pass (eat, flee, defend). It is propagated to combat and pathfinding as a deadline, and a watchdog cancels movement at `budget + 750ms`; routine task work keeps the longer `ACTION_TIMEOUT_MS` |
 | `SAFETY_PREEMPT_MS` | `500` | while a task is running, check for damage, lava, fire, a fall or critical health this often. A hit cancels a non-combat task so the next safety pass owns movement; combat tasks still yield to critical health and hazards |
-| `PATHFINDER_THINK_TIMEOUT_MS` / `PATHFINDER_TICK_TIMEOUT_MS` / `PATHFINDER_SEARCH_RADIUS` | `2500` / `10` / `64` | cooperative A* budget: total decision time, slice per event-loop turn, and maximum search radius |
+| `PATHFINDER_THINK_TIMEOUT_MS` / `PATHFINDER_TICK_TIMEOUT_MS` / `PATHFINDER_SEARCH_RADIUS` | `2500` / `10` / `64` | cooperative A* budget: total decision time, slice per event-loop turn, and the adaptive search-radius floor |
+| `NAV_ADAPTIVE_SEARCH_RADIUS` / `NAV_SEARCH_RADIUS_SCALE` / `NAV_SEARCH_RADIUS_MAX` | `true` / `1.5` / `512` | scale the pathfinder detour budget with distance (`scale × straight + 16`), clamped between the floor and the ceiling |
+| `NAV_TASK_ATTEMPTS` / `NAV_OPERATOR_ATTEMPTS` | `2` / `3` | bounded attempts: a task gets one recovery retry, an operator move three, before an honest failure |
+| `NAV_STUCK_WINDOW_MS` / `NAV_RECOVERY_DELAY_MS` | `2500` / `250` | no-progress window that stops a stale path, and delay between recovery attempts |
 | `CLIENT_STALL_GUARD_MS` / `CLIENT_STALL_RESUME_MS` | `2500` / `1500` | if the 20 tps client tick loop arrives this late, stop the stale path, re-anchor to the last server position and hold movement for the resume window. A 5s+ freeze also probes the socket with a real swing so a dead session reconnects instead of showing as online |
 | `MC_RECONNECT_*` | see below | reconnect backoff. Supervision now runs on its own 1.5s timer, independent of long mining or movement actions |
 | `MC_INBOUND_YIELD` | `true` | pause the inbound socket between kernel reads so a chunk burst cannot monopolise one event-loop turn |
@@ -438,7 +474,7 @@ requires an explicit `confirm` token or `confirmed:true`.
 help [command]                 status                         diagnostics
 ai [status|off]                team [state|on|off|plan on|plan off|memory|locks|tasks|roles|leader|formation|resources|objectives|follow|regroup|retreat|defend|reassign]
 goto <x> <y> <z> [bot]         goto <bot|all> <x> <y> <z>      # leader by default; block Y is lifted to a standable feet position
-bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore|block]|chop [type]|farm [plant [crop] [count]|maintain|status|crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
+bot <name|all> <status|where|goto x y z|come|follow|stop|return|eat|mine [ore|block]|chop [type]|farm [plant [crop] [count]|maintain|status|crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
 inventory [bot]                eat [bot]                       sleep [bot|all|auto on|off]
 survival [bot|all] [eat|healing|armour|tools|crafting|shield] [on|off]
 auto <eat|healing|armour|tools|crafting|shield|weapon|totem|potions|food> [on|off] [bot|all]

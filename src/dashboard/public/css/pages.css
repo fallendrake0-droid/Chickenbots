@@ -448,6 +448,19 @@
 
 /* Log helper panels */
 .log-list { max-height: 520px; overflow-y: auto; }
+.path-waypoints {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-height: 190px; overflow-y: auto;
+  margin-top: 12px; padding: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.path-waypoint {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 7px; border-radius: 999px;
+  background: var(--surface-1); border: 1px solid var(--border);
+  font-size: 11px;
+}
 .log-toolbar { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: var(--space-2); }
 
 /* Chart helpers */
@@ -907,3 +920,8 @@
   box-shadow: 0 0 0 3px var(--accent-soft), 0 0 12px rgba(210, 246, 90, 0.4);
 }
 .notification-row.is-unread { background: rgba(210, 246, 90, 0.045); }
+
+/* Navigation fleet table: coordinates and actions must stay on one line even
+   when the main column is narrow. */
+.table td.mono,
+.table td .button { white-space: nowrap; }

@@ -299,3 +299,26 @@ planner off, manually created objectives and tasks still work. Safety
 **Still open:** a live five-bot launch must confirm the empty board and the
 `team plan on` transition against the real server. All pre-existing live
 criteria remain UNVERIFIED.
+
+## Round 48 — honest pathfinding for every task
+
+**Evidence:** 553/553 tests, lint 207 files (0 errors), `validate` 10/10
+(36/36 pages), `commands:audit` 48/49 (0 failures; `stop` help-audited), and a
+headless Chromium pass against the simulator. **Live-server result UNVERIFIED.**
+
+| ID | Priority | Area | Symptom | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-48-01 | P0 | Live search budget | Long walks gave up; short blocked walks burned the budget | `config.autonomy.pathfinderSearchRadius` was never assigned to the pathfinder; a fixed detour budget cannot fit both cases | `navigationPolicy()` + per-request `searchRadius = clamp(64, 512, 1.5 × distance + 16)` | policy unit test (100 blocks → 166, 1000 → 512) | FIXED (unit); live UNVERIFIED |
+| BUG-48-02 | P0 | Stuck detection | A bot that stopped after one small step stayed "not stuck" for ~4.8 s; long A* thinking was flagged stuck | Displacement measured from the oldest of 32 samples; sampling started before any path existed | Sliding time window (`NAV_STUCK_WINDOW_MS`), samples armed only by a non-empty `path_update`, reset on path start | frozen-bot test flags at ~2.5 s; window stays <40 samples | FIXED (unit) |
+| BUG-48-03 | P0 | Arrival evidence | `goal_reached` was accepted while the bot stood several blocks short; a one-attempt task abandoned the move | No settle, no distance evidence, and strict verification was opt-in | 300 ms settle, `shortBy`, gross-short retry (`range + 3`), `ARRIVAL_UNVERIFIED` on the final result | manager test: 12 blocks short retries twice and fails honestly | FIXED (unit) |
+| BUG-48-04 | P1 | Recovery | Recovery searched a hard-coded southeast point instead of the target | `target + (2,2)` offset | `nearestStandable(target, maxNearbyRadius 4)`; then start; then abort | recovery test keeps the offset within 5 of the target | FIXED (unit) |
+| BUG-48-05 | P0 | Mock task movement | Tree/air targets teleported the bot into place; tall-trunk work counted layers it never reached | `range >= 2` shortcuts assigned `position` directly | Resolve a real stance with `standableCandidates()` and walk it; exact targets reject alternate/current stances | tall-trunk test now reports 5/10 and leaves the unreachable layers; air-target test proves no snap | FIXED (unit/simulation) |
+| BUG-48-06 | P0 | Planner budget | Three-block blocked moves returned `time-budget` and blocked the event loop | `maxDetour` floor was 24 blocks regardless of distance | `max(16, straight × 2 + 8)` | simulator: fast `no-path` replaced repeated `time-budget`; p95 1111–1462 ms → 678–843 ms | FIXED (simulation) |
+| BUG-48-07 | P1 | Movement weights | `allowWater:false` was ignored and `maxDrop:0` became 3 | Global config read in the hazard function; `Number(x) || 3` | Per-call values reach `exclusionAreasStep`; zero is preserved | movement override test | FIXED (unit) |
+| BUG-48-08 | P1 | Task retries | Tasks had exactly one attempt and never entered recovery | Default `NAV_TASK_ATTEMPTS=1` | Default 2; policy exposes it; operator remains 3 | policy test asserts ≥2 | FIXED (unit) |
+| BUG-48-09 | P1 | Dashboard | No navigation page; simulator rows said "No navigation state reported"; no Stop action | No `navigation` route or `/api/state` aggregate; `runtime.botState()` omitted navigation | Navigation page + `navigation.policy/fleet/totals`; per-bot `navigationStatus()` fallback; `bot <name> stop`; bot card target line | headless Chromium: page, route preview, walk and tables; 0 console errors | FIXED (browser) |
+| BUG-48-10 | P2 | Wood relocation | Relocation stopped inside the stripped radius | Target distance 32 with `range: 3` arrival tolerance | Aim 40 blocks out | task-pipeline relocation test | FIXED (unit) |
+
+**Still open:** live five-bot pathfinding against the real server; scaffold-based
+access for genuinely unreachable high work targets; the mock-only unsupported
+builder stance fallback. All pre-existing live criteria remain UNVERIFIED.

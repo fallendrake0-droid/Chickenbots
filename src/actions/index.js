@@ -889,7 +889,10 @@ class BotActions {
     task.relocationAttempts = attempts + 1;
     const index = Number(this.index) || 0;
     const zoneHalf = Math.max(12, Math.floor((config.workZone ? config.workZone.size : 100) / 2) - 4);
-    const distance = Math.min(zoneHalf, 32 + attempts * 16 + index * 5);
+    // Aim past the stripped radius, not at its edge: `goTo(..., {range: 3})`
+    // legitimately stops up to three blocks short, so a 32-block target left
+    // the bot inside the cleared circle.
+    const distance = Math.min(zoneHalf, 40 + attempts * 16 + index * 5);
     const angle = (index / config.team.names.length) * Math.PI * 2 + Math.PI / 3 + attempts * 1.1;
     const site = clampToWorkZone({
       x: Math.floor(home.x + Math.cos(angle) * distance),

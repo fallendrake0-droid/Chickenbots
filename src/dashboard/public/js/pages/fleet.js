@@ -493,19 +493,24 @@ function profileNavigation(bot, actions, name) {
             const durations = telemetry.durationMs || {};
             const stuck = nav.stuck || {};
             const congestion = nav.congestion || [];
+            const target = telemetry.active && (telemetry.active.target || telemetry.active.goal);
             return kvRows([
               ['Moving', nav.active ? esc([nav.owner, nav.priority].filter(Boolean).join(' / ') || 'yes') : 'Idle'],
-              ['Attempts', num(telemetry.attempts)],
+              ['Target', target ? `${Math.round(target.x)}, ${Math.round(target.y)}, ${Math.round(target.z)}` : '—', true],
+              ['Attempts', `${num(telemetry.attempts)} · ${num(telemetry.success)} ok / ${num(telemetry.failed)} failed`],
               ['Success rate', telemetry.successRate === null || telemetry.successRate === undefined ? '—' : `${telemetry.successRate}%`],
               ['Last error', esc(telemetry.lastError || '—')],
               ['Stuck samples', num(stuck.samples), true],
-              ['Stuck events', num(stuck.stuck)],
-              ['Plan p50 / p95', durations.p50 === null || durations.p50 === undefined ? '—' : `${num(durations.p50)} / ${num(durations.p95)} ms`],
+              ['Stuck / no path', `${num(telemetry.stuck)} / ${num(telemetry.noPath)}`],
+              ['Arrival failures', num(telemetry.arrivalUnverified)],
+              ['Move p50 / p95', durations.p50 === null || durations.p50 === undefined ? '—' : `${num(durations.p50)} / ${num(durations.p95)} ms`],
               ['Congestion', congestion.length ? esc(congestion.map((row) => row.owner).join(', ')) : 'Clear']
             ]);
           })()}
             <div class="row gap-2" style="margin-top:12px">
               <button class="button" type="button" data-command="path ${esc(name)}">${icon('map')} Inspect route state</button>
+              <button class="button button--ghost" type="button" data-command="bot ${esc(name)} stop">${icon('stop')} Stop movement</button>
+              <a class="button button--ghost" href="#/navigation">${icon('navigation')} Fleet navigation</a>
             </div>
           </div>
         </section>

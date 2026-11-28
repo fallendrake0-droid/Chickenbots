@@ -43,7 +43,14 @@ class StuckDetector {
     // Keep time samples even when the bot has not moved; otherwise a totally
     // frozen bot would never accumulate the minSamples needed to be detected.
     this.samples.push({ at, pos });
-    if (this.samples.length > 32) this.samples.shift();
+    // Keep the ring bounded, then slide the observation window. The old
+    // implementation measured displacement from the first of the last 32
+    // samples, so a single 0.5-block step kept the bot "not stuck" for the
+    // full 4.8s ring even after it stopped. Drop samples that are more than one
+    // window old, preserving one older reference sample so `elapsed` still
+    // covers `windowMs`.
+    if (this.samples.length > 128) this.samples.shift();
+    while (this.samples.length > 2 && at - this.samples[1].at >= this.windowMs) this.samples.shift();
     const first = this.samples[0];
     const elapsed = at - first.at;
     const displacement = Math.hypot(pos.x - first.pos.x, pos.y - first.pos.y, pos.z - first.pos.z);
@@ -67,6 +74,7 @@ class StuckDetector {
       graceMs: this.graceMs,
       minProgress: this.minProgress,
       samples: this.samples.length,
+      windowStartAt: this.samples.length ? this.samples[0].at : null,
       last: this.last ? { ...this.last } : null
     };
   }

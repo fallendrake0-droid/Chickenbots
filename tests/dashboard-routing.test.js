@@ -66,7 +66,7 @@ test('no Express route uses the legacy bare wildcard that path-to-regexp 8 rejec
 test('shell route list covers every frontend navigation item', () => {
   const router = fs.readFileSync(path.join(ROOT, 'src/dashboard/public/js/router.js'), 'utf8');
   const navPaths = [...router.matchAll(/\{\s*path:\s*'([^']+)'/g)].map((match) => match[1]);
-  assert.ok(navPaths.length >= 35, `expected navigation paths, got ${navPaths.length}`);
+  assert.ok(navPaths.length >= 36, `expected navigation paths, got ${navPaths.length}`);
   const missing = navPaths.filter((name) => !SHELL_ROUTES.has(name));
   assert.deepEqual(missing, [], `frontend routes missing a server shell entry: ${missing.join(', ')}`);
   for (const shellPath of SHELL_ROUTES) {

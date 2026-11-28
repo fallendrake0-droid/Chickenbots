@@ -143,13 +143,15 @@ test('a partially reachable tall trunk is reported honestly rather than counted 
   const controller = new WoodcuttingController({ bot });
   const result = await controller.chopTree({ x: 4, y: 64, z: 0 });
   assert.equal(result.ok, true, JSON.stringify(result));
-  // With adjacent stances the mock can reach every layer of the tall trunk.
-  // Each removal is still verified, and the counters must agree with the world.
-  assert.equal(result.chopped, 10, JSON.stringify(result));
-  assert.equal(result.partial, false);
-  assert.equal(result.error, undefined);
+  // A ground bot cannot reach the top of a 10-block trunk by walking: the
+  // legal stances are five blocks up, and the mock no longer teleports onto
+  // them. Each reachable layer is verified; the rest must be reported, not
+  // counted. Scaffolding is a task decision, not a hidden movement cheat.
+  assert.equal(result.chopped, 5, JSON.stringify(result));
+  assert.equal(result.partial, true);
+  assert.match(result.error, /above mining reach/);
   assert.equal(controller.stats.treesChopped, 1);
-  assert.equal(world.getBlock({ x: 4, y: 73, z: 0 }).name, 'air', 'the top layer was really removed');
+  assert.equal(world.getBlock({ x: 4, y: 73, z: 0 }).name, 'spruce_log', 'unreachable layers stay in the world');
   assert.equal(controller.stats.blocksVerified, result.chopped);
 });
 

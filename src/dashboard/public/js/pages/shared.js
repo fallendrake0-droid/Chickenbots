@@ -147,6 +147,12 @@ export function botCard(bot) {
   const foodTone = healthTone(bot.food);
   const pos = bot.position ? `${Math.round(bot.position.x)}, ${Math.round(bot.position.y)}, ${Math.round(bot.position.z)}` : '—';
   const status = botStatus(bot);
+  const navigation = bot.navigation;
+  const activeTarget = navigation && navigation.telemetry && navigation.telemetry.active
+    ? (navigation.telemetry.active.target || navigation.telemetry.active.goal) : null;
+  const movementLine = navigation && navigation.active
+    ? `<div class="bot-pos">${icon('navigation')} ${esc(navigation.owner || 'path')}${activeTarget ? ` → ${Math.round(activeTarget.x)}, ${Math.round(activeTarget.y)}, ${Math.round(activeTarget.z)}` : ''}</div>`
+    : '';
   return `
     <article class="card bot-card card--interactive${status.online ? '' : ' bot-card--offline'}" title="${esc(status.detail || status.label)}">
       <div class="bot-card-head">
@@ -173,6 +179,7 @@ export function botCard(bot) {
           <div><strong>${esc(task || activity)}</strong><span>${task ? humanize(activity) : `${esc(bot.armor ?? 0)} armour · ${bot.dimension || 'overworld'}`}</span></div>
         </div>
         <div class="bot-pos">${icon('map')} ${esc(pos)} <span class="muted">·</span> ${esc(bot.dimension || 'overworld')} ${bot.currentTaskId ? `<span class="muted">·</span> ${esc(bot.currentTaskId)}` : ''}</div>
+        ${movementLine}
       </div>
       <div class="bot-card-foot">
         <a class="button button--sm" href="#/bots/${encodeURIComponent(bot.name)}">${icon('user')}Profile</a>

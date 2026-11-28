@@ -254,9 +254,19 @@ function movementBot() {
     searchRadius: 0,
     setMovements() {},
     stop() { if (rejectActive) rejectActive(new Error('Path was stopped before it could be completed!')); },
-    goto() {
+    goto(goal) {
       calls.push(Date.now());
-      return new Promise((resolve, reject) => { rejectActive = reject; setTimeout(resolve, 40); });
+      return new Promise((resolve, reject) => {
+        rejectActive = reject;
+        setTimeout(() => {
+          // A real pathfinder moves the entity to the goal. Without this the
+          // new arrival check correctly treats the fake success as a gross
+          // miss and retries; the fixture must model movement, not silence it.
+          const position = real.bot.entity.position;
+          position.x = goal.x; position.y = goal.y; position.z = goal.z;
+          resolve();
+        }, 40);
+      });
     }
   };
   return { real, calls };

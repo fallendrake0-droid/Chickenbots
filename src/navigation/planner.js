@@ -160,7 +160,12 @@ function planRoute({
   // A target inside a sealed room must fail quickly. Without a local search
   // envelope, A* expands the entire loaded neighbourhood (thousands of nodes)
   // before admitting there is no route.
-  const maxDetour = Math.max(24, distance(start, target) * 2 + 16);
+  // A local work target does not need a 24-block search envelope. The old
+  // floor let a three-block move that was blocked by a trunk expand thousands
+  // of irrelevant nodes and hit the wall-clock budget, which read as `noPath`
+  // and blocked the event loop for every other bot. Scale from the actual
+  // distance, with a 16-block floor for a genuine detour around a wall.
+  const maxDetour = Math.max(16, distance(start, target) * 2 + 8);
   const heap = new MinHeap();
   const open = new Map();
   const best = new Map();

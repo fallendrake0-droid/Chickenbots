@@ -100,7 +100,7 @@ const COMMAND_METADATA = Object.freeze({
     args: [bot({ required: true, position: 0 }), sub('action', { position: 1, required: true })],
     subcommands: [
       { name: 'status' }, { name: 'where' }, { name: 'goto', args: coords() }, { name: 'come' },
-      { name: 'follow' }, { name: 'eat' }, { name: 'mine', args: [arg('target', 'mineTarget')] },
+      { name: 'follow' }, { name: 'stop' }, { name: 'eat' }, { name: 'mine', args: [arg('target', 'mineTarget')] },
       { name: 'chop', args: [text('type')] }, { name: 'farm', args: [text('crop')] },
       { name: 'fish' }, { name: 'defend' }, { name: 'combat' }, { name: 'guard', args: coords() },
       { name: 'duel', args: [arg('player', 'player')], requiresConfirmation: true }, { name: 'explore' },

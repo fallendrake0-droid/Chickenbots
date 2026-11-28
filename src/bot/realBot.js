@@ -17,6 +17,7 @@ const { TILLABLE } = require('../world/crops');
 const { NavigationManager } = require('../navigation/manager');
 const { resolveStandableY } = require('../navigation/standability');
 const { configureMovements } = require('../navigation/movements');
+const { navigationPolicy, adaptiveSearchRadius } = require('../navigation/policy');
 const { StuckDetector } = require('../navigation/stuck');
 
 const HOSTILE = new Set([
@@ -2848,9 +2849,20 @@ class RealBot extends BotAdapter {
     if (Number.isFinite(Number(config.autonomy.pathfinderTickTimeoutMs))) {
       this.bot.pathfinder.tickTimeout = config.autonomy.pathfinderTickTimeoutMs;
     }
-    if (Number.isFinite(Number(config.autonomy.pathfinderSearchRadius))) {
-      this.bot.pathfinder.searchRadius = config.autonomy.pathfinderSearchRadius;
-    }
+    const radius = Math.max(1, Number(options.range) || 1);
+    const target = {
+      x: Math.floor(Number(goal.x)), y: Math.floor(Number(goal.y)), z: Math.floor(Number(goal.z))
+    };
+    // A fixed search radius is a detour budget, not a route-length limit. Long
+    // walks to a mine, a village or home need a budget that grows with the
+    // actual distance; otherwise A* gives up even though the target is legal.
+    const policy = navigationPolicy(config.navigation);
+    const effectiveSearchRadius = adaptiveSearchRadius(policy.baseSearchRadius, this.position, target, {
+      enabled: policy.adaptiveSearchRadius,
+      scale: policy.searchRadiusScale,
+      max: policy.searchRadiusMax
+    });
+    this.bot.pathfinder.searchRadius = effectiveSearchRadius;
     if (this.bot.registry) {
       const movements = new Movements(this.bot);
       configureMovements(movements, {
@@ -2861,24 +2873,37 @@ class RealBot extends BotAdapter {
       });
       this.bot.pathfinder.setMovements(movements);
     }
-    const radius = Math.max(1, Number(options.range) || 1);
-    const target = {
-      x: Math.floor(Number(goal.x)), y: Math.floor(Number(goal.y)), z: Math.floor(Number(goal.z))
-    };
     const goalObject = new goals.GoalNear(target.x, target.y, target.z, radius);
     let timer = null;
     let progressTimer = null;
     let stoppedForStuck = false;
     let timedOut = false;
+    let pathStarted = false;
+    // Arm progress detection only once the pathfinder has produced a path.
+    // A* can legitimately spend several seconds thinking before the entity
+    // moves at all; sampling during that window declared a perfectly good long
+    // route "stuck" and killed it. The path_update event is the exact moment
+    // the budget changes from thinking to following.
+    const onPathUpdate = (results) => {
+      if (pathStarted || !results || !Array.isArray(results.path) || results.path.length === 0) return;
+      pathStarted = true;
+      const live = this.bot.entity && this.bot.entity.position;
+      if (live) this.navigation.stuck.reset(live);
+      this.navigation.telemetry.event('path-ready', {
+        attempt: context.attempt, owner: context.owner, target: target,
+        steps: results.path.length, searchRadius: effectiveSearchRadius
+      });
+    };
+    if (typeof this.bot.on === 'function') this.bot.on('path_update', onPathUpdate);
     const pathPromise = this.bot.pathfinder.goto(goalObject).then(
       () => ({ ok: true }),
       (err) => ({ ok: false, error: err && err.message ? err.message : String(err), pathRejected: true })
     );
-    // Sample progress while the pathfinder is working. The detector needs a
-    // grace period because A* may spend its first second searching.
+    // Sample progress while the pathfinder is following its route. The grace
+    // period additionally covers the first few movement ticks.
     if (this.bot.entity && this.bot.entity.position) {
       progressTimer = setInterval(() => {
-        if (timedOut || stoppedForStuck) return;
+        if (!pathStarted || timedOut || stoppedForStuck) return;
         const live = this.bot.entity && this.bot.entity.position;
         const sample = this.navigation.stuck.sample(live);
         if (sample.stuck) {
@@ -2906,6 +2931,8 @@ class RealBot extends BotAdapter {
     } finally {
       if (timer) clearTimeout(timer);
       if (progressTimer) clearInterval(progressTimer);
+      if (typeof this.bot.removeListener === 'function') this.bot.removeListener('path_update', onPathUpdate);
+      else if (typeof this.bot.off === 'function') this.bot.off('path_update', onPathUpdate);
     }
     // A newer owner may own the pathfinder now. Never stop its path from the
     // losing request's cleanup path.
@@ -2920,6 +2947,28 @@ class RealBot extends BotAdapter {
     }
     if (result.ok === false && !timedOut && !stoppedForStuck) {
       try { this.bot.pathfinder.stop(); } catch (_) { /* pathfinder may not be running */ }
+    }
+    if (result.ok === true && !timedOut && !stoppedForStuck) {
+      // `goal_reached` is emitted against the pathfinder's floored path node.
+      // The server can correct the entity for a tick or two afterwards, so give
+      // it a short settle window and report whether the bot really arrived.
+      const settleDeadline = this.now() + 300;
+      const within = (pos) => finitePosition(pos) && distance(pos, target) <= radius + 0.75;
+      let settled = this.bot.entity?.position;
+      while (settled && !within(settled) && this.now() < settleDeadline) {
+        await sleep(40);
+        settled = this.bot.entity?.position;
+      }
+      if (finitePosition(settled)) {
+        result = {
+          ...result,
+          arrived: within(settled),
+          shortBy: Number(distance(settled, target).toFixed(3)),
+          searchRadius: effectiveSearchRadius
+        };
+      }
+    } else if (result && result.ok === false) {
+      result = { ...result, searchRadius: effectiveSearchRadius };
     }
     const live = this.bot.entity?.position;
     if (finitePosition(live)) this.position = this._vec(live);

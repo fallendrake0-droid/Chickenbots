@@ -14,9 +14,10 @@ function recoveryGoal({ attempt = 0, reader, target, start, range = 1, maxDrop =
   if (!target) return { action: 'abort', reason: 'no-target' };
   if (attempt <= 0) return { action: 'restart', position: { ...target } };
   if (attempt === 1) {
-    const around = nearestStandable(reader, {
-      x: target.x + 2, y: target.y, z: target.z + 2
-    }, { maxNearbyRadius: 4, maxDrop, allowWater });
+    // Search around the real goal, not a hard-coded southeast point. The old
+    // (+2,+2) centre could land in a wall while a perfectly good adjacent
+    // stance existed, so a transient obstruction exhausted recovery.
+    const around = nearestStandable(reader, target, { maxNearbyRadius: 4, maxDrop, allowWater });
     if (around.ok) return { action: 'offset', position: around.position, offset: around.offset };
     return { action: 'restart', position: { ...target } };
   }

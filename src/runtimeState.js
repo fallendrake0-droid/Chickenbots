@@ -4,6 +4,7 @@ const { config } = require('./config');
 const { catalogue } = require('./woodcutting/catalog');
 const { validateLibrary } = require('./schematics/validate');
 const { connectionStatus } = require('./bot/status');
+const { navigationPolicy } = require('./navigation/policy');
 
 // Twelve controllers are refreshed one per bot per autonomy tick. At the
 // simulation's real cadence (750ms tick plus scans that can take a few hundred
@@ -30,6 +31,15 @@ function statusSnapshot(services) {
     const status = connectionStatus(bot);
     try {
       const summary = typeof bot.summary === 'function' ? bot.summary() : { name: bot.name, position: bot.position };
+      // Navigation is a first-class dashboard section for both adapters. RealBot
+      // already includes it in summary(); MockBot did not, so the simulator's
+      // Bot Profile always said "No navigation state reported" even though
+      // every move went through the same NavigationManager.
+      let navigation = summary.navigation || null;
+      if (!navigation) {
+        try { navigation = typeof bot.navigationStatus === 'function' ? bot.navigationStatus() : null; }
+        catch (err) { navigation = { error: `navigation status failed: ${err.message}` }; }
+      }
       // The connection verdict is computed once, server-side, and attached to
       // every summary. Clients render this instead of re-deriving "online"
       // from three flags in several places. A ready/online session is
@@ -38,6 +48,7 @@ function statusSnapshot(services) {
       return {
         ...summary,
         ...status,
+        navigation,
         // One verdict, computed in src/bot/status.js. A spawned bot stays
         // online even when it is not gameplay-ready; conversely an auth-pending
         // session is online but never `ready`.
@@ -71,6 +82,34 @@ function statusSnapshot(services) {
     }
   });
   lap('bots');
+  // Fleet-level pathfinding view. Each bot reports its own telemetry; this
+  // aggregate and the movement policy let the Navigation page explain what the
+  // pathfinder is allowed to do instead of guessing from its output.
+  let navigation = null;
+  try {
+    const rows = summaries.map((bot) => ({ name: bot.name, navigation: bot.navigation || null }));
+    const counts = { attempts: 0, success: 0, failed: 0, stuck: 0, noPath: 0, arrivalUnverified: 0 };
+    let p95 = 0;
+    for (const row of rows) {
+      const telemetry = row.navigation && row.navigation.telemetry;
+      if (!telemetry) continue;
+      for (const key of Object.keys(counts)) counts[key] += Number(telemetry[key] || 0);
+      p95 = Math.max(p95, Number(telemetry.durationMs && telemetry.durationMs.p95) || 0);
+    }
+    navigation = {
+      policy: navigationPolicy(config.navigation),
+      fleet: services.runtime && services.runtime.navigationFleet ? services.runtime.navigationFleet.snapshot() : null,
+      totals: {
+        ...counts,
+        moving: rows.filter((row) => row.navigation && row.navigation.active).length,
+        bots: rows.filter((row) => row.navigation && !row.navigation.error).length,
+        successRate: counts.attempts ? Number((counts.success / counts.attempts * 100).toFixed(1)) : null,
+        p95Ms: p95 || null
+      }
+    };
+  } catch (err) {
+    navigation = { error: `navigation summary failed: ${err.message}` };
+  }
   const actionList = services.actions ? services.actions.list() : [];
   const actionStatus = actionList.map((a) => {
     try { return a.status(); } catch (err) { return { bot: a.bot ? a.bot.name : 'unknown', error: err.message }; }
@@ -173,6 +212,7 @@ function statusSnapshot(services) {
       library: library ? { count: library.count, unique: library.uniqueGeometry, minimum: library.minimumRequired } : null,
       alerts,
     },
+    navigation,
     team: {
       state: services.coordinator ? services.coordinator.getState() : null,
       memory: services.memory ? { stats: services.memory.stats, observations: services.memory.observations.slice(-25).map(publicObservation), facts: [...services.memory.facts.entries()].map(([key, value]) => ({ key, value })) } : null,

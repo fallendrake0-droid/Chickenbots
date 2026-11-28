@@ -81,6 +81,7 @@ class NavigationManager {
       owner: this.arbiter.current ? this.arbiter.current.owner : null,
       priority: this.arbiter.current ? this.arbiter.current.priority : null,
       active: Boolean(this.arbiter.current),
+      settings: { ...this.settings },
       motion: this.arbiter.snapshot(),
       stuck: this.stuck.snapshot(),
       telemetry: this.telemetry.summary(),
@@ -279,11 +280,18 @@ class NavigationManager {
           const live = this.bot && this.bot.position ? { ...this.bot.position } : null;
           const arrived = this._arrived(live, pos, range, validation);
           const verified = validation.skipped ? null : arrived;
+          // A live pathfinder can report goal_reached while the entity is still
+          // several blocks away (a stale server correction, a closed door or a
+          // goal node that was not standable). Treat a gross miss as a failed
+          // attempt even when the caller did not request strict verification;
+          // ordinary one-block corrections stay successful.
+          const shortBy = Number(result.shortBy);
+          const grossShort = Number.isFinite(shortBy) && shortBy > Math.max(3, range + 3) && !arrived;
           const final = {
             ok: true,
             arrived,
             verified,
-            arrivalUnverified: verificationRequired(options) && arrived === false,
+            arrivalUnverified: (verificationRequired(options) || grossShort) && arrived === false,
             recovered,
             attempts,
             goal,
@@ -294,10 +302,19 @@ class NavigationManager {
             steps: result.steps,
             resumed: result.resumed,
             descended: result.descended,
-            already: result.already
+            already: result.already,
+            searchRadius: result.searchRadius === undefined ? null : Number(result.searchRadius),
+            shortBy: Number.isFinite(shortBy) ? shortBy : null
           };
-          if (verificationRequired(options) && !arrived) {
-            last = { ...final, ok: false, error: `pathfinder reported success but the bot is not within ${range} blocks of the destination`, code: 'ARRIVAL_UNVERIFIED' };
+          if ((verificationRequired(options) || grossShort) && !arrived) {
+            last = {
+              ...final,
+              ok: false,
+              code: 'ARRIVAL_UNVERIFIED',
+              error: grossShort
+                ? `pathfinder reported success ${shortBy.toFixed(1)} blocks short of the destination`
+                : `pathfinder reported success but the bot is not within ${range} blocks of the destination`
+            };
             this.telemetry.recordCount('arrivalUnverified');
             if (attemptLimit === maxAttempts && maxAttempts < 2) attemptLimit = 2;
             if (attempt + 1 >= attemptLimit) break;

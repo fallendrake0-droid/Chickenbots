@@ -16,7 +16,7 @@ const { buildInfo, buildUptimeMs } = require('./buildInfo');
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const SHELL_ROUTES = Object.freeze(new Set([
   'overview', 'world', 'activity', 'notifications',
-  'bots', 'players', 'team', 'profiles', 'connections',
+  'bots', 'navigation', 'players', 'team', 'profiles', 'connections',
   'survival', 'inventory', 'mining', 'excavation', 'woodcutting', 'farming',
   'fishing', 'exploration', 'sleep',
   'combat', 'combat-team', 'combat-gear', 'combat-supplies', 'combat-targets',

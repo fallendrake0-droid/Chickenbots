@@ -56,6 +56,13 @@ function envBool(name, fallback) {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
+function envFloat(name, fallback) {
+  const raw = env(name);
+  if (raw === undefined) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function envViewDistance(name, fallback) {
   const raw = env(name);
   if (raw === undefined) return fallback;
@@ -339,9 +346,9 @@ const config = {
     strictDestinations: envBool('NAV_STRICT_DESTINATIONS', true),
     maxDrop: envInt('NAV_MAX_DROP', 3),
     allowWater: envBool('NAV_ALLOW_WATER', true),
-    // A routine task gets one path attempt; operator moves get a replan ladder.
-    // `replan: true` opts an autonomous caller into the same bounded ladder.
-    maxAttempts: envInt('NAV_TASK_ATTEMPTS', 1),
+    // A routine task gets one recovery retry; operator moves get a longer
+    // replan ladder. `replan: true` opts an autonomous caller into it.
+    maxAttempts: envInt('NAV_TASK_ATTEMPTS', 2),
     operatorAttempts: envInt('NAV_OPERATOR_ATTEMPTS', 3),
     recoveryDelayMs: envInt('NAV_RECOVERY_DELAY_MS', 250),
     stuckWindowMs: envInt('NAV_STUCK_WINDOW_MS', 2500),
@@ -359,6 +366,12 @@ const config = {
     // event loop for tens of seconds while several stance candidates and up
     // to 32 segments each spent the full maxNodes budget.
     planBudgetMs: envInt('NAV_PLAN_BUDGET_MS', 350),
+    // Mineflayer-pathfinder's searchRadius is a detour budget. A fixed 64 is
+    // too small for long cross-map walks that must go around terrain. Scale it
+    // with the straight-line distance, bounded by `searchRadiusMax`.
+    adaptiveSearchRadius: envBool('NAV_ADAPTIVE_SEARCH_RADIUS', true),
+    searchRadiusScale: envFloat('NAV_SEARCH_RADIUS_SCALE', 1.5),
+    searchRadiusMax: envInt('NAV_SEARCH_RADIUS_MAX', 512),
     // Pathfinder griefing controls: routine travel does not dig or scaffold.
     allowDig: envBool('NAV_ALLOW_DIG', false),
     allowScaffold: envBool('NAV_ALLOW_SCAFFOLD', false),
@@ -489,6 +502,9 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   const warn = (path, message) => warnings.push(`${path}: ${message}`);
   const integer = (path, value, min, max) => {
     if (!Number.isInteger(value) || value < min || value > max) fail(path, `must be an integer in ${min}..${max} (got ${value})`);
+  };
+  const number = (path, value, min, max) => {
+    if (!Number.isFinite(value) || value < min || value > max) fail(path, `must be a number in ${min}..${max} (got ${value})`);
   };
   const boolean = (path, value) => {
     if (typeof value !== 'boolean') fail(path, `must be true or false (got ${value})`);
@@ -662,6 +678,9 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   integer('navigation.segmentLength', navigation.segmentLength, 8, 128);
   integer('navigation.maxNodes', navigation.maxNodes, 100, 200000);
   integer('navigation.planBudgetMs', navigation.planBudgetMs, 50, 60000);
+  boolean('navigation.adaptiveSearchRadius', navigation.adaptiveSearchRadius);
+  number('navigation.searchRadiusScale', navigation.searchRadiusScale, 0.5, 4);
+  integer('navigation.searchRadiusMax', navigation.searchRadiusMax, 8, 4096);
   boolean('navigation.allowDig', navigation.allowDig);
   boolean('navigation.allowScaffold', navigation.allowScaffold);
   boolean('navigation.openDoors', navigation.openDoors);

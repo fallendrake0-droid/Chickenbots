@@ -2,6 +2,7 @@ import { parseHash } from './utils.js';
 import overview from './pages/overview.js';
 import { worldPage } from './pages/world.js';
 import { botsPage, profilesPage, profilePage, teamPage, connectionsPage } from './pages/fleet.js';
+import { navigationPage } from './pages/navigation.js';
 import {
   survivalPage, inventoryPage, miningPage, excavationPage,
   woodcuttingPage, farmingPage, fishingPage, explorationPage, sleepPage
@@ -32,6 +33,7 @@ export const NAV_GROUPS = [
     label: 'Fleet',
     items: [
       { path: 'bots', label: 'All Bots', icon: 'users' },
+      { path: 'navigation', label: 'Navigation', icon: 'navigation' },
       { path: 'players', label: 'Players', icon: 'user-plus' },
       { path: 'team', label: 'Team Management', icon: 'crown' },
       { path: 'profiles', label: 'Bot Profiles', icon: 'user' },
@@ -119,6 +121,7 @@ export function resolveRoute(hash = location.hash) {
     case 'activity': return { ...base, page: activityPage, label: 'Live Activity' };
     case 'notifications': return { ...base, page: notificationsPage, label: 'Notifications' };
     case 'players': return { ...base, page: playersPage, label: 'Players' };
+    case 'navigation': return { ...base, page: navigationPage, label: 'Navigation' };
     case 'bots':
       if (!rest.length) return { ...base, page: botsPage, label: 'All Bots' };
       return { ...base, page: profilePage, label: `${rest[0]} profile`, title: rest[0] };

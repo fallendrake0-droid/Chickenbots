@@ -28,12 +28,16 @@ function configureMovements(movements, {
   const reg = registry || (bot && bot.registry) || null;
   const allowDig = options.allowDig === undefined ? nav.allowDig === true : options.allowDig === true;
   const allowScaffold = options.allowScaffold === undefined ? nav.allowScaffold === true : options.allowScaffold === true;
+  // Per-call overrides must reach the weight function too; reading only the
+  // global config made `goTo(..., {allowWater:false})` still wade through water.
+  const allowWater = options.allowWater === undefined ? nav.allowWater !== false : options.allowWater === true;
   movements.canDig = allowDig;
   movements.digCost = 4;
   movements.placeCost = 3;
   movements.liquidCost = Number(options.liquidCost) || 6;
   movements.entityCost = 2;
-  movements.maxDropDown = Number(options.maxDrop === undefined ? nav.maxDrop : options.maxDrop) || 3;
+  const maxDropDown = options.maxDrop === undefined ? nav.maxDrop : options.maxDrop;
+  movements.maxDropDown = maxDropDown === undefined ? 3 : Math.max(0, Number(maxDropDown) || 0);
   movements.allowParkour = options.allowParkour === true;
   movements.allowSprinting = options.sprint === undefined ? nav.sprint !== false : options.sprint === true;
   movements.allow1by1towers = allowScaffold;
@@ -74,7 +78,7 @@ function configureMovements(movements, {
       if (!block) return 0;
       if (block.liquid && block.name === 'lava') return 1000;
       if (avoidSet.has(block.type)) return 250;
-      if (block.name === 'water' && !nav.allowWater) return 1000;
+      if (block.name === 'water' && !allowWater) return 1000;
       return 0;
     };
     movements.exclusionAreasStep = [hazardWeight];

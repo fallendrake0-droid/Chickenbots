@@ -378,6 +378,18 @@ async function runBotActionExclusive(services, bot, args, context = {}) {
     };
   }
   if (action === 'where') return { ok: true, bot: bot.name, position: { ...bot.position }, dimension: bot.dimension };
+  if (action === 'stop' || action === 'cancel') {
+    // This runs from the exclusive slot, so runExclusive has already cancelled
+    // the active controller/path. Drop any leftover motion owner and report the
+    // honest post-state instead of claiming a path was running.
+    let cancelled = false;
+    try {
+      const outcome = bot.cancelMotion ? bot.cancelMotion('operator stop') : false;
+      cancelled = typeof outcome === 'boolean' ? outcome : Boolean(outcome && (outcome.cancelled || outcome.ok));
+    } catch (_) { cancelled = false; }
+    const navigation = bot.navigationStatus ? bot.navigationStatus() : null;
+    return { ok: true, bot: bot.name, cancelled, moving: Boolean(navigation && navigation.active), position: { ...bot.position } };
+  }
   if (action === 'goto') {
     const pos = parseOrigin(args, 2);
     const result = await bot.goTo(pos, {
@@ -834,7 +846,7 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'bot', category: 'team', summary: 'Per-bot status, movement and action controls', usage: 'bot <name|all> <status|goto x y z|come|follow|eat|mine [ore]|chop [type]|farm [crop]|fish|defend|combat|guard [x y z]|duel <player>|explore|sleep|return home|where>',
+    name: 'bot', category: 'team', summary: 'Per-bot status, movement and action controls', usage: 'bot <name|all> <status|goto x y z|come|follow|stop|eat|mine [ore]|chop [type]|farm [crop]|fish|defend|combat|guard [x y z]|duel <player>|explore|sleep|return home|where>',
     execute: async (args, context = {}) => {
       const target = String(args[0] || '').toLowerCase();
       const action = String(args[1] || 'status').toLowerCase();

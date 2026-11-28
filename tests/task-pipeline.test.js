@@ -220,8 +220,12 @@ test('the queue command reports the real join queue and rejects unknown bots', a
   assert.equal(retried.result.results.length, BOT_NAMES.length);
 });
 
-test('surface work relocates an underground bot instead of leaving it stalled', async () => {
+test('surface work climbs a real shaft instead of teleporting out of the mine', async () => {
   const world = new MockWorld({ flat: true });
+  // A mined shaft with a ladder is traversable; solid stone is not. The mock
+  // must path the bot up the shaft rather than snapping it to the surface.
+  for (let y = 40; y <= 64; y++) world.setBlock({ x: 10, y, z: 10 }, 'air');
+  for (let y = 40; y <= 63; y++) world.setBlock({ x: 10, y, z: 10 }, 'ladder');
   const bot = new MockBot({ name: '10101000', world, position: { x: 10, y: 40, z: 10 }, inventory: {} });
   const board = new TaskBoard({ now: () => 1000 });
   const actions = new BotActions({ bot, taskBoard: board, home: { x: 0, y: 65, z: 0 } });
@@ -229,7 +233,7 @@ test('surface work relocates an underground bot instead of leaving it stalled', 
   const result = await actions.performTask(task, {});
   assert.equal(result.verified, false);
   assert.equal(result.relocated, true, JSON.stringify(result));
-  assert.equal(bot.position.y, 65);
+  assert.ok(bot.position.y >= 59, `the bot must climb the shaft, got y=${bot.position.y}`);
 });
 
 test('an ore search that keeps finding nothing moves to a fresh site, then gives up', async () => {

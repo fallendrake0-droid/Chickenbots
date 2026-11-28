@@ -283,45 +283,30 @@ class MockBot extends BotAdapter {
       y: clamp(pos.y, -63, 318),
       z: clamp(pos.z, -limit, limit)
     };
-    // Felling a tree: work from the ground beside the trunk. A log target
-    // resolves to the top of the trunk in strict validation, which sent the
-    // planner at a leaf canopy and burned the whole action budget.
-    const goalBlock = this.getBlock(target);
-    const airTarget = goalBlock && (goalBlock.name === 'air' || goalBlock.name === 'cave_air' || goalBlock.name === 'water');
-    if (range >= 2 && airTarget) {
-      const clear = (b) => !b || b.name === 'air' || b.name === 'cave_air' || b.name === 'water';
-      // Same stance preference as the original mock: beside the target first,
-      // then the target cell. The beside-cell matters for relocation distance
-      // checks and for not standing inside the block being worked.
-      const stances = [
-        { x: target.x, y: target.y, z: target.z + 1 },
-        { x: target.x + 1, y: target.y, z: target.z },
-        { x: target.x - 1, y: target.y, z: target.z },
-        { x: target.x, y: target.y, z: target.z - 1 },
-        { x: target.x, y: target.y + 1, z: target.z },
-        { x: target.x, y: target.y, z: target.z }
-      ];
-      for (const stance of stances) {
-        const foot = this.getBlock(stance);
-        const head = this.getBlock({ x: stance.x, y: stance.y + 1, z: stance.z });
-        if (clear(foot) && clear(head)) {
-          this.position = { ...stance };
-          this.stats.moved++;
-          await this._wait(80);
-          return { ok: true, position: { ...this.position } };
-        }
-      }
-    }
-    if (range >= 2 && goalBlock && /_log$/.test(goalBlock.name)) {
+    // A work target is not automatically a legal stance. A tree trunk, a
+    // planting cell and an air coordinate all name a *thing to work on*, not a
+    // place to stand. Resolve one real stance from the same standability model
+    // the live fleet uses, then walk to it; never snap the bot into place.
+    if (range >= 2 && !standableAt(this, target, {
+      maxDrop: config.navigation.maxDrop,
+      allowWater: allowWater === undefined ? config.navigation.allowWater : allowWater
+    }).ok) {
       const stances = standableCandidates(this, target, {
         maxNearbyRadius: Math.max(3, Math.ceil(range) + 1),
-        maxDrop: 32, allowWater: true, limit: 4, lowFirst: true, maxDistance: range + 2
+        maxDrop: config.navigation.maxDrop,
+        allowWater: allowWater === undefined ? config.navigation.allowWater : allowWater,
+        limit: 6,
+        lowFirst: true,
+        maxDistance: range + 2
       });
       if (stances.length) {
-        this.position = { ...stances[0].position };
-        this.stats.moved++;
-        await this._wait(80);
-        return { ok: true, position: { ...this.position } };
+        return this.navigation.navigate(stances[0].position, {
+          range: 0, timeoutMs, priority, owner: owner || String(priority), adjustY: false, replan,
+          allowWater: allowWater === undefined ? config.navigation.allowWater : allowWater,
+          verifyArrival: true, token
+        }, (goal, context) => this._walkNavigationPath(goal, {
+          ...context, cancelToken: token, timeoutMs: context.timeoutMs
+        }));
       }
     }
     return this.navigation.navigate(target, {
@@ -418,20 +403,9 @@ class MockBot extends BotAdapter {
     const maxDrop = config.navigation.maxDrop === undefined ? 3 : config.navigation.maxDrop;
     const allowWater = context.allowWater === undefined ? config.navigation.allowWater !== false : context.allowWater;
     const goalVerdict = standableAt(scan, goal, { maxDrop, allowWater });
-    // A target in a tree canopy or on a high, inaccessible ledge cannot be
-    // stood in. Walk to a ground stance under it instead of expanding A* over
-    // the whole neighbourhood; the pre-navigation mock did the same.
-    if (!goalVerdict.ok && floorPosition(goal).y > floorPosition(this.position).y + 2 && range >= 2) {
-      const below = standableCandidates(scan, floorPosition(goal), {
-        maxNearbyRadius: 6, maxDrop: 32, allowWater: true, limit: 4, lowFirst: true
-      });
-      if (below.length) {
-        this.position = { ...below[0].position };
-        this.stats.moved++;
-        await this._wait(80);
-        return { ok: true, path: [], alreadyThere: false, position: { ...this.position } };
-      }
-    }
+    // A target in a tree canopy or on a high ledge is resolved through the
+    // normal candidate-stance search below. The bot walks there; it is never
+    // snapped onto a convenient block.
     let planTarget = goalVerdict.ok ? floorPosition(goal) : null;
     // A block target can have several standable cells around it. With a range
     // the caller accepts any of them, so choose the best stance ourselves:
@@ -539,15 +513,21 @@ class MockBot extends BotAdapter {
         deadline: planDeadline
       });
       expanded += planned.expanded || 0;
-      if (!planned.ok && final && alternateStances.length) {
+      // An exact destination (range 0) has no alternate stances: accepting a
+      // nearby candidate made a failed shaft step look like a successful move
+      // and only the manager's arrival check caught it. With a range, a stance
+      // inside that range is legal, but never the cell the bot already occupies.
+      if (!planned.ok && final && range > 0 && alternateStances.length) {
         for (const candidate of alternateStances) {
           if (candidate.position.x === waypoint.x && candidate.position.y === waypoint.y && candidate.position.z === waypoint.z) continue;
+          if (candidate.position.x === cursor.x && candidate.position.y === cursor.y && candidate.position.z === cursor.z) continue;
           const trial = planRoute({
             reader: scan, from: cursor, to: candidate.position, range: 0,
             maxNodes: trialNodes, maxDrop, allowWater, deadline: planDeadline
           });
           expanded += trial.expanded || 0;
-          if (!trial.ok) continue;
+          if (!trial.ok || (trial.path.length === 0
+            && (candidate.position.x !== cursor.x || candidate.position.y !== cursor.y || candidate.position.z !== cursor.z))) continue;
           planned = trial;
           waypoint = candidate.position;
           planTarget = candidate.position;
