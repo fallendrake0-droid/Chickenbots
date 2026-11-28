@@ -79,7 +79,7 @@ code ran at all.
 
 ## Verification
 
-- `npm test` → **559/559**.
+- `npm test` → **561/561**.
 - `npm run lint` → 208 files, 0 errors (5 pre-existing warnings).
 - `npm run validate` → PASSED (10/10 consistency, 36/36 pages, 142 files clean).
 - `npm run commands:audit` → 48/49, 0 failures (`stop` skipped by design).
@@ -89,6 +89,9 @@ code ran at all.
     the standing count returned to 4.
   - `sleep spawn all` returned `verified: true` for 5/5 bots and every sleep
     row reported `spawnSet: true`.
+  - `mine 00110000 stone 3` cut a climbable staircase (`shaft: true,
+    climbable: true`) to y=57; `bot 00110000 come` climbed it and
+    `bot 00110000 return` reached the surface at y=64 (`verified: true`).
 - Headless Chromium (`/tmp/browser/sleep-crop.mjs`):
   - `#/sleep` headers include **Spawn point**; every row shows `9, 65, 14`;
     the screen reader text includes “5 bot(s) with a spawn point” and the bed
@@ -106,10 +109,9 @@ code ran at all.
 - **Event-loop starvation:** the indexed scans remove the biggest fallback
   scans on the status path, but a live 15 s block still needs profiling of
   construction site surveys and chunk parsing on the real host.
-- **Mine shafts:** the straight 1×1 shaft still cannot be climbed; returning
-  from a deep mine is reported as `no-path` rather than teleported, but the
-  shaft design itself is unchanged.
 - **Death loop:** the retreat/drowning and safety deadline fixes are real, but
   a live five-bot night under phantoms has not been observed here.
-- **Climbable mine shafts:** the staircase fix is proven in the mock pathfinder;
-  the live server's pathfinder still needs one descending-and-returning run.
+- **Climbable mine shafts:** the staircase fix is proven in the simulator
+  (`mine 00110000 stone 3`: staircase rows to y=57, then `bot 00110000 return`
+  arrived at the surface, y=64); the live pathfinder still needs one
+  descending-and-returning run.
