@@ -291,6 +291,9 @@ const config = {
   },
   autonomy: {
     enabled: envBool('AUTONOMY_ENABLED', true),
+    // A fresh process starts with an empty task board. The survival planner is
+    // opt-in: `team plan on` (or this env flag) creates the first objective.
+    autoPlan: envBool('AUTONOMY_AUTO_PLAN', false),
     tickMs: envInt('AUTONOMY_TICK_MS', 750),
     actionTimeoutMs: envInt('ACTION_TIMEOUT_MS', 60000),
     maxConsecutiveFailures: envInt('MAX_ACTION_FAILURES', 4),
@@ -631,6 +634,7 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
   if (workZone.enabled && workZone.size % 2 !== 0) warn('workZone.size', 'odd sizes are rounded down to whole blocks; 100 keeps the intended 100x100 area');
 
   boolean('autonomy.enabled', autonomy.enabled);
+  boolean('autonomy.autoPlan', autonomy.autoPlan);
   integer('autonomy.tickMs', autonomy.tickMs, 50, 60000);
   integer('autonomy.actionTimeoutMs', autonomy.actionTimeoutMs, 1000, 3600000);
   integer('autonomy.warmupMs', autonomy.warmupMs, 0, 600000);

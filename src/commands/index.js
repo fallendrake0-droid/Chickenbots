@@ -603,7 +603,7 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'team', category: 'team', summary: 'Inspect team state and control formations, resources and coordination', usage: 'team [state|on|off|follow|regroup|retreat|defend|memory|locks|tasks|roles|leader|resources|objectives|assignments|assist <bot>|sleep [bot|all]|reassign|formation <name>|combat heal]',
+    name: 'team', category: 'team', summary: 'Inspect team state and control formations, resources and coordination', usage: 'team [state|plan on|plan off|on|off|follow|regroup|retreat|defend|memory|locks|tasks|roles|leader|resources|objectives|assignments|assist <bot>|sleep [bot|all]|reassign|formation <name>|combat heal]',
     execute: async (args) => {
       const sub = (args[0] || 'state').toLowerCase();
       const coordinator = services.coordinator;
@@ -646,6 +646,24 @@ function registerAll(services, registry) {
         };
       }
       if (sub === 'on' || sub === 'off') return { ok: true, ...coordinator.setEnabled(sub === 'on') };
+      if (sub === 'plan') {
+        const value = String(args[1] || 'status').toLowerCase();
+        if (value === 'on' || value === 'off') {
+          const result = coordinator.setAutoPlan(value === 'on', { reason: 'operator command' });
+          // Starting the planner should not look like a no-op until the next
+          // tick: create the first objective straight away when one is needed.
+          if (value === 'on') coordinator.ensureObjectives();
+          return {
+            ...result,
+            activeObjectives: services.taskBoard.listObjectives('ACTIVE').length,
+            message: value === 'on' ? 'autonomous planning enabled' : 'autonomous planning disabled'
+          };
+        }
+        if (value === 'status') {
+          return { ok: true, autoPlan: coordinator.autoPlan, planning: coordinator.planningStatus(), activeObjectives: services.taskBoard.listObjectives('ACTIVE').length };
+        }
+        throw new CommandError('usage: team plan [on|off|status]');
+      }
       if (sub === 'memory') {
         const type = args[1] ? args[1].toUpperCase() : null;
         const observations = services.memory.query(type ? { type } : {}).slice(0, 50);

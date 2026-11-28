@@ -5,12 +5,40 @@ const assert = require('node:assert');
 
 const { createRuntime } = require('../src/runtime');
 
-async function runtime() {
-  return createRuntime({ simulate: true, dashboard: false });
+async function runtime(options = {}) {
+  return createRuntime({ simulate: true, dashboard: false, ...options });
 }
 
-test('the base plan stays active instead of failing on reachable work', async () => {
+test('a fresh runtime starts idle with an empty task board', async () => {
   const rt = await runtime();
+  rt.start();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    assert.equal(rt.board.listObjectives().length, 0, 'no objective is manufactured at launch');
+    assert.equal(rt.board.listTasks().length, 0, 'no task is manufactured at launch');
+    assert.equal(rt.coordinator.getState().team.planning.autoPlan, false);
+    const state = rt.coordinator.getState();
+    assert.ok(state.bots.every((bot) => !bot.currentTaskId), 'no bot claims work');
+    // Background idle work is also off: chopping here would change the world
+    // while the task board claimed the team was idle.
+    const idleActions = rt.actions.bots.get('________');
+    const logsBefore = idleActions.bot.countItem('oak_log');
+    const idle = await rt._idleWork(idleActions);
+    assert.equal(idle.skipped, 'planner-off');
+    assert.equal(idleActions.bot.countItem('oak_log'), logsBefore, 'no hidden woodcutting at launch');
+    const started = await rt.commands.execute('team plan on');
+    assert.equal(started.ok, true);
+    assert.equal(started.result.autoPlan, true);
+    const objectives = rt.board.listObjectives('ACTIVE');
+    assert.equal(objectives.length, 1, 'team plan on creates the first objective');
+    assert.ok(rt.board.listTasks({ objectiveId: objectives[0].id }).length > 0, 'the objective schedules tasks');
+  } finally {
+    await rt.shutdown('test');
+  }
+});
+
+test('the base plan stays active instead of failing on reachable work', async () => {
+  const rt = await runtime({ autoPlan: true });
   rt.start();
   try {
     await new Promise((resolve) => setTimeout(resolve, 16000));

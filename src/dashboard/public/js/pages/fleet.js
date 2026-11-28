@@ -598,6 +598,8 @@ export const teamPage = {
     const objectives = (state.snapshot && state.snapshot.taskManager && state.snapshot.taskManager.objectives) || [];
     const ledger = (state.snapshot && state.snapshot.inventory && state.snapshot.inventory.ledger) || {};
     const leader = stateTeam.leader || overview().leader;
+    const planning = stateTeam.planning || {};
+    const plannerOn = planning.autoPlan === true;
     // Formation names come from the team command metadata; the UI never keeps
     // its own copy of a backend enum.
     const formations = subcommandValues('team', 'formation');
@@ -617,6 +619,19 @@ export const teamPage = {
 
         <div class="grid grid--main-side">
           <div class="stack gap-4">
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('target')} Task planner</div>${badge(plannerOn ? 'planning' : 'off', plannerOn ? 'ok' : 'neutral', { dot: true })}</div>
+              <div class="card-body">
+                <p class="tiny muted" style="margin:0 0 10px">${plannerOn
+                  ? 'The coordinator creates and re-opens survival-base objectives automatically. Turning the planner off leaves existing objectives and tasks on the board.'
+                  : 'The fleet starts idle with an empty task board. No objective or task is created until you start the planner or add work by hand.'}</p>
+                <div class="toolbar toolbar--wrap" style="gap:8px">
+                  <button class="button button--sm ${plannerOn ? '' : 'button--primary'}" type="button" data-command="team plan ${plannerOn ? 'off' : 'on'}">${icon(plannerOn ? 'pause' : 'play')} ${plannerOn ? 'Stop planner' : 'Start planner'}</button>
+                  <span class="tiny muted">${planning.stopped ? `Backoff until ${esc(formatTime(planning.blockedUntil))}` : planning.lastObjectiveId ? `Last objective ${esc(planning.lastObjectiveId)}` : 'No objective yet'}</span>
+                </div>
+              </div>
+            </section>
+
             <section class="card">
               <div class="card-header"><div class="card-title">${icon('crown')} Formation</div><span class="badge badge--accent">${esc(stateTeam.formation || '—')}</span></div>
               <div class="card-body">
@@ -658,7 +673,7 @@ export const teamPage = {
                       <div class="tiny muted">${objective.progress ? `${num(objective.progress.current)} / ${num(objective.progress.target)} ${esc(objective.progress.unit || '')}` : 'No progress counter'}</div>
                     </div>
                     ${objective.progress && objective.progress.target ? progress((objective.progress.current / objective.progress.target) * 100, 100, { sm: true, tone: 'accent' }) : ''}
-                  </div>`).join('') : emptyState('No objectives', 'Objectives are created by the coordinator when the team plans work.', 'target')}
+                  </div>`).join('') : emptyState('No objectives', plannerOn ? 'The planner is running and will publish its first objective on the next coordinator tick.' : 'The planner is off. Start it above, or create an objective by hand.', 'target')}
               </div>
             </section>
 

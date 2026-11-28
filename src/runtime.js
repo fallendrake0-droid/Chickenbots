@@ -61,7 +61,7 @@ function shouldPauseAuthRetry(result) {
 }
 
 class TeamRuntime {
-  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, resolveVersion = resolveServerVersion, now = Date.now, monoNow = monotonicMs, random = Math.random, createDashboard: dashboardFactory = createDashboard } = {}) {
+  constructor({ simulate = config.sim.enabled, connect = true, dashboard = true, port = config.dashboard.port, host = config.dashboard.host, logger = null, autoPlan = config.autonomy.autoPlan, resolveVersion = resolveServerVersion, now = Date.now, monoNow = monotonicMs, random = Math.random, createDashboard: dashboardFactory = createDashboard } = {}) {
     this.simulate = Boolean(simulate);
     this.shouldConnect = connect;
     this.wantDashboard = dashboard;
@@ -81,7 +81,8 @@ class TeamRuntime {
     const existingCommsRecent = typeof this.comms.recent === 'function';
     if (!existingCommsRecent && Array.isArray(this.comms.history)) this.comms.recent = (limit = 20) => this.comms.history.slice(-limit);
     this.coordinator = new TeamCoordinator({
-      botNames: BOT_NAMES, memory: this.memory, board: this.board, ledger: this.ledger, comms: this.comms, logger: this.logger, now: this.now
+      botNames: BOT_NAMES, memory: this.memory, board: this.board, ledger: this.ledger, comms: this.comms,
+      logger: this.logger, now: this.now, autoPlan
     });
     this.excavation = new ExcavationManager({ coordinator: this.coordinator, logger: this.logger, now: this.now });
     // One congestion registry for the whole fleet: ten workers choosing the
@@ -1411,6 +1412,11 @@ class TeamRuntime {
 
   /** Deterministic idle work keeps the team productive between objectives. */
   async _idleWork(actions) {
+    // With the planner off the operator has not asked for work, so the fleet
+    // must actually stand down. Background chopping/farming here made an
+    // "empty task board" look idle in the dashboard while bots kept changing
+    // the world. Safety (eat/flee/defend) still runs above this branch.
+    if (!this.coordinator || !this.coordinator.autoPlan) return { ok: true, skipped: 'planner-off', idle: true };
     const index = actions.index;
     this.idleCounter++;
     if (index % 3 === 0) return actions.woodcutting.tick({ maxTrees: 1 });

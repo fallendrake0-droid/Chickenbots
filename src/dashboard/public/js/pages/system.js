@@ -92,6 +92,8 @@ export const tasksPage = {
     const tasks = (state.snapshot && state.snapshot.taskManager && state.snapshot.taskManager.tasks) || [];
     const stats = (state.snapshot && state.snapshot.taskManager && state.snapshot.taskManager.stats) || {};
     const objectives = (state.snapshot && state.snapshot.taskManager && state.snapshot.taskManager.objectives) || [];
+    const team = teamState();
+    const planning = (team && team.team && team.team.planning) || {};
     const byStatus = stats.byStatus || {};
     const filtered = tasks.filter((task) => {
       const matchesStatus = !taskFilter.status || task.status === taskFilter.status;
@@ -113,6 +115,7 @@ export const tasksPage = {
           ${statCard({ label: 'Objectives', value: num(objectives.length), iconName: 'target', tone: 'accent', context: `${num(stats.activeObjectives || 0)} active` })}
           ${statCard({ label: 'Locks / deadlocks', value: `${num(stats.locks || 0)}<small> / ${num(stats.deadlocks || 0)}</small>`, iconName: 'lock', tone: (stats.deadlocks || 0) ? 'danger' : 'neutral', context: `${num(stats.regions || 0)} protected regions` })}
         </div>
+        ${planning.autoPlan === false ? `<div class="callout callout--info" style="margin-top:16px">${icon('info')}<div><strong>Planner off.</strong> This runtime starts with an empty task board and the fleet idle. Start the planner to let the coordinator create survival-base objectives automatically; existing objectives and tasks are left alone when you stop it. <button class="button button--sm button--primary" type="button" data-command="team plan on">${icon('play')} Start planner</button></div></div>` : ''}
         ${objectives.length ? `<section class="card"><div class="card-header"><div class="card-title">${icon('target')} Objectives</div></div><div class="card-body">${objectives.map((objective) => `<div class="objective-row"><div class="objective-main"><div><strong>${esc(objective.title)}</strong> ${badge(objective.status, objective.status === 'ACTIVE' ? 'accent' : objective.status === 'COMPLETED' ? 'ok' : 'neutral')}</div><div class="tiny muted">Priority ${esc(objective.priority ?? '—')} · ${objective.progress ? `${num(objective.progress.current)} / ${num(objective.progress.target)} ${esc(objective.progress.unit || '')}` : 'No progress reported'}</div><div class="tiny muted">Assigned: ${(objective.assignedBots && objective.assignedBots.length) ? objective.assignedBots.map(esc).join(', ') : 'No bots assigned yet'}${objective.taskCount !== undefined ? ` · ${num(objective.taskCount)} linked tasks` : ''}</div></div>${objective.progress && objective.progress.target ? progress((objective.progress.current / objective.progress.target) * 100, 100, { sm: true, tone: 'accent' }) : ''}</div>`).join('')}</div></section>` : ''}
         <section class="card" style="margin-top:16px">
           <div class="toolbar toolbar--wrap">

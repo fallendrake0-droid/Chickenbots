@@ -59,7 +59,7 @@ const COMMAND_METADATA = Object.freeze({
   team: {
     args: [sub('action', { position: 0 }), text('value', { position: 1 })],
     subcommands: [
-      { name: 'state' }, { name: 'on' }, { name: 'off' }, { name: 'follow' }, { name: 'regroup' },
+      { name: 'state' }, { name: 'on' }, { name: 'off' }, { name: 'plan', args: [enumArg('action', ['status', 'on', 'off'])] }, { name: 'follow' }, { name: 'regroup' },
       { name: 'retreat' }, { name: 'defend' }, { name: 'memory' }, { name: 'locks' }, { name: 'tasks' },
       { name: 'roles' }, { name: 'leader' }, { name: 'resources' }, { name: 'objectives' },
       { name: 'assignments' }, { name: 'assist', args: [bot()] }, { name: 'sleep' }, { name: 'reassign' },

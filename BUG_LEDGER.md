@@ -275,3 +275,27 @@ browser/canvas and `BUG-27-10`/`BUG-27-12` remain open.
 
 **Still open:** a real browser screenshot of the Live World page and a live
 `goto` on the target server; all live criteria remain UNVERIFIED.
+
+## Round 47 — idle by default: no tasks until the operator asks
+
+**Evidence:** 545/545 tests, lint 204 files (0 errors), `validate` 10/10,
+`commands:audit` 48/49 (0 failures; `stop` skipped), and a real headless
+Chromium pass against `node src/index.js --simulate --port 4179`. The browser
+run confirmed `/api/state` reported `objectives: 0`, `tasks: 0`, four `IDLE`
+roles and `planning.autoPlan: false`; clicking **Start planner** changed the
+badge to `planning`, created one objective and 16 tasks, and the button became
+**Stop planner**. **Live-server result UNVERIFIED** (simulation only).
+
+| ID | Priority | Area | Symptom | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-47-01 | P0 | Launch state | A fresh runtime immediately published `BUILD A PERMANENT SURVIVAL BASE` and scheduled work before the operator did anything | `TeamCoordinator` defaulted `autoPlan = true`; the runtime never passed the option and there was no config key or command to change it | Planning is opt-in (`AUTONOMY_AUTO_PLAN=false` by default). The runtime passes `config.autonomy.autoPlan`; `team plan on|off|status` and `TeamCoordinator.setAutoPlan()` toggle it at runtime; enabling clears retry/backoff and creates the first plan immediately. With planning off, `_idleWork` (background chop/farm/explore every 20 ticks) is skipped too, so the fleet is genuinely idle. Stopping the planner leaves existing objectives/tasks alone | `tests/autonomy.test.js` fresh-launch test; `tests/team.test.js` opt-in toggle test; live `/api/state` and browser click | FIXED (simulation) |
+| BUG-47-02 | P1 | Dashboard honesty | Empty objectives read as if the coordinator would plan on its own; there was no visible way to start it | The Team and Task Manager pages did not render `team.planning.autoPlan` | Team page adds a **Task planner** card with on/off state and Start/Stop button; Task Manager adds a planner-off callout with the same action; objective empty state names the actual state | headless screenshots `#/team`, `#/tasks`; no page/console errors | FIXED (browser) |
+
+**Enabling planning:** `team plan on` in the CLI/dashboard, the **Start
+planner** button, or `AUTONOMY_AUTO_PLAN=true` from process start. With the
+planner off, manually created objectives and tasks still work. Safety
+(eat/flee/defend) remains active; only objective generation is paused.
+
+**Still open:** a live five-bot launch must confirm the empty board and the
+`team plan on` transition against the real server. All pre-existing live
+criteria remain UNVERIFIED.

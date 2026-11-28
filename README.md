@@ -132,10 +132,13 @@ tests/                      team, excavation, construction, schematics, builder,
   to dead work; a task with no verified progress for `TASK_STALL_MS` is released for re-planning.
   Completion still requires a verified world change.
 * Objective manager and task board with dependencies, claims with TTL, heartbeats, retries,
-  cancellation, spatial region reservations and lock deadlock detection/resolution. Autonomous
-  planning never disables itself permanently: a completed objective is followed by a fresh plan,
-  a failed one backs off exponentially (60s, 120s, … capped at 5 minutes) and the dashboard exposes
-  `team.planning` so "no objective" is visible instead of guessed at.
+  cancellation, spatial region reservations and lock deadlock detection/resolution. A new launch
+  starts **idle with an empty board**: the survival planner is opt-in (`team plan on`, the Team
+  page's **Start planner** button, or `AUTONOMY_AUTO_PLAN=true`), so no objective or task is invented
+  before the operator asks for one. Once armed, planning never disables itself permanently: a
+  completed objective is followed by a fresh plan, a failed one backs off exponentially (60s, 120s, …
+  capped at 5 minutes) and the dashboard exposes `team.planning` so "no objective" is visible
+  instead of guessed at.
 * Tasks record the command that created them, the operator, `createdAt` and `lastProgressAt`, so an
   operator can trace a row back to their own request rather than trusting a label.
 * Resource ledger with per-bot inventories, verified storage counts, reservations and real
@@ -379,6 +382,7 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `MC_VIEW_DISTANCE` | `2` | requested chunk radius: an integer 2–32, or `tiny` (6), `short` (8), `normal` (10), `far` (12). Ten bots at 6 kept 1,690 chunk columns in one process and froze the event loop for 26s, so an old env value is logged and capped by `MC_VIEW_DISTANCE_MAX` |
 | `MC_VIEW_DISTANCE_MAX` | `2` | hard cap for the effective radius. Raise it only after the Connections page shows the host can absorb the chunk burst; a five-bot process is the constraint, not one bot |
 | `AUTONOMY_WARMUP_MS` | `20000` | live delay after every configured bot (`config.team.names`) is ready before any pathfinder starts, so the spawn chunk burst finishes first. Simulation and unit tests skip it |
+| `AUTONOMY_AUTO_PLAN` | `false` | create the survival-base objective automatically. Off by default so a fresh launch has an empty task board and idle bots; enable at runtime with `team plan on` or set `true` to plan from the first tick |
 | `AUTONOMY_CONCURRENCY` | `4` | maximum bots inside a long controller action at once. Others run safety work and rotate into the next free slot |
 | `ACTION_TIMEOUT_MS` | `60000` | hard budget for one autonomous controller step. A hung path or dig is cancelled, movement is stopped and the concurrency slot is released. Operator commands run in their own exclusive slot and cancel the autonomous step instead of racing it |
 | `EMERGENCY_BUDGET_MS` | `6000` | hard budget for one safety pass (eat, flee, defend). It is propagated to combat and pathfinding as a deadline, and a watchdog cancels movement at `budget + 750ms`; routine task work keeps the longer `ACTION_TIMEOUT_MS` |
@@ -432,7 +436,7 @@ requires an explicit `confirm` token or `confirmed:true`.
 
 ```
 help [command]                 status                         diagnostics
-ai [status|off]                team [state|on|off|memory|locks|tasks|roles|leader|formation|resources|objectives|follow|regroup|retreat|defend|reassign]
+ai [status|off]                team [state|on|off|plan on|plan off|memory|locks|tasks|roles|leader|formation|resources|objectives|follow|regroup|retreat|defend|reassign]
 goto <x> <y> <z> [bot]         goto <bot|all> <x> <y> <z>      # leader by default; block Y is lifted to a standable feet position
 bot <name|all> <status|where|goto x y z|come|follow|return|eat|mine [ore|block]|chop [type]|farm [plant [crop] [count]|maintain|status|crop]|fish [n]|defend|combat|guard [x y z]|duel <player>|explore [n]|sleep>
 inventory [bot]                eat [bot]                       sleep [bot|all|auto on|off]

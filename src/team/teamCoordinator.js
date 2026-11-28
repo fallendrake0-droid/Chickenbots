@@ -51,7 +51,9 @@ class TeamCoordinator {
     emergencies = null,
     logger = null,
     now = () => Date.now(),
-    autoPlan = true
+    // Planning is opt-in. A fresh launch must not manufacture work before
+    // the operator has asked for it (`team plan on`).
+    autoPlan = config.autonomy.autoPlan
   } = {}) {
     this.botNames = botNames.slice();
     this.now = now;
@@ -131,6 +133,42 @@ class TeamCoordinator {
   }
 
   setExtras(fn) { this.extrasFn = fn; }
+
+  planningStatus() {
+    return {
+      autoPlan: this.autoPlan,
+      failures: this.planFailures,
+      attempts: this.planAttempts,
+      nextRetryAt: this.planRetryAt || null,
+      blockedUntil: this.planBlockedUntil || null,
+      reopenPending: this.planReopen ? { objectiveId: this.planReopen.objectiveId, at: this.planReopen.at } : null,
+      blockedReason: this.planBlockedReason || null,
+      lastFailure: this.lastPlanFailure,
+      lastObjectiveId: this.lastPlanObjectiveId,
+      stopped: Boolean(this.planBlockedUntil && this.now() < this.planBlockedUntil)
+    };
+  }
+
+  /**
+   * Turn the survival planner on or off at runtime. Off leaves any objective
+   * and task already on the board alone; it only stops new plans. On clears a
+   * retry/backoff hold so the next tick can plan immediately.
+   */
+  setAutoPlan(enabled, { reason = 'operator' } = {}) {
+    const next = Boolean(enabled);
+    const changed = next !== this.autoPlan;
+    this.autoPlan = next;
+    if (next) {
+      this.planRetryAt = 0;
+      this.planBlockedUntil = 0;
+      this.planBlockedReason = null;
+    }
+    if (changed) {
+      this.comms.send(next ? 'PLANNER_ENABLED' : 'PLANNER_DISABLED', 'system', { at: this.now(), reason });
+      if (this.logger) this.logger.info(`autonomous planning ${next ? 'enabled' : 'disabled'} (${reason})`);
+    }
+    return { ok: true, changed, autoPlan: next, planning: this.planningStatus() };
+  }
 
   setFormation(name) {
     this.formation = normalizeFormation(name);
@@ -586,18 +624,7 @@ class TeamCoordinator {
         roles: Object.fromEntries(this.roles),
         formationSlots: this.formationSlots().slots,
         separation: this.separationVectors(),
-        planning: {
-          autoPlan: this.autoPlan,
-          failures: this.planFailures,
-          attempts: this.planAttempts,
-          nextRetryAt: this.planRetryAt || null,
-          blockedUntil: this.planBlockedUntil || null,
-          reopenPending: this.planReopen ? { objectiveId: this.planReopen.objectiveId, at: this.planReopen.at } : null,
-          blockedReason: this.planBlockedReason || null,
-          lastFailure: this.lastPlanFailure,
-          lastObjectiveId: this.lastPlanObjectiveId,
-          stopped: Boolean(this.planBlockedUntil && this.now() < this.planBlockedUntil)
-        }
+        planning: this.planningStatus()
       },
       bots,
       resources: this.ledger.snapshot(),

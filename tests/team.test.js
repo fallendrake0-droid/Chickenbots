@@ -389,6 +389,25 @@ test('collect plan splits work between four bots', () => {
   assert.equal(plan.tasks.reduce((s, t) => s + t.units.target, 0), 128);
 });
 
+test('planning is opt-in and can be toggled without deleting existing work', () => {
+  const c = clock();
+  const coordinator = new TeamCoordinator({ now: c.now });
+  coordinator.enable();
+  coordinator.tick();
+  assert.equal(coordinator.planningStatus().autoPlan, false);
+  assert.equal(coordinator.board.listObjectives().length, 0);
+  assert.equal(coordinator.ensureObjectives(), null);
+  const on = coordinator.setAutoPlan(true);
+  assert.equal(on.autoPlan, true);
+  coordinator.ensureObjectives();
+  const objective = coordinator.board.listObjectives('ACTIVE')[0];
+  assert.ok(objective);
+  const off = coordinator.setAutoPlan(false);
+  assert.equal(off.autoPlan, false);
+  assert.equal(coordinator.board.getObjective(objective.id).status, 'ACTIVE', 'stopping the planner leaves the current objective alone');
+  assert.equal(coordinator.getState().team.planning.autoPlan, false);
+});
+
 test('coordinator assigns, reassigns after disconnect, and preserves objectives', () => {
   const c = clock();
   const coordinator = new TeamCoordinator({ now: c.now, autoPlan: true });
