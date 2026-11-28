@@ -386,7 +386,9 @@ export function createWorldViewer({ canvas, overlay, onSelect = null, onStats = 
     for (const item of projectedBots) {
       const { bot, sx, sy } = item;
       ctx.font = '600 11px system-ui, -apple-system, sans-serif';
-      const label = `${bot.name}${bot.task ? ` · ${bot.task.type}` : ''}`;
+      // Always add a visible state: the roster's first name is eight
+      // underscores, so an idle bot's pill would otherwise be a blank bar.
+      const label = `${bot.name} · ${bot.task ? bot.task.type : bot.online === false ? 'offline' : 'idle'}`;
       const w = ctx.measureText(label).width + 12;
       // Keep the whole pill inside the canvas. Near the right edge the old
       // centred label was clipped to "01010100 · M…".
