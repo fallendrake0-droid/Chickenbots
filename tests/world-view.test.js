@@ -111,3 +111,28 @@ test('control plane bind guard refuses an unauthenticated public bind unless exp
   assert.equal(dashboardBindProblem({ host: '0.0.0.0', token: '', allowInsecure: true }), null);
   assert.match(dashboardBindProblem({ host: '0.0.0.0', token: '', allowInsecure: false }), /refusing to expose/);
 });
+
+test('live surface scans use the name-only path instead of building block objects', () => {
+  let getBlockCalls = 0;
+  let nameCalls = 0;
+  const services = {
+    mode: 'live',
+    bots: new Map([['________', {
+      name: '________',
+      ready: true, connected: true, spawned: true,
+      position: { x: 0, y: 70, z: 0 },
+      getBlock() { getBlockCalls += 1; return { name: 'grass_block' }; },
+      world: {
+        blockNameAt(x, y, z) {
+          nameCalls += 1;
+          return y <= 68 ? 'grass_block' : null;
+        }
+      }
+    }]])
+  };
+  const snap = worldSnapshot(services, { bot: '________', radius: 8, height: 8 });
+  assert.equal(snap.ok, true);
+  assert.ok(snap.columns.length > 0, 'the name-only scan must still produce terrain');
+  assert.ok(nameCalls > 0);
+  assert.equal(getBlockCalls, 0, 'the viewer must not build a block object per position');
+});

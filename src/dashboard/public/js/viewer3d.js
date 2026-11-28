@@ -388,10 +388,13 @@ export function createWorldViewer({ canvas, overlay, onSelect = null, onStats = 
       ctx.font = '600 11px system-ui, -apple-system, sans-serif';
       const label = `${bot.name}${bot.task ? ` · ${bot.task.type}` : ''}`;
       const w = ctx.measureText(label).width + 12;
+      // Keep the whole pill inside the canvas. Near the right edge the old
+      // centred label was clipped to "01010100 · M…".
+      const labelX = Math.max(2, Math.min(width - w - 2, sx - w / 2));
       ctx.fillStyle = bot.selected ? 'rgba(255,224,102,0.92)' : 'rgba(15,23,42,0.78)';
-      ctx.fillRect(sx - w / 2, sy - 24, w, 17);
+      ctx.fillRect(labelX, sy - 24, w, 17);
       ctx.fillStyle = bot.selected ? '#1f2937' : '#f8fafc';
-      ctx.fillText(label, sx - w / 2 + 6, sy - 11);
+      ctx.fillText(label, labelX + 6, sy - 11);
       const health = Math.max(0, Math.min(20, Number(bot.health) || 0));
       ctx.fillStyle = 'rgba(15,23,42,0.6)';
       ctx.fillRect(sx - 16, sy - 5, 32, 3);
@@ -411,9 +414,10 @@ export function createWorldViewer({ canvas, overlay, onSelect = null, onStats = 
       ctx.fillStyle = 'rgba(127,29,29,0.85)';
       const text = entity.name;
       const w = ctx.measureText(text).width + 8;
-      ctx.fillRect(sx - w / 2, sy - 14, w, 14);
+      const labelX = Math.max(2, Math.min(width - w - 2, sx - w / 2));
+      ctx.fillRect(labelX, sy - 14, w, 14);
       ctx.fillStyle = '#fee2e2';
-      ctx.fillText(text, sx - w / 2 + 4, sy - 4);
+      ctx.fillText(text, labelX + 4, sy - 4);
       labelled++;
     }
     lastProjection = viewProj;

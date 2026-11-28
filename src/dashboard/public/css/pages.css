@@ -499,6 +499,19 @@
   letter-spacing: 0.06em;
   color: var(--text-muted);
 }
+/* `.select` is width:100% for forms; inside this one-line toolbar it must
+   shrink to its label or each select wraps onto its own row. */
+.world-controls .select {
+  width: auto;
+  flex: 0 0 auto;
+  min-width: 120px;
+}
+.world-controls #world-radius {
+  min-width: 76px;
+}
+.world-controls .button {
+  flex: 0 0 auto;
+}
 .select--sm {
   min-width: 74px;
   padding: 5px 26px 5px 9px;

@@ -206,6 +206,13 @@ function resolveCenter(services, query, bot) {
 
 function readBlock(bot, x, y, z) {
   try {
+    // A live bot's getBlock() builds properties and a state id for every
+    // position. The viewer only needs the name, and 2,000+ columns scanned
+    // top-down through that path blocked the event loop for seconds.
+    if (bot.world && typeof bot.world.blockNameAt === 'function') {
+      const name = bot.world.blockNameAt(x, y, z);
+      return name ? { name } : null;
+    }
     const block = typeof bot.getBlock === 'function' ? bot.getBlock({ x, y, z }) : null;
     return block || null;
   } catch (_) {

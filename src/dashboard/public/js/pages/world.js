@@ -16,7 +16,8 @@ const view = {
   lastFetch: 0,
   stats: null,
   root: null,
-  timer: null
+  timer: null,
+  pendingFetch: false
 };
 
 function onlineBots() {
@@ -230,7 +231,12 @@ export const worldPage = {
 };
 
 async function fetchWorld(force) {
-  if (view.loading) return;
+  if (view.loading) {
+    // A click or select is an explicit request. If a background poll already
+    // owns the one in-flight request, remember it instead of dropping it.
+    if (force) view.pendingFetch = true;
+    return;
+  }
   if (!force && view.data && Date.now() - view.lastFetch < 2500) return;
   view.loading = true;
   toggleLoading(true);
@@ -253,13 +259,21 @@ async function fetchWorld(force) {
   } finally {
     view.loading = false;
     toggleLoading(false);
+    if (view.pendingFetch) {
+      view.pendingFetch = false;
+      fetchWorld(true);
+    }
   }
 }
 
 function toggleLoading(show) {
   if (!view.root) return;
   const el = view.root.querySelector('[data-world-loading]');
-  if (el) el.hidden = !show;
+  // A background refresh must not cover the terrain that is already on
+  // screen: the overlay sat over the canvas every poll and swallowed orbit
+  // drags that started in the middle of the view. Show it only for the first
+  // snapshot, when there is genuinely nothing to look at yet.
+  if (el) el.hidden = !(show && !view.data);
 }
 
 function showError(message) {
