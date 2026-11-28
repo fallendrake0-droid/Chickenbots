@@ -522,6 +522,7 @@ function profileNavigation(bot, actions, name) {
             ['Sleeping', sleep.sleeping ? 'Yes' : 'No'],
             ['Bed reservation', sleep.reservation ? esc(sleep.reservation.bed || sleep.reservation.id || 'reserved') : 'None'],
             ['Nearby beds', num((sleep.nearbyBeds || []).length)],
+            ['Spawn point', sleep.spawnPoint ? esc(`${sleep.spawnPoint.x}, ${sleep.spawnPoint.y}, ${sleep.spawnPoint.z}`) : 'Not set'],
             ['Bed item', sleep.hasBedItem ? 'Yes' : 'No']
           ]) : '<div class="muted small">No sleep status reported.</div>'}
           <button class="button" type="button" style="margin-top:12px" data-command="sleep ${esc(name)}">${icon('bed')} Sleep now</button></div>

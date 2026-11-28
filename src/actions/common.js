@@ -81,10 +81,25 @@ function findBlocks(bot, names, { near = null, radius = 24, limit = 50, yFrom = 
 
   // Mineflayer's indexed search lives on the world view. It skips sections
   // whose palette cannot contain a target, which is dramatically cheaper than
-  // constructing one block object per position. Status scans pass a budget and
-  // deliberately use the bounded fallback instead: it can be interrupted.
-  if (!budgetMs && world && typeof world.findBlocks === 'function') {
-    const found = world.findBlocks([...wanted], near, radius, Math.max(limit, 1), yFrom, yTo);
+  // constructing one block object per position. It is also the ONLY scan that
+  // can see a target a few blocks away when a 2 ms status budget would expire
+  // after the first few hundred cube cells. The budget therefore applies to
+  // the bounded fallback only; an adapter that cannot answer through its index
+  // returns null and falls through.
+  // A real world view marks itself `indexedSearch`: Mineflayer skips sections
+  // by palette, so radius is cheap and the scan can safely cover the whole
+  // search area even inside a status budget. The deterministic mock has no
+  // palette index, so a 64-block cube there is 2M block reads; keep its large
+  // scans on the interruptible fallback.
+  const indexed = world && typeof world.findBlocks === 'function'
+    && (!budgetMs || world.indexedSearch === true || radius <= 24);
+  if (indexed) {
+    let found = null;
+    try {
+      found = world.findBlocks([...wanted], near, radius, Math.max(limit, 1), yFrom, yTo);
+    } catch (_) {
+      found = null;
+    }
     if (Array.isArray(found)) {
       return found
         .filter((block) => block && wanted.has(block.name) && withinY(block.y))

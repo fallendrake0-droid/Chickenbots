@@ -1239,19 +1239,19 @@ export const sleepPage = {
       <div class="page">
         ${pageHeader({
           eyebrow: 'Gameplay', title: 'Sleep', description: 'Automatic night sleep, bed reservations, world time and night state. Bots only attempt sleep when conditions allow.',
-          actions: `<button class="button button--primary" type="button" data-fleet-command="sleep">${icon('bed')} Sleep now</button><button class="button" type="button" data-command="sleep auto on">${icon('moon')} Auto on</button><button class="button" type="button" data-command="sleep auto off">${icon('square')} Auto off</button>`
+          actions: `<button class="button button--primary" type="button" data-fleet-command="sleep">${icon('bed')} Sleep now</button><button class="button" type="button" data-command="sleep spawn all">${icon('map-pin')} Set spawn (all)</button><button class="button" type="button" data-command="sleep auto on">${icon('moon')} Auto on</button><button class="button" type="button" data-command="sleep auto off">${icon('square')} Auto off</button>`
         })}
         <div class="grid grid--stats">
           ${statCard({ label: 'Sleeping', value: `${sleeping.length}<small> / ${rows.length}</small>`, iconName: 'moon', tone: sleeping.length ? 'info' : 'neutral', context: sleeping.length ? sleeping.map((row) => row.bot).join(', ') : 'No bot is asleep' })}
           ${statCard({ label: 'Night', value: rows.some((row) => row.night) ? 'Yes' : 'No', iconName: 'moon', tone: rows.some((row) => row.night) ? 'info' : 'neutral', context: rows.length ? `World time ${num(rows[0].time)}` : 'No time reported' })}
-          ${statCard({ label: 'Nearby beds', value: num(sum(rows, (row) => (row.nearbyBeds || []).length)), iconName: 'bed', tone: 'neutral', context: 'Detected within scan range' })}
+          ${statCard({ label: 'Nearby beds', value: num(sum(rows, (row) => (row.nearbyBeds || []).length)), iconName: 'bed', tone: 'neutral', context: `${num(rows.filter((row) => row.spawnSet).length)} bot(s) with a spawn point` })}
           ${statCard({ label: 'Reservations', value: num(rows.filter((row) => row.reservation).length), iconName: 'lock', tone: 'accent', context: 'Beds locked by the sleep manager' })}
           ${statCard({ label: 'Auto sleep', value: rows.length && rows.every((row) => row.auto !== false) ? 'Enabled' : 'Mixed', iconName: 'moon', tone: rows.length && rows.every((row) => row.auto !== false) ? 'success' : 'warning', context: 'Automatic night routine per bot' })}
         </div>
         <section class="card">
           <div class="card-header"><div class="card-title">${icon('bed')} Sleep status</div></div>
           <div class="table-wrap"><table class="table">
-            <thead><tr><th>Bot</th><th>World time</th><th>Night</th><th>Auto</th><th>Sleeping</th><th>Reservation</th><th>Nearby beds</th><th>Bed item</th><th>Counters</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Bot</th><th>World time</th><th>Night</th><th>Auto</th><th>Sleeping</th><th>Reservation</th><th>Spawn point</th><th>Nearby beds</th><th>Bed item</th><th>Counters</th><th>Actions</th></tr></thead>
             <tbody>${rows.length ? rows.map((row) => `<tr>
               <td><a class="link" href="#/bots/${encodeURIComponent(row.bot)}/navigation">${esc(row.bot)}</a></td>
               <td class="mono">${num(row.time)}</td>
@@ -1259,18 +1259,19 @@ export const sleepPage = {
               <td>${row.auto !== false ? badge('On', 'ok') : badge('Off', 'warn')}</td>
               <td>${row.sleeping ? badge('Sleeping', 'accent', { dot: true }) : badge('Awake', 'neutral')}</td>
               <td class="tiny mono">${esc(row.reservation ? bedText(row.reservation.bed || row.reservation.bedId || row.reservation.id) : '—')}</td>
+              <td class="tiny mono">${row.spawnPoint ? esc(bedText(row.spawnPoint)) : (row.spawnSet ? 'Set' : badge('Not set', 'warn'))}</td>
               <td class="mono">${num((row.nearbyBeds || []).length)}</td>
               <td>${row.hasBedItem ? badge('Yes', 'ok') : badge('No', 'neutral')}</td>
               <td class="tiny">${Object.entries(row.stats || {}).slice(0, 3).map(([key, value]) => `${esc(humanize(key))} ${num(value)}`).join(' · ') || '—'}</td>
-              <td><div class="row gap-1">${actionButton('Sleep', `sleep ${row.bot}`, 'bed')}${actionButton(row.auto !== false ? 'Auto off' : 'Auto on', `sleep ${row.bot} auto ${row.auto !== false ? 'off' : 'on'}`, 'moon')}</div></td>
-            </tr>`).join('') : `<tr><td colspan="10">${emptyState('No sleep status', 'The sleep action has not reported yet.', 'bed')}</td></tr>`}</tbody>
+              <td><div class="row gap-1">${actionButton('Sleep', `sleep ${row.bot}`, 'bed')}${actionButton('Set spawn', `sleep spawn ${row.bot}`, 'map-pin')}${actionButton(row.auto !== false ? 'Auto off' : 'Auto on', `sleep ${row.bot} auto ${row.auto !== false ? 'off' : 'on'}`, 'moon')}</div></td>
+            </tr>`).join('') : `<tr><td colspan="11">${emptyState('No sleep status', 'The sleep action has not reported yet.', 'bed')}</td></tr>`}</tbody>
           </table></div>
         </section>
         <div class="grid grid--2" style="margin-top:16px">
           <section class="card">
             <div class="card-header"><div class="card-title">${icon('bed')} Detected beds</div></div>
             <div class="card-body card-body--tight">
-              ${rows.flatMap((row) => (row.nearbyBeds || []).map((bed) => ({ ...bed, bot: row.bot }))).length ? rows.flatMap((row) => (row.nearbyBeds || []).map((bed) => `<div class="list-item"><span class="list-icon">${icon('bed')}</span><div class="list-main"><div class="list-title">${esc(humanize(bed.name || 'bed'))}</div><div class="list-sub mono">${bed.x}, ${bed.y}, ${bed.z} · ${esc(row.bot)}</div></div></div>`)).join('') : '<div class="muted small" style="padding:8px">No beds detected nearby.</div>'}
+              ${rows.flatMap((row) => (row.nearbyBeds || []).map((bed) => ({ ...bed, bot: row.bot }))).length ? rows.flatMap((row) => (row.nearbyBeds || []).map((bed) => `<div class="list-item"><span class="list-icon">${icon('bed')}</span><div class="list-main"><div class="list-title">${esc(humanize(bed.name || 'bed'))} ${bed.spawn ? badge('Spawn', 'ok') : ''}${bed.occupied ? badge('Occupied', 'warn') : ''}</div><div class="list-sub mono">${bed.x}, ${bed.y}, ${bed.z} · ${esc(row.bot)} · ${num(bed.distance)}m${bed.reservedBy ? ` · ${esc(bed.reservedBy)}` : ''}</div></div></div>`)).join('') : '<div class="muted small" style="padding:8px">No beds detected nearby.</div>'}
             </div>
           </section>
           <section class="card">

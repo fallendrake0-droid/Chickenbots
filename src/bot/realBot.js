@@ -598,7 +598,17 @@ class RealBot extends BotAdapter {
 
   _onClientStall(lateMs) {
     if (!this.bot || this._transportDead) return false;
-    this._cancelMotion('client tick stall', { stop: false });
+    // Stop the stale path, but KEEP the movement claim. Cancelling the
+    // navigation arbiter here made every in-flight `come`/`follow` return
+    // "movement request was superseded"; the operator then reissued the same
+    // goal, the next stall cancelled that too, and the command could never
+    // finish. The manager now retries the same token after the resync pause.
+    const recoveryAt = this.now();
+    // A stalled tick and a goTo() called from the same frozen callback both
+    // reach this method. Coalesce them: dozens of recoveries per bot were
+    // counted for a single freeze.
+    if (recoveryAt - (this._lastStallRecoveryAt || 0) < 750) return false;
+    this._lastStallRecoveryAt = recoveryAt;
     this._stallRecoveries += 1;
     this._movementBlockedUntil = this.now() + Math.max(0, config.autonomy.stallResumeMs);
     // The pathfinder's plan was computed against a world/entity that is now
@@ -623,7 +633,7 @@ class RealBot extends BotAdapter {
     const at = this.now();
     if (at - this._lastStallWarnAt >= 15000) {
       this._lastStallWarnAt = at;
-      this.logger.warn(`[${this.name}] client tick loop was ${Math.round(lateMs)}ms late; paused movement, re-anchored to the server position and stopped the stale path (recoveries ${this._stallRecoveries})`);
+      this.logger.warn(`[${this.name}] client tick loop was ${Math.round(lateMs)}ms late; paused movement for ${Math.max(0, config.autonomy.stallResumeMs)}ms, re-anchored to the server position and stopped the stale path (recoveries ${this._stallRecoveries})`);
     }
     // Probe the socket with a real animation write. If the freeze outlived the
     // server's session timeout, this is where EPIPE surfaces; the normal write
@@ -1625,12 +1635,14 @@ class RealBot extends BotAdapter {
       client.on('packet', (data, meta, buffer) => {
         if (!owns()) return;
         const now = Date.now();
-        if (this._lastInboundPacketAt && now - this._lastInboundPacketAt >= 1000) {
-          // Chunk streaming produces dozens of >1s gaps per join. Log the
-          // first one per five seconds, plus every gap over ten seconds; a
-          // warning per packet is itself event-loop work during the burst.
+        if (this._lastInboundPacketAt && now - this._lastInboundPacketAt >= 5000) {
+          // Chunk streaming and a loaded server routinely produce 1-3 s gaps
+          // during a join; warning at 1 s filled the log with a line per few
+          // seconds for 5-byte keep-alive packets. Five seconds is a real
+          // stall. Log the first one, then at most once a minute unless the
+          // gap is catastrophic.
           const gap = now - this._lastInboundPacketAt;
-          if (gap >= 10000 || !this._lastGapWarnAt || now - this._lastGapWarnAt >= 5000) {
+          if (gap >= 15000 || !this._lastGapWarnAt || now - this._lastGapWarnAt >= 60000) {
             this._lastGapWarnAt = now;
             this.logger.warn(`[${this.name}] inbound packet gap ${gap}ms before ${meta && meta.name ? meta.name : 'unknown'} (${buffer ? buffer.length : 0} bytes)`);
           }
@@ -2238,6 +2250,7 @@ class RealBot extends BotAdapter {
   _makeWorldView() {
     const self = this;
     return {
+      indexedSearch: true,
       getBlock(pos) {
         const block = self._blockAt(pos);
         return block ? { name: block.name, position: { ...pos } } : { name: 'air', position: { ...pos } };
@@ -2841,6 +2854,17 @@ class RealBot extends BotAdapter {
    */
   async _executeNavigationPath(goal, context = {}) {
     const options = context.options || {};
+    // A stall re-anchors the entity and asks for a short resync pause; starting
+    // the retry before that pause ends would emit the same impossible jump the
+    // stall was recovering from.
+    const blockedFor = this._movementBlockedUntil - this.now();
+    if (blockedFor > 0) {
+      await sleep(Math.min(blockedFor, 2500));
+      const arbiter = this.navigation && this.navigation.arbiter;
+      if (context.token && arbiter && typeof arbiter.isCurrent === 'function' && !arbiter.isCurrent(context.token)) {
+        return { ok: false, cancelled: true, superseded: true, error: 'movement request was superseded' };
+      }
+    }
     const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
     if (!this.bot.pathfinder) this.bot.loadPlugin(pathfinder);
     if (Number.isFinite(Number(config.autonomy.pathfinderThinkTimeoutMs))) {
@@ -3222,6 +3246,78 @@ class RealBot extends BotAdapter {
     this.food = this.bot.food;
     this._syncInventory();
     return { ok: true, item: foodName, food: this.food };
+  }
+
+  /** Current respawn anchor as reported by the server. */
+  get spawnPoint() {
+    const point = this.bot && this.bot.spawnPoint;
+    if (!point || ![point.x, point.y, point.z].every((value) => Number.isFinite(Number(value)))) return null;
+    return { x: Number(point.x), y: Number(point.y), z: Number(point.z) };
+  }
+
+  /** The foot half of a bed; a click on the head is not guaranteed to set it. */
+  _bedFoot(pos) {
+    const block = this._blockAt(pos);
+    if (!block || !BED_NAMES.has(block.name)) return null;
+    let properties = {};
+    try {
+      properties = typeof block.getProperties === 'function' ? (block.getProperties() || {}) : (block.properties || {});
+    } catch (_) { properties = {}; }
+    const part = String(properties.part || '').toLowerCase();
+    if (part === 'foot') return { block, position: { ...pos }, part };
+    for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const neighbourPos = { x: pos.x + dx, y: pos.y, z: pos.z + dz };
+      const neighbour = this._blockAt(neighbourPos);
+      if (!neighbour || neighbour.name !== block.name) continue;
+      let neighbourProperties = {};
+      try {
+        neighbourProperties = typeof neighbour.getProperties === 'function' ? (neighbour.getProperties() || {}) : (neighbour.properties || {});
+      } catch (_) { neighbourProperties = {}; }
+      if (String(neighbourProperties.part || '').toLowerCase() === 'foot') {
+        return { block: neighbour, position: { ...neighbourPos }, part: 'foot' };
+      }
+    }
+    // No usable block state: vanilla accepts either half, so keep the block the
+    // caller named rather than refusing to set a spawn point.
+    return { block, position: { ...pos }, part: part || 'unknown' };
+  }
+
+  /**
+   * Set the server-side respawn anchor by interacting with a real bed. The
+   * server answers with a spawn_position packet, which mineflayer exposes as
+   * bot.spawnPoint; a call that returns without that acknowledgement is
+   * reported as unverified instead of being counted as a success.
+   */
+  async setSpawnPoint(bedPos) {
+    const check = this._assertReady();
+    if (check) return check;
+    const foot = this._bedFoot(bedPos);
+    if (!foot) return { ok: false, error: 'no bed at position', code: 'NO_BED' };
+    if (distance(this.position, foot.position) > 4) {
+      const move = await this.goTo(foot.position, { range: 2, timeoutMs: 5000, priority: 'task', owner: 'set-spawn' });
+      if (move && move.ok === false) return { ok: false, error: move.error || 'cannot reach the bed', code: 'UNREACHABLE', bed: foot.position };
+    }
+    try {
+      await this.bot.activateBlock(foot.block);
+    } catch (err) {
+      return { ok: false, error: err.message || 'bed interaction failed', code: 'SPAWN_REJECTED', bed: foot.position };
+    }
+    const deadline = this.now() + 1500;
+    let spawn = this.spawnPoint;
+    while (this.now() < deadline) {
+      if (spawn && distance(spawn, foot.position) <= 2.5) {
+        return { ok: true, verified: true, bed: foot.position, spawnPoint: { ...spawn }, position: { ...spawn } };
+      }
+      await sleep(100);
+      spawn = this.spawnPoint;
+    }
+    // Some servers set the respawn point silently. The interaction was sent
+    // and accepted (no protocol error), but the anchor could not be confirmed.
+    return {
+      ok: true, verified: false, bed: foot.position,
+      spawnPoint: spawn ? { ...spawn } : null, position: spawn ? { ...spawn } : null,
+      note: 'bed interaction sent but the server did not send a spawn_position update'
+    };
   }
 
   async sleep(bedPos) {

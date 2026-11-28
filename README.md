@@ -183,6 +183,9 @@ tests/                      team, excavation, construction, schematics, builder,
   rather than silently leaving it. Farming reads vanilla crop ages, harvests only mature crops, harvests pumpkin/melon
   fruit without breaking the stem, replants and verifies each block, tills soil with a real hoe,
   builds a hydrated plot when needed, and feeds/breeds animals with a verified food deduction.
+  Crop scans use the world index, so a crop one block away is found even under a status time budget;
+  the work limit is applied after the maturity filter, so seedlings cannot hide a ripe crop. Idle
+  maintenance harvests fully grown crops and replants them even when the task planner is off.
 * Inventory fullness uses real storage slots (36, stack-aware, and the live
   window slots when Mineflayer exposes them), never a count of distinct item names. When a mining,
   chopping, farming or excavation run fills a bot, it walks to the team's spawn-anchored home,
@@ -191,6 +194,10 @@ tests/                      team, excavation, construction, schematics, builder,
   board assignment. The chest is registered in the resource ledger as 54-slot `home overflow` storage;
   build phases withdraw their materials back out instead of failing with an empty inventory.
 * Sleep reserves a bed through the shared task board (TTL lock) so two bots cannot claim one bed.
+  A 16-block indexed bed scan detects both halves as one bed, and a nearby bed is clicked (foot half)
+  to set the server-side spawn point. Detection runs in the idle loop and in the daytime tick;
+  `sleep spawn [bot|all]` and the **Set spawn** dashboard buttons repair a fleet by hand. The spawn
+  point is only reported as set after the server acknowledges `spawn_position`.
 
 ### Navigation and pathfinding
 

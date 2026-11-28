@@ -1201,9 +1201,23 @@ function registerAll(services, registry) {
   });
 
   registry.register({
-    name: 'sleep', category: 'survival', summary: 'Reserve a bed and sleep at night; auto toggles the automatic routine', usage: 'sleep [bot|all] | sleep auto on|off',
+    name: 'sleep', category: 'survival', summary: 'Reserve a bed and sleep at night; spawn claims a nearby bed as the respawn point', usage: 'sleep [bot|all] | sleep spawn [bot|all] | sleep auto on|off',
     execute: async (args) => {
       const first = String(args[0] || '').toLowerCase();
+      if (first === 'spawn' || String(args[1] || '').toLowerCase() === 'spawn') {
+        // Explicit detection + claim. The idle loop does this automatically,
+        // but an operator needs a way to repair a fleet whose bots spawned
+        // before a bed existed.
+        const targetToken = first === 'spawn' ? args[1] : args[0];
+        const targets = !targetToken || isFleetTarget(String(targetToken).toLowerCase())
+          ? allActions(services)
+          : [actionsFor(services, pickBot(services, targetToken).name)];
+        const results = await Promise.all(targets.map(async (actions) => ({
+          bot: actions.bot.name,
+          ...(await withBotExclusive(services, actions.bot, () => actions.sleep.ensureSpawnPoint()))
+        })));
+        return { ok: results.every((result) => result.ok !== false), results };
+      }
       if (first === 'auto') {
         const value = String(args[1] || '').toLowerCase();
         if (!['on', 'off'].includes(value)) return { ok: true, auto: allActions(services).map((actions) => ({ bot: actions.bot.name, auto: actions.sleep.auto })) };

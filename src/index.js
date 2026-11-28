@@ -80,7 +80,17 @@ async function main() {
   logger.info(`logging: ${config.logging.level} (per-packet traces ${config.logging.tracePackets ? 'on' : 'off; set MC_TRACE_PACKETS=true to enable'})`);
   if (!args.simulate) {
     const passwordConfigured = Boolean(config.server.loginPassword || config.server.registerPassword);
-    logger.info(passwordConfigured ? 'password authentication: configured (value redacted)' : 'password authentication: not configured (MC_LOGIN_PASSWORD / MC_REGISTER_PASSWORD empty)');
+    const profile = String(config.server.authProfile || 'none').toLowerCase();
+    // Credentials without a profile are inert by design. Saying "configured"
+    // made an operator believe /login was being sent when MC_AUTH_PROFILE=none
+    // guarantees it is not.
+    if (passwordConfigured && profile === 'none') {
+      logger.warn('password authentication: credentials present but MC_AUTH_PROFILE=none, so no /login or /register command is sent (value redacted)');
+    } else if (passwordConfigured) {
+      logger.info(`password authentication: configured for profile ${profile} (value redacted)`);
+    } else {
+      logger.info('password authentication: not configured (MC_LOGIN_PASSWORD / MC_REGISTER_PASSWORD empty)');
+    }
   }
   const runtime = await createRuntime({
     simulate: args.simulate,

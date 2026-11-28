@@ -399,7 +399,14 @@ class BotActions {
         totalMs: this.monoNow() - monoStartedAt, equipmentRescan, recovery: this.recovery.status()
       };
     }
-    const follow = this.combat.mode === 'FOLLOW' ? await this.combat.followTick() : null;
+    // The operator watcher already owns follow/guard movement for this pass.
+    // Running the combat follow on top of it created a second owner for the
+    // same target, which surfaced as "movement request was superseded" and
+    // spent the rest of the safety budget.
+    const watchingPlayer = Boolean(playerWatch && playerWatch.visible && playerWatch.active);
+    const follow = this.combat.mode === 'FOLLOW' && !watchingPlayer
+      ? await this.combat.followTick({ deadlineAt })
+      : null;
     lap('follow');
     let defence = null;
     if (assessment.threats.length && this.combat.armed && Date.now() < deadlineAt) {
@@ -495,6 +502,27 @@ class BotActions {
         y: Math.round(start.y),
         z: Math.round(start.z + Math.sin(angle) * distanceOut)
       };
+      // Do not flee into water or lava. A bot ordered to run from a hostile
+      // used to choose the shortest vector regardless of the terrain and
+      // drowned while "escaping"; a land route is always better than a
+      // swim it cannot control.
+      if (typeof bot.getBlock === 'function') {
+        const at = (dx2, dy2, dz2) => {
+          try {
+            const block = bot.getBlock({ x: Math.round(candidate.x) + dx2, y: Math.round(start.y) + dy2, z: Math.round(candidate.z) + dz2 });
+            return block && block.name ? String(block.name).replace(/^minecraft:/, '') : null;
+          } catch (_) { return null; }
+        };
+        const feet = at(0, 0, 0);
+        const head = at(0, 1, 0);
+        const ground = at(0, -1, 0);
+        const wet = (name) => name && /(water|lava)/.test(name);
+        const solid = ground && !/^(air|cave_air|unloaded|unknown|water|lava)$/.test(ground);
+        if (wet(feet) || wet(head) || wet(ground) || (ground && !solid)) {
+          attempts.push({ candidate, skipped: true, reason: `retreat vector is ${wet(feet) || wet(head) || wet(ground) ? 'wet' : 'unsupported'}` });
+          continue;
+        }
+      }
       let move;
       try {
         const moveBudget = deadlineAt ? Math.max(800, Math.min(timeouts[i], deadlineAt - Date.now())) : timeouts[i];
@@ -534,15 +562,21 @@ class BotActions {
     const head = blockName(1);
     const below = blockName(-1);
     const hazards = [];
-    if ([feet, head, below].some((name) => name && name.includes('lava'))) hazards.push('lava at spawn');
+    // "unloaded" is an absence of evidence, not a hazard. On a fresh join the
+    // chunk around the spawn point is still streaming, so the old code saw
+    // `head: unloaded` and `below: unloaded`, reported "suffocation risk" and
+    // "unsupported ground", and pinned every bot in RECOVERING for nothing.
+    const unknown = /^(unloaded|unknown|void_air)$/;
+    const known = (name) => Boolean(name) && !unknown.test(name);
+    if ([feet, head, below].some((name) => known(name) && name.includes('lava'))) hazards.push('lava at spawn');
     if ([feet, head].some((name) => name === 'fire' || name === 'soul_fire')) hazards.push('fire at spawn');
-    if ([feet, head].some((name) => name && name.includes('water'))) hazards.push('water at spawn');
+    if ([feet, head].some((name) => known(name) && name.includes('water'))) hazards.push('water at spawn');
     // Leaves, crops, saplings, snow and other passable decoration are not
     // suffocating blocks. Treating every non-air head block as suffocation made
     // bots sit in RECOVERING after a healthy spawn under a tree.
     const passable = /(air|water|grass|fern|flower|torch|sign|vine|leaves|sapling|crop|wheat|carrots|potatoes|beetroots|sugar_cane|pumpkin|melon|mushroom|kelp|seagrass|snow|bush|azalea|ladder|rail|redstone|button|lever|door|trapdoor|bed)/;
-    if (head && !passable.test(head)) hazards.push('suffocation risk');
-    if (!below || /air|cave_air|water|lava/.test(below)) hazards.push('unsupported ground');
+    if (known(head) && !passable.test(head)) hazards.push('suffocation risk');
+    if (known(below) && /^(air|cave_air|water|lava)$/.test(below)) hazards.push('unsupported ground');
     return hazards;
   }
 
@@ -607,6 +641,7 @@ class BotActions {
     this._lastRecoveryStepAt = now;
     const bot = this.bot;
     const actions = [];
+    const expired = () => Boolean(deadlineAt) && Date.now() >= deadlineAt - 150;
     const threats = assessment && Array.isArray(assessment.threats)
       ? assessment.threats.filter((threat) => threat && threat.position && Number.isFinite(Number(threat.distance)))
       : [];
@@ -643,13 +678,15 @@ class BotActions {
       }
     }
     try {
-      const survival = await this.survival.tick({ emergency: true });
-      if (survival.actions.length) actions.push(...survival.actions);
+      if (!expired()) {
+        const survival = await this.survival.tick({ emergency: true, deadlineAt });
+        if (survival.actions.length) actions.push(...survival.actions);
+      }
     } catch (err) {
       this.logger.warn(`[${bot.name}] recovery survival step failed: ${err.message}`);
     }
     try {
-      if (bot.health <= 14) {
+      if (!expired() && bot.health <= 14) {
         const healed = await this.combat.heal({ emergency: true });
         if (healed.did) actions.push({ action: 'recovery-heal', kind: healed.kind || 'heal' });
       }
@@ -659,7 +696,7 @@ class BotActions {
     // No threat and a verified healthy state: walking home is useful but not
     // worth blocking other safety work. It is bounded and lower priority.
     const farFromHome = Math.hypot(bot.position.x - this.home.x, bot.position.z - this.home.z) > 8;
-    if (!threats.length && bot.health > 12 && farFromHome) {
+    if (!expired() && !threats.length && bot.health > 12 && farFromHome) {
       try {
         const retreat = await bot.goTo(this.home, { range: 3, timeoutMs: deadlineAt ? Math.max(800, Math.min(5000, deadlineAt - Date.now())) : 5000, priority: 'recovery', owner: 'recovery-home' });
         actions.push({ action: 'recovery-home', ok: retreat.ok !== false, error: retreat.error });
@@ -754,7 +791,12 @@ class BotActions {
         }
       }
     }
-    if (!anchor) return { ok: false, placed: 0, missing: [], error: 'no clear site for base phase within 24 blocks of home' };
+    if (!anchor) {
+      return {
+        ok: false, placed: 0, missing: [], code: 'NO_SITE', reason: 'no clear 3x3x4 site within 24 blocks of home',
+        error: 'no clear site for base phase within 24 blocks of home'
+      };
+    }
     // Overwrite a stale remembered anchor when the area it named is no longer
     // usable; otherwise every retry would keep failing on the same coordinates.
     if (this.memory && typeof this.memory.setFact === 'function') this.memory.setFact('base_anchor', anchor);
@@ -838,7 +880,26 @@ class BotActions {
       return block.name !== material;
     });
     const ok = absent.length === 0;
-    return { ok, phase: phaseName, material, anchor, supplied: supply.supplied, placed, total: positions.length, missing: absent.map((p) => ({ ...p, reason: missing.find((m) => m.x === p.x && m.y === p.y && m.z === p.z)?.reason || 'not placed' })) };
+    const missingWithReasons = absent.map((p) => ({
+      ...p,
+      reason: (missing.find((m) => m.x === p.x && m.y === p.y && m.z === p.z) || {}).reason || 'not placed'
+    }));
+    // A typed reason, not just "no verified result". The coordinator can then
+    // say whether the phase failed because no site existed, the material ran
+    // out, or specific blocks were unreachable/occupied.
+    const reasons = [...new Set(missingWithReasons.map((entry) => String(entry.reason).replace(/^-?\d+,-?\d+,-?\d+:\s*/, '')))];
+    const supplyShort = Object.keys(supply.missing || {}).length > 0;
+    const code = ok ? 'OK' : (supplyShort ? 'MATERIALS_SHORT' : reasons.some((reason) => /reach|path|timeout|unreachable/i.test(reason)) ? 'UNREACHABLE' : 'BLOCKS_MISSING');
+    return {
+      ok, phase: phaseName, material, anchor, supplied: supply.supplied,
+      placed, total: positions.length,
+      code,
+      reason: ok ? null : (supplyShort
+        ? `not enough ${material} for ${positions.length - placed} remaining block(s)`
+        : missingWithReasons.length ? `${missingWithReasons.length} block(s): ${reasons.slice(0, 3).join('; ')}` : 'phase not verified'),
+      missingCount: missingWithReasons.length,
+      missing: missingWithReasons
+    };
   }
 
   /**
@@ -1149,7 +1210,11 @@ class BotActions {
           existing = this.sleep.findBeds({ radius: 24, limit: wanted });
         }
         if (existing.length >= wanted) {
-          result = { ok: true, quantity: wanted, verified: true, existing, reused: true };
+          // Reusing a bed is fine, but it only counts when it also becomes the
+          // bot's respawn anchor; otherwise the team has furniture and no
+          // spawn protection.
+          const spawn = await this.sleep.claimSpawn(existing[0]).catch((err) => ({ ok: false, error: err.message }));
+          result = { ok: true, quantity: wanted, verified: true, existing, reused: true, spawn };
           break;
         }
         // A bed can be in the bot's pack or in the shared home chest. The
@@ -1191,11 +1256,17 @@ class BotActions {
         result = await this.combat.defend({ maxAttacks: 10 });
         result.verified = result.ok && !result.idle;
         break;
-      case 'BUILD_PHASE':
+      case 'BUILD_PHASE': {
         result = await this.buildBasePhase(task.params?.phase || 'FOUNDATION');
         result.quantity = result.placed;
-        result.verified = result.ok && result.missing.length === 0;
+        result.verified = Boolean(result.ok && (!result.missing || result.missing.length === 0));
+        if (!result.verified) {
+          result.code = result.code || 'BUILD_INCOMPLETE';
+          result.reason = result.reason || 'phase blocks were not verified in the world';
+          result.error = result.error || `BUILD_PHASE ${result.phase || task.params?.phase || 'FOUNDATION'} incomplete (${result.code}): ${result.reason}`;
+        }
         break;
+      }
       case 'BUILD_BLOCK': {
         const buildId = task.params?.buildId;
         const builder = context.builder || this.builders.get(buildId);

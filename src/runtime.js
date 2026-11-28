@@ -1416,12 +1416,29 @@ class TeamRuntime {
     // must actually stand down. Background chopping/farming here made an
     // "empty task board" look idle in the dashboard while bots kept changing
     // the world. Safety (eat/flee/defend) still runs above this branch.
-    if (!this.coordinator || !this.coordinator.autoPlan) return { ok: true, skipped: 'planner-off', idle: true };
-    const index = actions.index;
+    // Maintenance is the exception: harvesting a fully grown crop and
+    // replanting it keeps an existing farm alive, and setting the respawn
+    // anchor is survival bookkeeping. Neither creates a new farm or fells new
+    // trees, so an unarmed planner still stands down from fresh work. Before
+    // this branch a mature crop next to an idle bot was never harvested and
+    // the bot never had a spawn point.
+    if (!this.coordinator || !this.coordinator.autoPlan) {
+      const harvest = await actions.farming.harvestAll({ radius: 16, limit: 8 });
+      if (harvest && harvest.harvested > 0) return harvest;
+      return actions.sleep.tick();
+    }
     this.idleCounter++;
-    if (index % 3 === 0) return actions.woodcutting.tick({ maxTrees: 1 });
-    if (index % 3 === 1) return actions.farming.tick();
-    return actions.exploration.explore({ steps: 1 });
+    const index = this.idleCounter;
+    // Four-way rotation. Sleep used to be absent from the idle loop entirely,
+    // so a bot only ever looked for a bed when an operator typed `sleep` or the
+    // base plan happened to place one; it could stand in a bedroom all day with
+    // no spawn point. Farming stays in the rotation so ripe crops are harvested
+    // and immediately replanted without waiting for a FARM_CROP objective.
+    const slot = index % 4;
+    if (slot === 0) return actions.woodcutting.tick({ maxTrees: 1 });
+    if (slot === 1) return actions.farming.tick();
+    if (slot === 2) return actions.exploration.explore({ steps: 1 });
+    return actions.sleep.tick();
   }
 
   async executeCommand(line, options = {}) {

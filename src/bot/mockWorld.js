@@ -67,6 +67,9 @@ const DROPS = {
  */
 class MockWorld {
   constructor({ seed = 'chickenbots-v4', size = 256, seaLevel = 62, dayLength = 24000, flat = false, guaranteedOres = true } = {}) {
+    // No section palette index: common.findBlocks must use its bounded scan for
+    // large radii instead of walking millions of cells synchronously.
+    this.indexedSearch = false;
     this.flat = flat;
     this.guaranteedOres = guaranteedOres;
     this.seed = typeof seed === 'number' ? seed : [...String(seed)].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7);

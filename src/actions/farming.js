@@ -58,11 +58,11 @@ class FarmingController {
     // which on the live server froze the loop for tens of seconds. The cache is
     // now staggered across the roster and the scan itself is time-bounded.
     const ttl = statusTtl(this.bot.name, 3);
-    if (!this._statusCache || moved > 24 || now - this._statusCache.at > ttl) {
+    if (!this._statusCache || moved > 8 || now - this._statusCache.at > ttl) {
       this._statusCache = {
         center: { x: position.x, z: position.z },
         at: now,
-        crops: this.scanCrops({ radius: 6, budgetMs: STATUS_SCAN_BUDGET_MS }),
+        crops: this.scanCrops({ radius: 10, budgetMs: STATUS_SCAN_BUDGET_MS }),
         animals: this.countAnimals()
       };
     }
@@ -197,7 +197,15 @@ class FarmingController {
     if (move && move.ok === false) return { ok: false, error: move.error };
     const dig = await this.bot.digBlock(pos, {});
     if (!dig.ok) return { ok: false, error: dig.error };
-    if (this._name(pos) === block.name) return { ok: false, error: `crop ${block.name} was not removed from the world` };
+    // The server confirms a block change a tick or two after the dig packet.
+    // Checking once, immediately, made a successful harvest look like a failed
+    // one and skipped the replant that should follow it.
+    let cleared = this._name(pos);
+    for (let i = 0; i < 8 && cleared === block.name; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      cleared = this._name(pos);
+    }
+    if (cleared === block.name) return { ok: false, error: `crop ${block.name} was not removed from the world` };
     if (typeof this.bot.collectDrops === 'function') await this.bot.collectDrops(6);
     const after = this._inventory();
     const produced = Math.max(0, Number(after[def.produce] || 0) - Number(before[def.produce] || 0));
@@ -295,13 +303,33 @@ class FarmingController {
       return { ok: false, harvested: 0, produced: 0, results: [], error: `unknown crop ${requested}` };
     }
     const wanted = explicitAll ? null : normalizeCrop(requested);
-    // Bound the scan: a live 49x49x25 cube through the generic fallback was
-    // capable of blocking the event loop for seconds and made cancellation
-    // wait for the whole scan. Near-first ordering keeps the useful crops.
-    const crops = this.scanCrops({ radius, crop: wanted, budgetMs: ACTION_SCAN_BUDGET_MS }).slice(0, limit);
-    if (!crops.length) return { ok: true, idle: true, harvested: 0, produced: 0, standing: 0, results: [], crop: wanted, reason: wanted ? `no ${wanted} crops nearby` : 'no crops nearby' };
+    // The scan is indexed through the adapter's world view, so a 24-block
+    // radius is cheap and, unlike the old 6 ms cube walk, actually reaches the
+    // crops around the bot. Keep the budget for adapters that must fall back
+    // to the bounded cube scan.
+    const scanned = this.scanCrops({ radius, crop: wanted, budgetMs: ACTION_SCAN_BUDGET_MS });
+    const matureCrops = scanned.filter((entry) => entry.mature);
+    // Apply the work limit AFTER the maturity filter. Taking the nearest 16
+    // blocks and only then discarding immature ones let a bed of seedlings hide
+    // every ripe crop in the field: the action reported "no mature crops"
+    // while a fully grown harvest stood one block further away.
+    const crops = (matureOnly ? matureCrops : scanned).filter((entry) => {
+      if (!matureOnly) return true;
+      const block = this._block(entry);
+      return Boolean(block && cropDefinition(block.name) && isMatureCrop(block));
+    }).slice(0, limit);
+    const immature = scanned.filter((entry) => !entry.mature);
+    if (!crops.length) {
+      return {
+        ok: true, idle: true, harvested: 0, produced: 0, standing: scanned.length,
+        mature: matureCrops.length, immature: immature.length, results: [], crop: wanted,
+        skipped: immature.slice(0, 20),
+        reason: scanned.length
+          ? (wanted ? `no mature ${wanted} crops nearby` : 'no mature crops nearby')
+          : (wanted ? `no ${wanted} crops nearby` : 'no crops nearby')
+      };
+    }
     const results = [];
-    const immature = [];
     let produced = 0;
     let harvested = 0;
     for (const target of crops) {
@@ -311,7 +339,6 @@ class FarmingController {
       const block = this._block(target);
       if (!block || !cropDefinition(block.name)) continue;
       if (matureOnly && !isMatureCrop(block)) {
-        immature.push({ position: { x: target.x, y: target.y, z: target.z }, crop: block.name, age: cropAge(block) });
         this.stats.immatureSkipped++;
         continue;
       }
@@ -320,14 +347,12 @@ class FarmingController {
       if (result.ok) {
         harvested += result.harvested || 0;
         produced += result.produced || 0;
-      } else if (result.immature) {
-        immature.push({ position: { x: target.x, y: target.y, z: target.z }, crop: block.name, age: result.age });
       }
     }
     return {
       ok: true, crop: wanted, harvested, produced, immature: immature.length,
-      standing: crops.length,
-      mature: crops.filter((entry) => entry.mature).length,
+      standing: scanned.length,
+      mature: matureCrops.length,
       skipped: immature.slice(0, 20), results,
       idle: harvested === 0
     };

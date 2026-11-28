@@ -326,3 +326,31 @@ sinks a straight 1x1 shaft, which cannot be climbed. The movement layer now
 reports `no-path` for the home trip instead of teleporting; changing the mining
 shaft to stairs/ladders is a task change. All pre-existing live criteria remain
 UNVERIFIED.
+
+
+## Round 49 — beds, spawn points, crops and the live-log defects
+
+**Evidence:** 559/559 tests, lint 208 files (0 errors), `validate` PASSED
+(10/10, 36/36), `commands:audit` 48/49 (0 failures; `stop` skipped), a
+five-bot simulator run and a headless Chromium pass. **Live-server result
+UNVERIFIED.**
+
+| ID | Priority | Area | Symptom | Root cause | Fix | Evidence | Status |
+|---|---|---|---|---|---|---|---|
+| BUG-49-01 | P0 | Bed detection | `nearbyBeds` empty in a bedroom | Status scans forced the 2 ms bounded fallback and never used the world index | Indexed search whenever `world.indexedSearch` is true; 16-block radius; verified team-memory beds; bed halves collapsed | 2 ms scan unit test; simulator sees the bed 12–16 m away | FIXED (unit/sim); live UNVERIFIED |
+| BUG-49-02 | P0 | Spawn point | Bots never set a respawn anchor | No adapter method; daytime tick returned early; `PLACE_BED` never clicked the bed | `setSpawnPoint()` on both adapters with server acknowledgement; idle maintenance; `PLACE_BED` claim; `sleep spawn [bot|all]` + dashboard buttons | claim unit test; command test; 5/5 simulator verified; Chromium “5 bot(s) with a spawn point” | FIXED (unit/sim/browser); live UNVERIFIED |
+| BUG-49-03 | P0 | Crop detection | Adjacent crops invisible | `findBlocks` refused the index under a budget | Indexed crops within the status/action budget; radius 10; cache invalidated at 8 blocks | 17 crops found at 1–13 blocks with a 2 ms budget | FIXED (unit) |
+| BUG-49-04 | P0 | Harvest selection | Ripe crops reported as “no mature crops” | `limit` applied before maturity filter | Filter maturity first; apply `limit` to ripe crops only | 16 seedlings + 1 ripe → the ripe crop is harvested | FIXED (unit) |
+| BUG-49-05 | P0 | Auto replant | Harvest succeeded but no replant followed | Immediate post-dig block check saw the old crop and returned an error | Wait for block removal; harvest maintenance runs while idle even with the planner off | simulator 10 harvested / 10 replanted; Chromium counters | FIXED (sim/browser); live UNVERIFIED |
+| BUG-49-06 | P1 | Spawn safety | `unsafe spawn: suffocation risk` on join | `unloaded` treated as a solid head/ground block | Unknown blocks are not hazards | all-unloaded unit test | FIXED (unit) |
+| BUG-49-07 | P0 | Operator movement | `come`/`follow` superseded forever | Stall recovery cancelled the nav claim | Keep the claim, retry after the resync pause, coalesce stalls, no duplicate combat follow | unit suites; live UNVERIFIED | FIXED (unit); live UNVERIFIED |
+| BUG-49-08 | P1 | Log flood | Packet-gap warning every few seconds | 1 s threshold, 5 s rate limit | 5 s threshold, 60 s rate limit, 15 s immediate | code | FIXED (code); live UNVERIFIED |
+| BUG-49-09 | P1 | Safety budget | 15.7 s safety pass | Recovery ignored the deadline between stages | Deadline propagated to survival/home; follow bounded | recovery tests | FIXED (unit); live UNVERIFIED |
+| BUG-49-10 | P0 | Drowning | Bot drowned while escaping | Retreat vector ignored water/lava/ground | Land-only candidate check | recovery tests | FIXED (unit); live UNVERIFIED |
+| BUG-49-11 | P1 | BUILD_PHASE | “produced no verified result” | Free-text failure only | Typed `code`/`reason`/`missingCount` | action tests | FIXED (unit); live UNVERIFIED |
+| BUG-49-12 | P2 | Auth log | “password authentication: configured” with profile none | Startup line ignored the profile | Explicit “no /login is sent” warning | code | FIXED (code) |
+
+**Still open:** live confirmation of every item above; event-loop profiling on
+the real host (construction site surveys/chunk parsing); climbable deep-mine
+shafts; live night-time death-loop and `MINE_BLOCK` duration. All pre-existing
+live criteria remain UNVERIFIED.

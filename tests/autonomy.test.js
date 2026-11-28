@@ -24,7 +24,10 @@ test('a fresh runtime starts idle with an empty task board', async () => {
     const idleActions = rt.actions.bots.get('________');
     const logsBefore = idleActions.bot.countItem('oak_log');
     const idle = await rt._idleWork(idleActions);
-    assert.equal(idle.skipped, 'planner-off');
+    // Survival bookkeeping is allowed with the planner off: the bot may claim
+    // a nearby bed as its spawn. Fresh work (chopping/farming a new plot) is
+    // not, which the log count below proves.
+    assert.ok(idle.spawn !== undefined, 'the idle branch runs the sleep/spawn maintenance tick');
     assert.equal(idleActions.bot.countItem('oak_log'), logsBefore, 'no hidden woodcutting at launch');
     const started = await rt.commands.execute('team plan on');
     assert.equal(started.ok, true);

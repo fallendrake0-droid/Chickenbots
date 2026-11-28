@@ -364,7 +364,7 @@ class CombatController {
     return { ok: true, mode: this.mode };
   }
 
-  async followTick() {
+  async followTick({ deadlineAt = 0 } = {}) {
     if (this.mode !== 'FOLLOW' || !this.followTarget) return { ok: false, reason: 'not following' };
     // Formation following runs inside the safety tick. A 20s pathfinder call
     // for a blocked leader used to hold one bot's whole safety pass open and
@@ -385,9 +385,13 @@ class CombatController {
     if (!Number.isFinite(dist)) return { ok: false, reason: 'follow target position is not finite' };
     const wanted = this.followTarget.distance || 4;
     if (dist > wanted + 1.5) {
+      // Stay inside the safety pass budget. A flat 4 s path inside a 6 s
+      // budget queued behind a 3 s operator watch is what made the pass
+      // overrun and cancel itself.
+      const timeoutMs = deadlineAt ? Math.max(600, Math.min(4000, deadlineAt - Date.now() - 250)) : 4000;
       const move = typeof this.bot.goNear === 'function'
-        ? await this.bot.goNear(target, wanted, { timeoutMs: 4000, priority: 'task', owner: 'team-follow' })
-        : await this.bot.goTo(target.position, { range: wanted, timeoutMs: 4000, priority: 'task', owner: 'team-follow' });
+        ? await this.bot.goNear(target, wanted, { timeoutMs, priority: 'task', owner: 'team-follow' })
+        : await this.bot.goTo(target.position, { range: wanted, timeoutMs, priority: 'task', owner: 'team-follow' });
       if (move && move.ok === false) {
         this._followFailures = Math.min(6, (this._followFailures || 0) + 1);
         this._followBackoffUntil = Date.now() + Math.min(15000, 1000 * (2 ** this._followFailures));

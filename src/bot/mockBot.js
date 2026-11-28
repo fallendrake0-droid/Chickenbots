@@ -90,6 +90,7 @@ class MockBot extends BotAdapter {
     for (const [item, count] of Object.entries(inventory)) if (count > 0) this.inventory[item] = count;
     this.containers = new Map();
     this.isSleeping = false;
+    this.spawnPoint = { ...this.position };
     this.uptimeMs = 0;
     this.startedAt = Date.now();
     this._lastDamage = 0;
@@ -786,16 +787,46 @@ class MockBot extends BotAdapter {
     return { ok: this.equipment.shield, shield: this.equipment.shield };
   }
 
-  async sleep(bedPos) {
+  /** Foot of a bed, so the mock mirrors the live adapter's spawn contract. */
+  _bedFoot(bedPos) {
     const block = this.getBlock(bedPos);
-    if (!block || !BED_NAMES.has(block.name)) return { ok: false, error: 'no bed at position' };
+    if (!block || !BED_NAMES.has(block.name)) return null;
+    const part = String((block.properties && block.properties.part) || '').toLowerCase();
+    if (part === 'foot') return { position: { ...bedPos }, part };
+    for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const neighbourPos = { x: bedPos.x + dx, y: bedPos.y, z: bedPos.z + dz };
+      const neighbour = this.getBlock(neighbourPos);
+      if (!neighbour || neighbour.name !== block.name) continue;
+      if (String((neighbour.properties && neighbour.properties.part) || '').toLowerCase() === 'foot') {
+        return { position: { ...neighbourPos }, part: 'foot' };
+      }
+    }
+    return { position: { ...bedPos }, part: part || 'unknown' };
+  }
+
+  async setSpawnPoint(bedPos) {
+    const foot = this._bedFoot(bedPos);
+    if (!foot) return { ok: false, code: 'NO_BED', error: 'no bed at position' };
+    if (distance(this.position, foot.position) > 4) {
+      const move = await this.goTo(foot.position, { range: 2, timeoutMs: 5000 });
+      if (move && move.ok === false) return { ok: false, code: 'UNREACHABLE', error: move.error, bed: foot.position };
+    }
+    this.spawnPoint = { ...foot.position };
+    await this._wait(60);
+    return { ok: true, verified: true, bed: foot.position, spawnPoint: { ...this.spawnPoint }, position: { ...this.spawnPoint } };
+  }
+
+  async sleep(bedPos) {
+    const foot = this._bedFoot(bedPos);
+    if (!foot) return { ok: false, error: 'no bed at position' };
     if (this.world.time < 12541 || this.world.time > 23459) return { ok: false, error: 'not night' };
     this.isSleeping = true;
+    this.spawnPoint = { ...foot.position };
     this.position = { x: bedPos.x, y: bedPos.y + 1, z: bedPos.z };
     this.world.setTime(0);
     await this._wait(500);
     this.isSleeping = false;
-    return { ok: true, slept: true, time: this.world.time };
+    return { ok: true, slept: true, spawnPoint: { ...this.spawnPoint }, time: this.world.time };
   }
 
   async wake() { this.isSleeping = false; return { ok: true }; }
