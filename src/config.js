@@ -373,7 +373,7 @@ const config = {
     // synchronous; without this a long or boxed-in route could block the
     // event loop for tens of seconds while several stance candidates and up
     // to 32 segments each spent the full maxNodes budget.
-    planBudgetMs: envInt('NAV_PLAN_BUDGET_MS', 500),
+    planBudgetMs: envInt('NAV_PLAN_BUDGET_MS', 700),
     // Mineflayer-pathfinder's searchRadius is a detour budget. A fixed 64 is
     // too small for long cross-map walks that must go around terrain. Scale it
     // with the straight-line distance, bounded by `searchRadiusMax`.

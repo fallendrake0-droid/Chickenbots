@@ -73,7 +73,7 @@ let planWindowDeadline = 0;
 function sharedPlanningDeadline(now) {
   if (now >= planWindowUntil) {
     planWindowUntil = now + 100;
-    planWindowDeadline = now + Math.max(50, Number(config.navigation.planBudgetMs) || 500);
+    planWindowDeadline = now + Math.max(50, Number(config.navigation.planBudgetMs) || 700);
   }
   return now < planWindowUntil ? planWindowDeadline : now;
 }
@@ -424,7 +424,7 @@ class MockBot extends BotAdapter {
     // One wall-clock budget for the whole move, shared by every stance trial
     // and segment. Planning is synchronous, so a per-call cap alone would
     // still allow (candidates x segments) x budget of event-loop blocking.
-    const planBudgetMs = Math.max(50, Number(config.navigation.planBudgetMs) || 500);
+    const planBudgetMs = Math.max(50, Number(config.navigation.planBudgetMs) || 700);
     const planStartedAt = Date.now();
     const planDeadline = Math.min(planStartedAt + planBudgetMs, sharedPlanningDeadline(planStartedAt));
     // The route mode owns the safety envelope. A caller may still override the

@@ -65,7 +65,7 @@ function navigationPolicy(settings = null) {
     maxNodes: Number(nav.maxNodes || 12000),
     longDistance: Number(nav.longDistance || 64),
     segmentLength: Number(nav.segmentLength || 32),
-    planBudgetMs: Number(nav.planBudgetMs || 500),
+    planBudgetMs: Number(nav.planBudgetMs || 700),
     allowDig: nav.allowDig === true,
     allowScaffold: nav.allowScaffold === true,
     openDoors: nav.openDoors === true,
