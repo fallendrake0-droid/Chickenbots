@@ -244,3 +244,17 @@ test('an expired mining deadline returns TIME_BUDGET before the action watchdog 
   assert.equal(result.code, 'TIME_BUDGET');
   assert.match(result.error, /time budget/);
 });
+
+test('a mined staircase shaft is walkable back to the surface', async () => {
+  const world = flatWorld();
+  const home = { x: 0, y: 64, z: 0 };
+  const bot = new MockBot({ name: '________', world, position: home, inventory: { wooden_pickaxe: 1 } });
+  const mining = new MiningController({ bot, home });
+  const result = await mining.mineBlocks({ block: 'stone', limit: 6 });
+  assert.equal(result.ok, true, JSON.stringify(result).slice(0, 800));
+  assert.ok(result.mined >= 1);
+  assert.ok(bot.position.y < 60, `the staircase should descend, got y=${bot.position.y}`);
+  const back = await bot.goTo(home, { range: 2, timeoutMs: 15000 });
+  assert.equal(back.ok, true, back.error);
+  assert.ok(bot.position.y >= 60, `the bot must climb back out of its own shaft, got y=${bot.position.y}`);
+});

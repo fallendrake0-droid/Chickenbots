@@ -74,6 +74,7 @@ code ran at all.
 | BUG-49-10 | P0 | Drowning retreat | each retreat candidate checks feet/head/ground; wet or unsupported vectors are skipped instead of walked | recovery tests | FIXED (unit); live UNVERIFIED |
 | BUG-49-11 | P1 | BUILD_PHASE diagnostics | typed `code` (`NO_SITE`, `MATERIALS_SHORT`, `UNREACHABLE`, `BLOCKS_MISSING`) plus a human reason and `missingCount`; a failed phase now names its cause in the task error | action/team tests | FIXED (unit); live UNVERIFIED |
 | BUG-49-12 | P2 | Auth log honesty | credentials with `MC_AUTH_PROFILE=none` now log “no /login or /register command is sent” instead of “configured” | config/logging tests | FIXED (code) |
+| BUG-49-14 | P0 | Unclimbable shafts | A straight 1×1 shaft has no return path; miners stalled at y=33 with `no path … to -1,64,4` | Access shafts are now 1×2 staircases (one sideways, one down per step, floor kept) and the same route walks back up | mining suite + a mine-then-climb regression | FIXED (unit); live UNVERIFIED |
 | BUG-49-13 | P0 | Long mining actions | `mineBlocks()`, `mineNearby()`, `mineOresDeep()`, `branchMine()` and `mineOre()` take one action deadline (action watchdog minus 8 s). Every move/dig timeout is clamped to the remaining budget, so the action returns the blocks it mined instead of being killed at 60 s | mining/audit suites 35/35 | FIXED (unit); live UNVERIFIED |
 
 ## Verification
@@ -110,5 +111,5 @@ code ran at all.
   shaft design itself is unchanged.
 - **Death loop:** the retreat/drowning and safety deadline fixes are real, but
   a live five-bot night under phantoms has not been observed here.
-- **Climbable mine shafts:** mining still sinks a straight 1×1 shaft; its
-  duration is now bounded, but the shaft itself is not a staircase.
+- **Climbable mine shafts:** the staircase fix is proven in the mock pathfinder;
+  the live server's pathfinder still needs one descending-and-returning run.

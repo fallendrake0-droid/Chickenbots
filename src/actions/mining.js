@@ -600,10 +600,12 @@ class MiningController {
     }
     let mined = results.filter((r) => r.ok).length;
     if (!mined) {
-      // No reachable exposed block: sink a safe vertical access shaft and take
-      // the requested block from below the bot (the same thing a player does).
+      // No reachable exposed block: drive a climbable staircase access shaft and
+      // take the requested block from its landings.
+      const shaftOrigin = { ...this.bot.position };
+      const shaftDir = this._shaftDirection();
       for (let depth = 0; depth < 8 && mined < limit && !this.stopRequested && Date.now() < deadline; depth++) {
-        const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
+        const below = this._stairTarget(shaftOrigin, depth, shaftDir);
         if (below.y < minY) {
           results.push({ ok: false, error: `minimum mining depth ${minY} reached`, depthReached: below.y });
           break;
@@ -613,26 +615,20 @@ class MiningController {
           break;
         }
         const block = this.bot.getBlock(below);
-        if (!block || block.name === 'air') {
+        const head = this.bot.getBlock({ x: below.x, y: below.y + 1, z: below.z });
+        if ((!block || block.name === 'air') && (!head || head.name === 'air')) {
           const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
           if (!move || move.ok === false) break;
           continue;
         }
-        const safety = this.checkSafety(below, { ignoreFloor: true });
-        if (!safety.safe) {
-          this.stats.hazardsAvoided++;
-          results.push({ ok: false, error: 'unsafe shaft block', hazards: safety.hazards });
+        const stair = await this._digStairStep({ origin: shaftOrigin, direction: shaftDir, step: depth, deadline });
+        if (!stair.ok) {
+          results.push(stair);
           break;
         }
-        const dig = await this.bot.digBlock(below, { timeoutMs: Math.max(1000, Math.min(20000, deadline - Date.now())) });
-        if (!dig.ok) {
-          results.push({ ok: false, error: dig.error });
-          break;
-        }
-        this.stats.blocksDug++;
-        const isWanted = block.name === blockName || (blockName === 'stone' && block.name === 'deepslate');
+        const isWanted = stair.block === blockName || (blockName === 'stone' && stair.block === 'deepslate');
         if (isWanted) mined++;
-        results.push({ ok: true, block: block.name, position: below, shaft: true });
+        results.push({ ok: true, block: stair.block, position: below, shaft: true, climbable: true });
         const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
         if (!move || move.ok === false) break;
         if (typeof this.bot.collectDrops === 'function') await this.bot.collectDrops(4);
@@ -654,6 +650,52 @@ class MiningController {
       ok: mined > 0, mined, skipped: results.filter((r) => !r.ok).length, results,
       block: blockName, elapsedMs, zone: this.zone(), tool: toolCheck
     };
+  }
+
+  /**
+   * A climbable access shaft. A straight 1x1 hole is a one-way trip for the
+   * pathfinder: live miners reached y=33 and then reported `no path ... to
+   * -1,64,4` because no jump/ladder route exists out of a vertical shaft. This
+   * staircase takes one block sideways and one down per step, keeping the
+   * block under every landing and two blocks of headroom, so the same route
+   * walks back up.
+   */
+  _shaftDirection() {
+    const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+    return dirs[(Number(this.index) || 0) % dirs.length];
+  }
+
+  _stairTarget(origin, step, direction) {
+    return {
+      x: Math.floor(origin.x) + direction[0] * (step + 1),
+      y: Math.floor(origin.y) - (step + 1),
+      z: Math.floor(origin.z) + direction[1] * (step + 1)
+    };
+  }
+
+  async _digStairStep({ origin, direction, step, deadline }) {
+    const feet = this._stairTarget(origin, step, direction);
+    const head = { ...feet, y: feet.y + 1 };
+    if (!this._inZone(feet) || !this._inZone(head)) {
+      return { ok: false, code: 'OUTSIDE_WORK_ZONE', error: `stair would leave the work zone at ${feet.x},${feet.z}`, zone: this.zone(), position: feet };
+    }
+    let feetName = null;
+    for (const pos of [feet, head]) {
+      const block = this.bot.getBlock(pos);
+      if (!block || block.name === 'air' || block.name === 'cave_air') continue;
+      if (HAZARDS.has(block.name)) return { ok: false, error: `hazard ${block.name}`, position: pos };
+      const safety = this.checkSafety(pos, { ignoreFloor: true });
+      if (!safety.safe) {
+        this.stats.hazardsAvoided++;
+        return { ok: false, error: 'unsafe stair block', hazards: safety.hazards, position: pos };
+      }
+      const timeoutMs = Math.max(1000, Math.min(20000, deadline - Date.now()));
+      const dig = await this.bot.digBlock(pos, { timeoutMs });
+      if (!dig.ok) return { ok: false, error: dig.error, position: pos };
+      this.stats.blocksDug++;
+      if (pos === feet) feetName = block.name;
+    }
+    return { ok: true, position: feet, block: feetName };
   }
 
   /** Mine every safe ore in range, best-first by distance. */
@@ -750,8 +792,10 @@ class MiningController {
     if (shallow.mined > 0 || this.stopRequested) return { ...shallow, elapsedMs: Date.now() - startedAt };
     const results = [];
     let mined = 0;
+    const shaftOrigin = { ...this.bot.position };
+    const shaftDir = this._shaftDirection();
     for (let depth = 0; depth < maxDepth && mined < limit && !this.stopRequested && Date.now() < deadline; depth++) {
-      const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
+      const below = this._stairTarget(shaftOrigin, depth, shaftDir);
       // Never dig past the task's depth band or the world floor: an unbounded
       // shaft used to walk bots thousands of blocks down and stall the quota.
       if (below.y < minY) {
@@ -763,31 +807,25 @@ class MiningController {
         break;
       }
       const block = this.bot.getBlock(below);
-      if (!block || block.name === 'air') {
+      const head = this.bot.getBlock({ x: below.x, y: below.y + 1, z: below.z });
+      if ((!block || block.name === 'air') && (!head || head.name === 'air')) {
         const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
         if (!move || move.ok === false) break;
         continue;
       }
-      const safety = this.checkSafety(below, { ignoreFloor: true });
-      if (!safety.safe) {
-        this.stats.hazardsAvoided++;
-        results.push({ ok: false, error: 'unsafe shaft block', hazards: safety.hazards });
+      const wanted = block && (!only || block.name === only || block.name === `deepslate_${only}`
+        || (only.startsWith('deepslate_') && block.name === only.slice('deepslate_'.length)));
+      const stair = await this._digStairStep({ origin: shaftOrigin, direction: shaftDir, step: depth, deadline });
+      if (!stair.ok) {
+        results.push(stair);
         break;
       }
-      const wanted = !only || block.name === only || block.name === `deepslate_${only}`
-        || (only.startsWith('deepslate_') && block.name === only.slice('deepslate_'.length));
-      if (ORE_TIERS[block.name] && wanted) {
-        const oreResult = await this.mineOre(below, { deadlineAt: deadline });
-        results.push(oreResult);
-        if (oreResult.ok) mined++;
+      if (ORE_TIERS[stair.block] && wanted) {
+        results.push({ ok: true, block: stair.block, ore: stair.block, position: below, stair: true, climbable: true });
+        this.mined[stair.block] = (this.mined[stair.block] || 0) + 1;
+        mined++;
       } else {
-        const dig = await this.bot.digBlock(below, { timeoutMs: Math.max(1000, Math.min(20000, deadline - Date.now())) });
-        if (!dig.ok) {
-          results.push({ ok: false, error: dig.error });
-          break;
-        }
-        this.stats.blocksDug++;
-        results.push({ ok: true, block: block.name, shaft: true });
+        results.push({ ok: true, block: stair.block, shaft: true, climbable: true });
       }
       const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
       if (!move || move.ok === false) break;

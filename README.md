@@ -172,7 +172,10 @@ tests/                      team, excavation, construction, schematics, builder,
   discoveries, and bootstraps the missing tool chain. `mine diamonds` on a bot with no iron pick
   gathers wood/stone, mines iron and coal, smelts three ingots, crafts the iron pick, then mines the
   diamond. The same gate covers `mine stone`, `mine obsidian`, `mine ancient_debris` and every other
-  catalogued target; success still means a block was actually removed.
+  catalogued target; success still means a block was actually removed. When no block is reachable,
+  the access shaft is a 1x2 staircase with a kept floor, so the bot can walk back out instead of
+  being stranded at the bottom of a 1x1 hole. One action deadline bounds the moves and digs, and
+  the run returns the blocks already mined rather than being cancelled by the watchdog.
 * Woodcutting chops trunks bottom-up from the nearest reachable layer, tries adjacent stances,
   clears attached leaves, collects saplings and replants on the original soil. Every removal and
   inventory gain is verified rather than inferred. Fleet-wide tree/ore leases mean two bots never
