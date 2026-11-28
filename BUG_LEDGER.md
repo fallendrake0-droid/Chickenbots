@@ -349,6 +349,7 @@ UNVERIFIED.**
 | BUG-49-10 | P0 | Drowning | Bot drowned while escaping | Retreat vector ignored water/lava/ground | Land-only candidate check | recovery tests | FIXED (unit); live UNVERIFIED |
 | BUG-49-11 | P1 | BUILD_PHASE | “produced no verified result” | Free-text failure only | Typed `code`/`reason`/`missingCount` | action tests | FIXED (unit); live UNVERIFIED |
 | BUG-49-12 | P2 | Auth log | “password authentication: configured” with profile none | Startup line ignored the profile | Explicit “no /login is sent” warning | code | FIXED (code) |
+| BUG-49-13 | P0 | Long mining actions | `action cancelled: exceeded 60000ms` | Every move/dig used the 12 s/20 s default, so one quota outlived the watchdog | One action deadline; move/dig timeouts and branch/mineOre loops clamp to the remaining budget | 35 mining/audit tests | FIXED (unit); live UNVERIFIED |
 
 **Still open:** live confirmation of every item above; event-loop profiling on
 the real host (construction site surveys/chunk parsing); climbable deep-mine

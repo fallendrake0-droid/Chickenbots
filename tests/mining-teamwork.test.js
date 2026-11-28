@@ -233,3 +233,14 @@ test('the dashboard can stop mining for one bot without touching the fleet', asy
     await runtime.shutdown('test');
   }
 });
+
+test('an expired mining deadline returns TIME_BUDGET before the action watchdog kills it', async () => {
+  const world = flatWorld();
+  exposedOre(world, 2, 0, 'iron_ore');
+  const bot = new MockBot({ name: '00110000', world, position: { x: 0, y: 64, z: 0 }, inventory: { iron_pickaxe: 1 } });
+  const mining = new MiningController({ bot, home: { x: 0, y: 64, z: 0 } });
+  const result = await mining.mineOre({ x: 2, y: 64, z: 0 }, { deadlineAt: Date.now() - 1 });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'TIME_BUDGET');
+  assert.match(result.error, /time budget/);
+});

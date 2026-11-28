@@ -446,7 +446,7 @@ class MiningController {
     return { ok: true, tier, tool, crafted: true, have: after };
   }
 
-  async mineOre(pos, { collect = true, claim = true } = {}) {
+  async mineOre(pos, { collect = true, claim = true, deadlineAt = 0 } = {}) {
     const block = this.bot.getBlock(pos);
     if (!block || block.name === 'air') return { ok: false, error: 'block is air' };
     if (!isOreName(block.name)) return { ok: false, error: `not an ore: ${block.name}` };
@@ -477,12 +477,14 @@ class MiningController {
     try {
       // Pathfinding is the expensive part of an ore run. An ore already inside
       // mining reach needs no walk at all.
+      const remaining = (fallback) => deadlineAt ? Math.max(600, Math.min(fallback, deadlineAt - Date.now())) : fallback;
+      if (deadlineAt && Date.now() >= deadlineAt) return { ok: false, code: 'TIME_BUDGET', error: 'mining time budget exhausted before this ore', ore: block.name, position: { ...pos } };
       if (distance(this.bot.position, pos) > 4.4) {
-        const move = await this.bot.goTo(pos, { range: 3, timeoutMs: 12000 });
+        const move = await this.bot.goTo(pos, { range: 3, timeoutMs: remaining(12000) });
         if (move && move.ok === false) return { ok: false, error: move.error, ore: block.name };
       }
       await this.bot.equipBestTool('pickaxe');
-      const dig = await this.bot.digBlock(pos);
+      const dig = await this.bot.digBlock(pos, { timeoutMs: remaining(20000) });
       if (!dig.ok) return { ok: false, error: dig.error, ore: block.name };
       this.stats.blocksDug++;
       this.stats.oresMined++;
@@ -507,10 +509,22 @@ class MiningController {
     }
   }
 
+  /**
+   * Work until the controller would be cancelled anyway. The old loops used
+   * the 12 s move and 20 s dig defaults per block, so a stubborn target could
+   * consume the whole 60 s action watchdog and be killed without returning the
+   * blocks it had already mined.
+   */
+  _workDeadline(startedAt) {
+    const limit = Math.max(8000, Number(config.autonomy.actionTimeoutMs) || 60000);
+    return startedAt + Math.max(5000, limit - 8000);
+  }
+
   /** Mine a specific block type (stone, cobblestone, deepslate) with the same safety rules. */
   async mineBlocks({ block: blockName = 'stone', radius = 24, limit = 16, minY = -59 } = {}) {
     this._begin();
     const startedAt = Date.now();
+    const deadline = this._workDeadline(startedAt);
     const zoneReturn = await this._returnToZoneIfNeeded();
     if (!zoneReturn.ok) {
       return {
@@ -537,6 +551,10 @@ class MiningController {
       .sort((a, b) => a.distance - b.distance);
     const results = [];
     for (const target of targets) {
+      if (Date.now() >= deadline) {
+        results.push({ ok: false, code: 'TIME_BUDGET', error: 'mining time budget exhausted before the next block' });
+        break;
+      }
       // Mock and very fast live adapters resolve their awaits as microtasks;
       // without a macrotask yield a whole quota runs in one event-loop turn.
       await new Promise((resolve) => setImmediate(resolve));
@@ -562,14 +580,15 @@ class MiningController {
           return block && (block.name === 'air' || block.name === 'cave_air' || block.name === 'water');
         });
       if (distance(this.bot.position, target) > 4.4) {
-        const move = await this.bot.goTo(stance || target, { range: 1, timeoutMs: 12000 });
+        const moveTimeout = Math.max(800, Math.min(12000, deadline - Date.now()));
+        const move = await this.bot.goTo(stance || target, { range: 1, timeoutMs: moveTimeout });
         if (move && move.ok === false) {
           results.push({ ok: false, error: move.error });
           continue;
         }
       }
       await this.bot.equipBestTool(required > 0 ? 'pickaxe' : 'shovel').catch(() => null);
-      const dig = await this.bot.digBlock(target);
+      const dig = await this.bot.digBlock(target, { timeoutMs: Math.max(1000, Math.min(20000, deadline - Date.now())) });
       if (!dig.ok) {
         results.push({ ok: false, error: dig.error });
         continue;
@@ -583,7 +602,7 @@ class MiningController {
     if (!mined) {
       // No reachable exposed block: sink a safe vertical access shaft and take
       // the requested block from below the bot (the same thing a player does).
-      for (let depth = 0; depth < 8 && mined < limit && !this.stopRequested; depth++) {
+      for (let depth = 0; depth < 8 && mined < limit && !this.stopRequested && Date.now() < deadline; depth++) {
         const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
         if (below.y < minY) {
           results.push({ ok: false, error: `minimum mining depth ${minY} reached`, depthReached: below.y });
@@ -595,7 +614,7 @@ class MiningController {
         }
         const block = this.bot.getBlock(below);
         if (!block || block.name === 'air') {
-          const move = await this.bot.goTo(below, { range: 0 });
+          const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
           if (!move || move.ok === false) break;
           continue;
         }
@@ -605,7 +624,7 @@ class MiningController {
           results.push({ ok: false, error: 'unsafe shaft block', hazards: safety.hazards });
           break;
         }
-        const dig = await this.bot.digBlock(below);
+        const dig = await this.bot.digBlock(below, { timeoutMs: Math.max(1000, Math.min(20000, deadline - Date.now())) });
         if (!dig.ok) {
           results.push({ ok: false, error: dig.error });
           break;
@@ -614,7 +633,7 @@ class MiningController {
         const isWanted = block.name === blockName || (blockName === 'stone' && block.name === 'deepslate');
         if (isWanted) mined++;
         results.push({ ok: true, block: block.name, position: below, shaft: true });
-        const move = await this.bot.goTo(below, { range: 0 });
+        const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
         if (!move || move.ok === false) break;
         if (typeof this.bot.collectDrops === 'function') await this.bot.collectDrops(4);
       }
@@ -625,7 +644,7 @@ class MiningController {
       // at the bottom of the band forever.
       this._branchAxis = this._branchAxis === 'z' ? 'x' : 'z';
       this._branchDir = -(this._branchDir || 1);
-      const branch = await this.branchMine({ length: 12, axis: this._branchAxis, direction: this._branchDir, torchEvery: 6 });
+      const branch = await this.branchMine({ length: 12, axis: this._branchAxis, direction: this._branchDir, torchEvery: 6, deadlineAt: deadline });
       mined += branch.mined;
       results.push({ ok: branch.mined > 0, branch: true, mined: branch.mined, stopped: branch.stopped, axis: this._branchAxis });
     }
@@ -638,9 +657,10 @@ class MiningController {
   }
 
   /** Mine every safe ore in range, best-first by distance. */
-  async mineNearby({ radius = 24, limit = 16, only = null } = {}) {
+  async mineNearby({ radius = 24, limit = 16, only = null, deadlineAt = 0 } = {}) {
     this._begin();
     const startedAt = Date.now();
+    const deadline = deadlineAt || this._workDeadline(startedAt);
     const zoneReturn = await this._returnToZoneIfNeeded();
     if (!zoneReturn.ok) {
       return {
@@ -682,8 +702,8 @@ class MiningController {
     const results = [];
     for (const ore of ores) {
       await new Promise((resolve) => setImmediate(resolve));
-      if (this.stopRequested) break;
-      const result = await this.mineOre({ x: ore.x, y: ore.y, z: ore.z }, { collect: false });
+      if (this.stopRequested || Date.now() >= deadline) break;
+      const result = await this.mineOre({ x: ore.x, y: ore.y, z: ore.z }, { collect: false, deadlineAt: deadline });
       results.push(result);
       if (result.code === 'ORE_RESERVED' || result.code === 'OUTSIDE_WORK_ZONE') continue;
       if (this.bot.health <= config.mining.retreatHealth) break;
@@ -718,6 +738,7 @@ class MiningController {
   async mineOresDeep({ radius = 48, limit = 6, maxDepth = 8, minY = -59, only = null } = {}) {
     this._begin();
     const startedAt = Date.now();
+    const deadline = this._workDeadline(startedAt);
     if (this.home && !this._inZone(this.bot.position)) {
       const target = clampToWorkZone(this.bot.position, this.home, { margin: config.workZone ? config.workZone.margin : 0 });
       const move = await this.bot.goTo(target, { range: 3, timeoutMs: 15000, priority: 'operator', owner: 'work-zone-return' });
@@ -725,11 +746,11 @@ class MiningController {
         return { ok: false, mined: 0, skipped: 0, results: [], code: 'OUTSIDE_WORK_ZONE', zone: this.zone(), error: `outside the work zone and could not return: ${move.error}` };
       }
     }
-    const shallow = await this.mineNearby({ radius, limit, only });
+    const shallow = await this.mineNearby({ radius, limit, only, deadlineAt: deadline });
     if (shallow.mined > 0 || this.stopRequested) return { ...shallow, elapsedMs: Date.now() - startedAt };
     const results = [];
     let mined = 0;
-    for (let depth = 0; depth < maxDepth && mined < limit && !this.stopRequested; depth++) {
+    for (let depth = 0; depth < maxDepth && mined < limit && !this.stopRequested && Date.now() < deadline; depth++) {
       const below = { x: Math.floor(this.bot.position.x), y: Math.floor(this.bot.position.y) - 1, z: Math.floor(this.bot.position.z) };
       // Never dig past the task's depth band or the world floor: an unbounded
       // shaft used to walk bots thousands of blocks down and stall the quota.
@@ -743,7 +764,7 @@ class MiningController {
       }
       const block = this.bot.getBlock(below);
       if (!block || block.name === 'air') {
-        const move = await this.bot.goTo(below, { range: 0 });
+        const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
         if (!move || move.ok === false) break;
         continue;
       }
@@ -756,11 +777,11 @@ class MiningController {
       const wanted = !only || block.name === only || block.name === `deepslate_${only}`
         || (only.startsWith('deepslate_') && block.name === only.slice('deepslate_'.length));
       if (ORE_TIERS[block.name] && wanted) {
-        const oreResult = await this.mineOre(below);
+        const oreResult = await this.mineOre(below, { deadlineAt: deadline });
         results.push(oreResult);
         if (oreResult.ok) mined++;
       } else {
-        const dig = await this.bot.digBlock(below);
+        const dig = await this.bot.digBlock(below, { timeoutMs: Math.max(1000, Math.min(20000, deadline - Date.now())) });
         if (!dig.ok) {
           results.push({ ok: false, error: dig.error });
           break;
@@ -768,7 +789,7 @@ class MiningController {
         this.stats.blocksDug++;
         results.push({ ok: true, block: block.name, shaft: true });
       }
-      const move = await this.bot.goTo(below, { range: 0 });
+      const move = await this.bot.goTo(below, { range: 0, timeoutMs: Math.max(800, Math.min(12000, deadline - Date.now())) });
       if (!move || move.ok === false) break;
     }
     // A vertical shaft only samples one column. When that column is exhausted
@@ -776,7 +797,7 @@ class MiningController {
     // branch before the next tick rescans.
     if (mined === 0 && !this.stopRequested) {
       const axis = (this.stats.tunnels % 2 === 0) ? 'x' : 'z';
-      const branch = await this.branchMine({ length: 6, axis, direction: 1, only });
+      const branch = await this.branchMine({ length: 6, axis, direction: 1, only, deadlineAt: deadline });
       results.push(branch);
       mined += branch.ores || 0;
     }
@@ -789,14 +810,19 @@ class MiningController {
   }
 
   /** A 1x2 branch tunnel with torches, stopping at hazards. */
-  async branchMine({ length = 16, axis = 'x', direction = 1, torchEvery = config.mining.torchInterval, only = null } = {}) {
+  async branchMine({ length = 16, axis = 'x', direction = 1, torchEvery = config.mining.torchInterval, only = null, deadlineAt = 0 } = {}) {
     this._begin();
     const start = { ...this.bot.position };
     let mined = 0;
     let ores = 0;
     let placed = 0;
     let stopped = null;
+    const remaining = (fallback) => deadlineAt ? Math.max(600, Math.min(fallback, deadlineAt - Date.now())) : fallback;
     for (let step = 1; step <= length && !this.stopRequested; step++) {
+      if (deadlineAt && Date.now() >= deadlineAt) {
+        stopped = { code: 'TIME_BUDGET', reason: 'branch mining time budget exhausted', position: { ...start } };
+        break;
+      }
       const feet = { x: Math.floor(start.x) + (axis === 'x' ? step * direction : 0), y: Math.floor(start.y), z: Math.floor(start.z) + (axis === 'z' ? step * direction : 0) };
       const head = { ...feet, y: feet.y + 1 };
       if (!this._inZone(feet)) {
@@ -812,13 +838,13 @@ class MiningController {
         const wanted = !only || block.name === only || block.name === `deepslate_${only}`
           || (only.startsWith('deepslate_') && block.name === only.slice('deepslate_'.length));
         if (ORE_TIERS[block.name] && wanted) {
-          const oreResult = await this.mineOre(pos);
+          const oreResult = await this.mineOre(pos, { deadlineAt });
           if (oreResult.ok) { mined++; ores++; }
           continue;
         }
-        const move = await this.bot.goTo(pos, { range: 3 });
+        const move = await this.bot.goTo(pos, { range: 3, timeoutMs: remaining(12000) });
         if (move && move.ok === false) { stopped = { reason: move.error, position: pos }; break; }
-        const dig = await this.bot.digBlock(pos);
+        const dig = await this.bot.digBlock(pos, { timeoutMs: remaining(20000) });
         if (dig.ok) { mined++; this.stats.blocksDug++; }
         else { stopped = { reason: dig.error, position: pos }; break; }
       }
