@@ -16,6 +16,7 @@ const { botWorldView } = require('../construction/constants');
 const { normalizeMineTarget, isMineableTarget, isOreName, BLOCK_TIERS, miningTargets } = require('../actions/miningCatalog');
 const { workZone } = require('../world/workZone');
 const { planRoute } = require('../navigation/planner');
+const { routeMode } = require('../navigation/policy');
 const { goalPosition } = require('../navigation/standability');
 const { catalogue } = require('../woodcutting/catalog');
 const { TEAM_COMBAT_MODES } = require('../combat/team');
@@ -845,23 +846,37 @@ function registerAll(services, registry) {
           error: `no standable destination near ${destination.x},${destination.y},${destination.z}: ${validation.reason}`
         };
       }
+      const mode = nav.routeMode || 'balanced';
+      const modeProfile = routeMode(mode);
       const route = planRoute({
         from: bot.position,
         to: validation.goal || destination,
         reader: bot,
         range: 1,
         maxNodes: Math.max(2000, Number(nav.maxNodes) || 12000),
-        maxDrop: nav.maxDrop === undefined ? 3 : nav.maxDrop,
-        allowWater: nav.allowWater !== false,
-        allowHazard: false
+        maxDrop: Math.min(nav.maxDrop === undefined ? 3 : Number(nav.maxDrop), modeProfile.maxDrop),
+        allowWater: nav.allowWater !== false && modeProfile.allowWater,
+        allowHazard: false,
+        mode,
+        openDoors: nav.openDoors === true,
+        dimension: (bot.bot && bot.bot.game && bot.bot.game.dimension) || config.navigation.dimension || 'overworld'
       });
       return {
         ok: Boolean(route.ok), bot: bot.name, from: { ...bot.position }, target: destination,
-        goal: validation.goal || destination, reachable: Boolean(route.ok),
+        goal: route.goal || validation.goal || destination, reachable: Boolean(route.ok), mode: route.mode || mode,
+        dimension: route.dimension || null,
         reason: route.reason || null, steps: route.path ? route.path.length : 0,
         distance: route.cost === Infinity ? null : route.cost,
         path: (route.path || []).slice(0, 200),
+        terrain: route.terrain || null,
+        terrainSummary: route.terrain
+          ? `${route.terrain.steps} steps · walk ${route.terrain.walk}/diag ${route.terrain.diagonal} · up ${route.terrain.stepUp}/climb ${route.terrain.climb}/drop ${route.terrain.drop} · water ${route.terrain.waterSteps} · doors ${route.terrain.doors} · max drop ${route.terrain.maxDrop}`
+          : null,
         expanded: route.expanded || 0, visited: route.visited || 0, ms: route.ms || 0,
+        // A rejected route still reports how close A* got. That is the evidence
+        // that distinguishes a sealed room from an exhausted time budget.
+        closest: route.closest || null,
+        closestDistance: route.closestDistance === undefined ? null : route.closestDistance,
         moved: false,
         error: route.ok ? undefined : `no route to ${destination.x},${destination.y},${destination.z}: ${route.reason}`
       };

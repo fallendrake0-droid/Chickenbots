@@ -13,7 +13,9 @@ function emptyCounts() {
     attempts: 0, success: 0, failed: 0, timeout: 0, cancelled: 0, superseded: 0,
     invalidDestination: 0, unloadedDestination: 0, noStandable: 0, noPath: 0,
     stuck: 0, recovered: 0, replanned: 0, arrivalUnverified: 0,
-    waterSteps: 0, drops: 0, climbs: 0, longDistance: 0
+    waterSteps: 0, drops: 0, climbs: 0, longDistance: 0,
+    invalidRange: 0, connectionChanged: 0, doorBlocked: 0,
+    fallRejected: 0, goalCandidates: 0, corridorSteps: 0
   };
 }
 
@@ -32,6 +34,7 @@ class NavigationTelemetry {
     this.lastStuckAt = null;
     this.distance = 0;
     this.active = null;
+    this.modes = {};
   }
 
   begin(request = {}) {
@@ -42,6 +45,7 @@ class NavigationTelemetry {
       target: request.target ? { ...request.target } : null,
       priority: request.priority || null,
       owner: request.owner || null,
+      mode: request.mode || null,
       range: request.range === undefined ? null : request.range
     };
     this.counts.attempts++;
@@ -60,6 +64,10 @@ class NavigationTelemetry {
     this.durations.push(durationMs);
     if (this.durations.length > 128) this.durations.shift();
     const ok = result.ok === true;
+    if (result.mode) {
+      const key = String(result.mode).toUpperCase();
+      this.modes[key] = (this.modes[key] || 0) + 1;
+    }
     if (ok) {
       this.counts.success++;
       this.lastSuccessAt = this.now();
@@ -73,6 +81,8 @@ class NavigationTelemetry {
       if (result.code === 'INVALID_DESTINATION') this.counts.invalidDestination++;
       if (result.code === 'DESTINATION_UNLOADED') this.counts.unloadedDestination++;
       if (result.code === 'NO_STANDABLE_DESTINATION') this.counts.noStandable++;
+      if (result.code === 'INVALID_RANGE') this.counts.invalidRange++;
+      if (result.code === 'CONNECTION_CHANGED') this.counts.connectionChanged++;
       if (result.noPath) this.counts.noPath++;
       this.lastError = result.error || result.code || 'movement failed';
     }
@@ -94,6 +104,7 @@ class NavigationTelemetry {
       target: result.target || (this.active && this.active.target) || null,
       position: result.position ? { ...result.position } : null,
       code: result.code || null,
+      mode: result.mode || (this.active && this.active.mode) || null,
       error: result.error || null,
       attempts: result.attempts || 1,
       recovered: Boolean(result.recovered),
@@ -131,6 +142,7 @@ class NavigationTelemetry {
       lastSuccessAt: this.lastSuccessAt,
       lastFailureAt: this.lastFailureAt,
       lastStuckAt: this.lastStuckAt,
+      modes: { ...this.modes },
       active: this.active ? { ...this.active } : null,
       durationMs: {
         count: durations.length,

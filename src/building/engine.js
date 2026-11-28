@@ -651,7 +651,7 @@ class BuildEngine {
           if (typeof bot.goTo === 'function' && bot.position && distance(bot.position, pos) > 5) {
             await bot.goTo({ x: pos.x, y: pos.y, z: pos.z }, { range: 2, timeoutMs: 10000 });
           }
-          const dig = await bot.digBlock(pos);
+          const dig = await bot.digBlock(pos, { range: Number(bot.buildReach) > 0 ? Number(bot.buildReach) : 5 });
           if (!dig || dig.ok === false) {
             block.status = STATUS.FAILED;
             block.lastError = (dig && dig.error) || 'could not clear existing block';

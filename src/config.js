@@ -373,7 +373,7 @@ const config = {
     // synchronous; without this a long or boxed-in route could block the
     // event loop for tens of seconds while several stance candidates and up
     // to 32 segments each spent the full maxNodes budget.
-    planBudgetMs: envInt('NAV_PLAN_BUDGET_MS', 350),
+    planBudgetMs: envInt('NAV_PLAN_BUDGET_MS', 500),
     // Mineflayer-pathfinder's searchRadius is a detour budget. A fixed 64 is
     // too small for long cross-map walks that must go around terrain. Scale it
     // with the straight-line distance, bounded by `searchRadiusMax`.
@@ -384,6 +384,10 @@ const config = {
     allowDig: envBool('NAV_ALLOW_DIG', false),
     allowScaffold: envBool('NAV_ALLOW_SCAFFOLD', false),
     openDoors: envBool('NAV_OPEN_DOORS', false),
+    // Default planning mode. Named modes are defined in navigation/policy.js;
+    // an unknown value is rejected at startup rather than silently falling back.
+    routeMode: env('NAV_ROUTE_MODE', 'balanced').toLowerCase(),
+    dimension: env('NAV_DIMENSION', 'overworld').toLowerCase(),
     sprint: envBool('NAV_SPRINT', true)
   },
   survival: {
@@ -684,6 +688,12 @@ function validateConfig(candidate = config, { requireCredentials = false, simula
     fail('navigation.congestionRadius', 'must be between 0.5 and 8');
   }
   integer('navigation.congestionTtlMs', navigation.congestionTtlMs, 500, 120000);
+  if (!['safe', 'fast', 'balanced', 'cautious', 'follow', 'combat', 'retreat', 'task'].includes(String(navigation.routeMode))) {
+    fail('navigation.routeMode', 'must be one of safe, fast, balanced, cautious, follow, combat, retreat, task');
+  }
+  if (!['overworld', 'nether', 'the_nether', 'end', 'the_end'].includes(String(navigation.dimension))) {
+    fail('navigation.dimension', 'must be overworld, nether or end');
+  }
   integer('navigation.longDistance', navigation.longDistance, 8, 512);
   integer('navigation.segmentLength', navigation.segmentLength, 8, 128);
   integer('navigation.maxNodes', navigation.maxNodes, 100, 200000);

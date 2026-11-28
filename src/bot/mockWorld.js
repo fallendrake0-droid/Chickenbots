@@ -272,7 +272,12 @@ class MockWorld {
     const z = Math.floor(pos.z);
     const name = this.blockNameAt(x, y, z);
     if (name === null) return null;
-    const properties = this.states.get(`${x},${y},${z}`) || {};
+    const stored = this.states.get(`${x},${y},${z}`);
+    // The generated hut is a usable building, so its doorway is open. Navi-
+    // gation must not infer that from the block name (a closed oak door is a
+    // wall); the fixture states it explicitly. Doors placed by a test carry
+    // their own state and override this default.
+    const properties = stored || (name === 'oak_door' ? { open: true, half: 'lower' } : {});
     if (name === 'air') return { name: 'air', properties: {}, position: { x, y, z }, solid: false, boundingBox: 'empty' };
     return { name, properties: { ...properties }, position: { x, y, z }, solid: name !== 'water' && name !== 'lava', boundingBox: 'block' };
   }

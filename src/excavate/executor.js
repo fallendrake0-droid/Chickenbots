@@ -335,6 +335,61 @@ class ExcavationExecutor {
       range: 1, adjustY: true, token: this.token, timeoutMs: 12000
     }).catch(() => null);
     this.stats.moved++;
+    // A waiting bot can be left at the bottom of a neighbouring team pit when
+    // another worker removes the block under it. The shared access staircase
+    // may no longer connect from that cell. Excavation is already an authorised
+    // digging task, so cut a short one-block staircase upward rather than
+    // declaring the region unreachable and abandoning the top layer.
+    if (this.bot.position && this.bot.position.y < target.y) {
+      await this._climbTo(target.y);
+    }
+  }
+
+  /**
+   * Dig a bounded one-block staircase up to `targetY`. Each step digs only the
+   * feet and head cells of the next column and keeps the block below it as the
+   * support to stand on. No block is placed, and no position is assigned
+   * directly: every step goes through bot.goTo after the two cells are air.
+   */
+  async _climbTo(targetY) {
+    // Cardinal steps only: a diagonal step-up clips the corner in vanilla and
+    // the deterministic planner correctly refuses to generate it.
+    const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    let steps = 0;
+    while (this.bot.position && this.bot.position.y < targetY && steps < 12 && !this.token.cancelled) {
+      const feet = {
+        x: Math.floor(this.bot.position.x),
+        y: Math.floor(this.bot.position.y),
+        z: Math.floor(this.bot.position.z)
+      };
+      let advanced = false;
+      for (const [dx, dz] of directions) {
+        const step = { x: feet.x + dx, y: feet.y + 1, z: feet.z + dz };
+        const support = this.bot.getBlock({ x: step.x, y: step.y - 1, z: step.z });
+        if (!support || isAir(support.name) || isLiquid(support.name)) continue;
+        const head = this.bot.getBlock({ x: step.x, y: step.y + 1, z: step.z });
+        if (head && isLiquid(head.name)) continue;
+        const cells = [step, { x: step.x, y: step.y + 1, z: step.z }];
+        let blocked = false;
+        for (const cell of cells) {
+          const block = this.bot.getBlock(cell);
+          if (!block || isAir(block.name)) continue;
+          const cls = classifyBlock(block.name, this.options);
+          if (!cls.excavatable || !this.bot.isDiggable(block.name)) { blocked = true; break; }
+          await this.bot.digBlock(cell, { token: this.token, timeoutMs: 10000, access: true }).catch(() => null);
+          const after = this.bot.getBlock(cell);
+          if (after && !isAir(after.name)) { blocked = true; break; }
+        }
+        if (blocked) continue;
+        const nav = await this.bot.goTo(step, {
+          range: 0, adjustY: false, token: this.token, timeoutMs: 8000
+        }).catch(() => null);
+        this.stats.moved++;
+        if (nav && nav.ok !== false && this.bot.position.y >= step.y) { advanced = true; steps++; break; }
+      }
+      if (!advanced) break;
+    }
+    return Boolean(this.bot.position && this.bot.position.y >= targetY);
   }
 
   async run() {

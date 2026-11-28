@@ -17,6 +17,8 @@ const SCALAR_KEYS = [
   'arrived', 'verified', 'arrivalUnverified', 'recovered', 'already', 'resumed',
   'descended', 'reachable', 'inRange', 'shortBy', 'attempts', 'steps', 'route',
   'searchRadius', 'durationMs', 'elapsedMs', 'commandMs',
+  'mode', 'dimension', 'terrainSummary', 'expanded', 'visited', 'ms',
+  'closestDistance', 'distance', 'moved',
   'mined', 'chopped', 'placed', 'planted', 'harvested', 'replanted', 'collected',
   'count', 'quantity', 'failed', 'completed'
 ];

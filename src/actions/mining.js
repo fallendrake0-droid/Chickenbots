@@ -880,8 +880,15 @@ class MiningController {
           if (oreResult.ok) { mined++; ores++; }
           continue;
         }
-        const move = await this.bot.goTo(pos, { range: 3, timeoutMs: remaining(12000) });
-        if (move && move.ok === false) { stopped = { reason: move.error, position: pos }; break; }
+        // Reach is 4.4 blocks. A branch cell under a one-block surface overhang
+        // has no standable approach at its own level, so walking to a resolved
+        // stance there fails before the head block is removed. If the bot can
+        // already reach the cell from the tunnel, dig it from here; only travel
+        // when it is genuinely far away.
+        if (distance(this.bot.position, pos) > 4.4) {
+          const move = await this.bot.goTo(pos, { range: 2, timeoutMs: remaining(12000) });
+          if (move && move.ok === false) { stopped = { reason: move.error, position: pos }; break; }
+        }
         const dig = await this.bot.digBlock(pos, { timeoutMs: remaining(20000) });
         if (dig.ok) { mined++; this.stats.blocksDug++; }
         else { stopped = { reason: dig.error, position: pos }; break; }

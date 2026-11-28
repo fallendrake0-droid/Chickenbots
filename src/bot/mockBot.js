@@ -9,6 +9,7 @@ const { CROPS, TILLABLE, isMatureCrop } = require('../world/crops');
 const { config } = require('../config');
 const { NavigationManager } = require('../navigation/manager');
 const { planRoute, withBlockCache } = require('../navigation/planner');
+const { routeMode } = require('../navigation/policy');
 const { standableAt, nearestStandable, standableCandidates, floorPosition } = require('../navigation/standability');
 
 function finiteMockPosition(pos) {
@@ -72,7 +73,7 @@ let planWindowDeadline = 0;
 function sharedPlanningDeadline(now) {
   if (now >= planWindowUntil) {
     planWindowUntil = now + 100;
-    planWindowDeadline = now + Math.max(50, Number(config.navigation.planBudgetMs) || 350);
+    planWindowDeadline = now + Math.max(50, Number(config.navigation.planBudgetMs) || 500);
   }
   return now < planWindowUntil ? planWindowDeadline : now;
 }
@@ -274,7 +275,7 @@ class MockBot extends BotAdapter {
    * to an arbitrary surface point, which is why the simulator can catch a
    * blocked doorway or a cliff drop before commissioning.
    */
-  async goTo(pos, { range = 1, token = null, timeoutMs = 15000, priority = 'task', owner = null, adjustY = false, replan = false, allowWater = undefined } = {}) {
+  async goTo(pos, { range = 1, token = null, timeoutMs = 15000, priority = 'task', owner = null, adjustY = false, replan = false, allowWater = undefined, mode = undefined } = {}) {
     if (token && token.cancelled) throw new CancelledError(token.reason);
     if (!pos) return { ok: false, error: 'no target' };
     const limit = Math.max(4, (this.world.size || 256) - 2);
@@ -304,18 +305,18 @@ class MockBot extends BotAdapter {
         return this.navigation.navigate(stances[0].position, {
           range: 0, timeoutMs, priority, owner: owner || String(priority), adjustY: false, replan,
           allowWater: allowWater === undefined ? config.navigation.allowWater : allowWater,
-          verifyArrival: true, token
+          verifyArrival: true, token, mode
         }, (goal, context) => this._walkNavigationPath(goal, {
-          ...context, cancelToken: token, timeoutMs: context.timeoutMs
+          ...context, cancelToken: token, timeoutMs: context.timeoutMs, mode
         }));
       }
     }
     return this.navigation.navigate(target, {
       range, timeoutMs, priority, owner: owner || String(priority), adjustY, replan,
       allowWater: allowWater === undefined ? config.navigation.allowWater : allowWater,
-      verifyArrival: true, token
+      verifyArrival: true, token, mode
     }, (goal, context) => this._walkNavigationPath(goal, {
-      ...context, cancelToken: token, timeoutMs: context.timeoutMs
+      ...context, cancelToken: token, timeoutMs: context.timeoutMs, mode
     }));
   }
 
@@ -330,7 +331,28 @@ class MockBot extends BotAdapter {
    * below. Without this, an excavation that clears the block under a worker
    * leaves it floating and every route fails with `start-no-support`.
    */
-  _settleToSupport(maxFall = 4) {
+  /** Teammate claims/corridors the planner should route around when possible. */
+  _fleetAvoidance() {
+    const fleet = this.navigation && this.navigation.fleet;
+    if (!fleet || typeof fleet.snapshot !== 'function') return [];
+    const rows = [];
+    try {
+      const snap = fleet.snapshot();
+      for (const claim of snap.active || []) {
+        if (!claim || claim.owner === this.name || !claim.position) continue;
+        rows.push({ position: claim.position, radius: 2, weight: 3 });
+      }
+      for (const corridor of snap.corridors || []) {
+        if (!corridor || corridor.owner === this.name) continue;
+        for (const point of corridor.path || []) rows.push({ position: point, radius: 1.6, weight: 2 });
+      }
+    } catch (_) { return []; }
+    return rows.slice(0, 64);
+  }
+
+  // Eight blocks covers a normal mining shaft step; larger depths are void or
+  // a deliberately hovering builder fixture, which is handled below.
+  _settleToSupport(maxFall = 8) {
     const here = standableAt(this, this.position, { maxDrop: 0, allowWater: true });
     if (here.ok) return;
     for (let drop = 1; drop <= maxFall; drop++) {
@@ -364,11 +386,15 @@ class MockBot extends BotAdapter {
       // elevated build keeps its workers beside the structure.
       const groundStance = standableAt(scan, goal, { maxDrop: 32, allowWater: true });
       if (groundStance.ok) {
+        // Fixture-only relocation: the mock builder is deliberately suspended
+        // beside an elevated schematic and has no support anywhere. This branch
+        // is never reachable for a supported bot and is reported as a fixture
+        // move, not as a navigation success. Normal goTo always plans.
         this.position = { ...groundStance.position };
         this.stats.moved++;
         this.fallDistance = 0;
         await this._wait(120);
-        return { ok: true, path: [], alreadyThere: false, position: { ...this.position } };
+        return { ok: true, path: [], alreadyThere: false, fixture: true, goal: { ...this.position }, position: { ...this.position } };
       }
       const hoverY = Math.floor(this.position.y);
       const stances = [
@@ -388,7 +414,7 @@ class MockBot extends BotAdapter {
           this.stats.moved++;
           this.fallDistance = 0;
           await this._wait(120);
-          return { ok: true, path: [], alreadyThere: false, position: { ...this.position } };
+          return { ok: true, path: [], alreadyThere: false, fixture: true, goal: { ...this.position }, position: { ...this.position } };
         }
       }
     }
@@ -398,11 +424,18 @@ class MockBot extends BotAdapter {
     // One wall-clock budget for the whole move, shared by every stance trial
     // and segment. Planning is synchronous, so a per-call cap alone would
     // still allow (candidates x segments) x budget of event-loop blocking.
-    const planBudgetMs = Math.max(50, Number(config.navigation.planBudgetMs) || 350);
+    const planBudgetMs = Math.max(50, Number(config.navigation.planBudgetMs) || 500);
     const planStartedAt = Date.now();
     const planDeadline = Math.min(planStartedAt + planBudgetMs, sharedPlanningDeadline(planStartedAt));
-    const maxDrop = config.navigation.maxDrop === undefined ? 3 : config.navigation.maxDrop;
-    const allowWater = context.allowWater === undefined ? config.navigation.allowWater !== false : context.allowWater;
+    // The route mode owns the safety envelope. A caller may still override the
+    // water rule, but it cannot silently make a SAFE route accept a four-block
+    // drop by passing only `allowWater`.
+    const mode = routeMode(context.mode || (config.navigation && config.navigation.routeMode) || 'balanced');
+    const maxDrop = config.navigation.maxDrop === undefined ? mode.maxDrop : Math.min(mode.maxDrop, config.navigation.maxDrop);
+    const allowWater = context.allowWater === undefined ? mode.allowWater : context.allowWater;
+    const allowHazard = false;
+    const openDoors = config.navigation.openDoors === true;
+    const avoid = this._fleetAvoidance();
     const goalVerdict = standableAt(scan, goal, { maxDrop, allowWater });
     // A target in a tree canopy or on a high ledge is resolved through the
     // normal candidate-stance search below. The bot walks there; it is never
@@ -420,9 +453,18 @@ class MockBot extends BotAdapter {
     });
     if (range > 0 && candidateStances.length) {
       const here = standableAt(scan, this.position, { maxDrop, allowWater });
-      planTarget = here.ok && distance(this.position, goal) <= range + 0.5
-        ? floorPosition(this.position)
-        : candidateStances[0].position;
+      if (here.ok && distance(this.position, goal) <= range + 0.5) {
+        planTarget = floorPosition(this.position);
+      } else if (goalVerdict.ok) {
+        // The requested coordinate is a real stance. Plan straight to it; only
+        // fall back to the surrounding candidate stances if A* rejects it.
+        planTarget = floorPosition(goal);
+      } else {
+        // A block target (a lamp, a trunk, a wall) is not a stance. Choose the
+        // lowest ground stance first; the alternate-stance loop below still
+        // scores other candidates if this one is unreachable.
+        planTarget = candidateStances[0].position;
+      }
     }
     const alternateStances = candidateStances;
     if (!planTarget && !candidateStances.length) {
@@ -441,6 +483,18 @@ class MockBot extends BotAdapter {
       && planTarget.x === goalFloor.x && planTarget.y === goalFloor.y && planTarget.z === goalFloor.z);
     const planRange = goalVerdict.ok && targetIsGoal ? range : 0;
     const route = [];
+    const routeMoves = [];
+    let routeTerrain = null;
+    const mergeTerrain = (terrain) => {
+      if (!terrain) return;
+      if (!routeTerrain) routeTerrain = { ...terrain };
+      else {
+        for (const key of Object.keys(terrain)) {
+          if (key === 'maxDrop') routeTerrain.maxDrop = Math.max(routeTerrain.maxDrop || 0, terrain[key] || 0);
+          else if (typeof terrain[key] === 'number') routeTerrain[key] = (routeTerrain[key] || 0) + terrain[key];
+        }
+      }
+    };
     let cursor = { ...this.position };
     const segmentLength = Math.max(8, Number(config.navigation.segmentLength) || 32);
     const distanceTarget = planTarget || (candidateStances[0] && candidateStances[0].position) || floorPosition(goal);
@@ -458,7 +512,8 @@ class MockBot extends BotAdapter {
       for (const candidate of candidateStances) {
         const trial = planRoute({
           reader: scan, from: this.position, to: candidate.position, range: 0,
-          maxNodes: trialNodes, maxDrop, allowWater, deadline: planDeadline
+          maxNodes: trialNodes, maxDrop, allowWater, deadline: planDeadline,
+          mode: mode.name, openDoors, avoid, dimension: this.dimension || 'overworld'
         });
         expanded += trial.expanded || 0;
         if (trial.ok) { chosen = { candidate, plan: trial }; break; }
@@ -473,6 +528,7 @@ class MockBot extends BotAdapter {
       }
       planTarget = chosen.candidate.position;
       const route = chosen.plan.path.map((step) => ({ ...step }));
+      mergeTerrain(chosen.plan.terrain);
       this.position = { ...(chosen.plan.start || this.position) };
       for (let i = 0; i < route.length; i++) {
         if (context.cancelToken && context.cancelToken.cancelled) throw new CancelledError(context.cancelToken.reason);
@@ -483,8 +539,9 @@ class MockBot extends BotAdapter {
       }
       await this._wait(Math.min(120, 10 + route.length * 3));
       return {
-        ok: true, position: { ...this.position }, route: route.length,
-        steps: route.length, expanded, distance: route.length, arrived: true
+        ok: true, position: { ...this.position }, goal: { ...planTarget }, route: route.length,
+        steps: route.length, expanded, distance: route.length, arrived: true,
+        mode: mode.name, terrain: routeTerrain
       };
     }
     for (let segment = 0; segment < segments; segment++) {
@@ -511,7 +568,12 @@ class MockBot extends BotAdapter {
         maxNodes,
         maxDrop,
         allowWater,
-        deadline: planDeadline
+        allowHazard,
+        deadline: planDeadline,
+        mode: mode.name,
+        openDoors,
+        avoid,
+        dimension: this.dimension || 'overworld'
       });
       expanded += planned.expanded || 0;
       // An exact destination (range 0) has no alternate stances: accepting a
@@ -524,7 +586,8 @@ class MockBot extends BotAdapter {
           if (candidate.position.x === cursor.x && candidate.position.y === cursor.y && candidate.position.z === cursor.z) continue;
           const trial = planRoute({
             reader: scan, from: cursor, to: candidate.position, range: 0,
-            maxNodes: trialNodes, maxDrop, allowWater, deadline: planDeadline
+            maxNodes: trialNodes, maxDrop, allowWater, allowHazard, deadline: planDeadline,
+            mode: mode.name, openDoors, avoid, dimension: this.dimension || 'overworld'
           });
           expanded += trial.expanded || 0;
           if (!trial.ok || (trial.path.length === 0
@@ -532,6 +595,41 @@ class MockBot extends BotAdapter {
           planned = trial;
           waypoint = candidate.position;
           planTarget = candidate.position;
+          break;
+        }
+      }
+      // Only an intermediate segment may shrink toward a waypoint. The final
+      // segment must reach the requested stance exactly; accepting a different
+      // cell and still reporting the original goal was a fake success.
+      if (!planned.ok && !final) {
+        // A geometric segment waypoint can land on the far side of a ridge or
+        // a wall. Before failing the whole long move, shorten the step toward
+        // the same segment direction and try again. This keeps each A* search
+        // bounded without inventing a straight-line shortcut through terrain.
+        for (const shrink of [0.6, 0.35, 0.2]) {
+          const fromCursor = {
+            x: cursor.x + (planTarget.x - cursor.x) * shrink,
+            y: cursor.y + (planTarget.y - cursor.y) * shrink,
+            z: cursor.z + (planTarget.z - cursor.z) * shrink
+          };
+          const raw = {
+            x: Math.round(fromCursor.x), y: Math.round(fromCursor.y), z: Math.round(fromCursor.z)
+          };
+          const stand = nearestStandable(scan, raw, {
+            maxNearbyRadius: 3, maxDrop, allowWater
+          });
+          if (!stand.ok) continue;
+          const trial = planRoute({
+            reader: scan, from: cursor, to: stand.position, range: 0,
+            maxNodes: Math.max(1200, Math.floor(maxNodes / 2)),
+            maxDrop, allowWater, allowHazard, deadline: planDeadline,
+            mode: mode.name, openDoors, avoid, dimension: this.dimension || 'overworld'
+          });
+          expanded += trial.expanded || 0;
+          if (!trial.ok || trial.path.length === 0) continue;
+          if (stand.position.x === cursor.x && stand.position.y === cursor.y && stand.position.z === cursor.z) continue;
+          planned = trial;
+          waypoint = stand.position;
           break;
         }
       }
@@ -549,8 +647,22 @@ class MockBot extends BotAdapter {
       if (segment === 0 && planned.start && finiteMockPosition(planned.start)) {
         this.position = { ...planned.start };
       }
-      for (const step of planned.path) route.push(step);
+      for (let i = 0; i < planned.path.length; i++) {
+        route.push(planned.path[i]);
+        routeMoves.push(planned.moves ? planned.moves[i] : 'walk');
+      }
+      mergeTerrain(planned.terrain);
       cursor = planned.goal || waypoint;
+    }
+    if (route.length && this.navigation.fleet && this.name) {
+      try {
+        this.navigation.fleet.claimRoute(this.name, route, {
+          kind: context.owner || 'task',
+          priority: context.priorityName || 'task',
+          ttlMs: Math.min(30000, Math.max(1000, Number(context.timeoutMs) || 15000))
+        });
+        this.navigation.telemetry.recordCount('corridorSteps', Math.min(32, route.length));
+      } catch (_) { /* advisory only; the movement still proceeds */ }
     }
     for (let i = 0; i < route.length; i++) {
       // Long walks commit thousands of standability checks. Yield periodically
@@ -586,7 +698,11 @@ class MockBot extends BotAdapter {
       steps: route.length,
       expanded,
       distance: walked,
-      already: route.length === 0
+      goal: { ...planTarget },
+      already: route.length === 0,
+      mode: mode.name,
+      terrain: routeTerrain,
+      moves: routeMoves.length
     };
   }
 
@@ -600,9 +716,12 @@ class MockBot extends BotAdapter {
     return this.goTo(target, options);
   }
 
-  async digBlock(pos, { token = null, timeoutMs = 15000 } = {}) {
+  async digBlock(pos, { token = null, timeoutMs = 15000, range = 5 } = {}) {
     if (token && token.cancelled) throw new CancelledError(token.reason);
-    if (distance(this.position, pos) > 5) return { ok: false, error: 'too far to dig' };
+    // `range` is the fixture build reach for an elevated schematic. Normal
+    // mining and excavation call without it and keep the real 5-block limit.
+    const reach = Math.max(5, Number(range) || 5);
+    if (distance(this.position, pos) > reach) return { ok: false, error: 'too far to dig' };
     const block = this.getBlock(pos);
     if (!block || block.name === 'air') return { ok: false, error: 'already air' };
     if (!this.isDiggable(block.name)) return { ok: false, error: `need better tool for ${block.name}` };

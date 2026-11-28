@@ -88,12 +88,22 @@ function statusSnapshot(services) {
   let navigation = null;
   try {
     const rows = summaries.map((bot) => ({ name: bot.name, navigation: bot.navigation || null }));
-    const counts = { attempts: 0, success: 0, failed: 0, stuck: 0, noPath: 0, arrivalUnverified: 0 };
+    const counts = {
+      attempts: 0, success: 0, failed: 0, stuck: 0, noPath: 0, arrivalUnverified: 0,
+      recovered: 0, replanned: 0
+    };
+    const modes = {};
     let p95 = 0;
+    let recoveries = 0;
+    let recoveryFailures = 0;
     for (const row of rows) {
       const telemetry = row.navigation && row.navigation.telemetry;
       if (!telemetry) continue;
       for (const key of Object.keys(counts)) counts[key] += Number(telemetry[key] || 0);
+      for (const [mode, count] of Object.entries(telemetry.modes || {})) modes[mode] = (modes[mode] || 0) + Number(count || 0);
+      const recovery = row.navigation.recovery || {};
+      recoveries += Number(recovery.count || 0);
+      recoveryFailures += Array.isArray(recovery.failures) ? recovery.failures.length : 0;
       p95 = Math.max(p95, Number(telemetry.durationMs && telemetry.durationMs.p95) || 0);
     }
     navigation = {
@@ -101,6 +111,9 @@ function statusSnapshot(services) {
       fleet: services.runtime && services.runtime.navigationFleet ? services.runtime.navigationFleet.snapshot() : null,
       totals: {
         ...counts,
+        modes,
+        recoveries,
+        recoveryFailures,
         moving: rows.filter((row) => row.navigation && row.navigation.active).length,
         bots: rows.filter((row) => row.navigation && !row.navigation.error).length,
         successRate: counts.attempts ? Number((counts.success / counts.attempts * 100).toFixed(1)) : null,

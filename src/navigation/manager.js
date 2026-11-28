@@ -7,6 +7,8 @@ const { NavigationTelemetry } = require('./telemetry');
 const { StuckDetector } = require('./stuck');
 const { recoveryGoal, describeRecovery } = require('./recovery');
 const { goalPosition, finitePosition, floorPosition, nearestStandable } = require('./standability');
+const { routeMode, routeModeNames } = require('./policy');
+const { dimensionProfile } = require('./dimension');
 const { FleetCongestion } = require('./congestion');
 
 const sleep = (ms) => new Promise((resolve) => {
@@ -64,6 +66,8 @@ class NavigationManager {
       stuckWindowMs: nav.stuckWindowMs === undefined ? 2500 : nav.stuckWindowMs,
       waitForWorldMs: nav.waitForWorldMs === undefined ? 750 : nav.waitForWorldMs,
       defaultTimeoutMs: nav.defaultTimeoutMs === undefined ? 20000 : nav.defaultTimeoutMs,
+      openDoors: nav.openDoors === true,
+      mode: settings && settings.mode ? settings.mode : (nav.routeMode || 'balanced'),
       ...(settings || {})
     };
     this.arbiter = arbiter || new MotionArbiter({ now });
@@ -73,6 +77,58 @@ class NavigationManager {
     this.onMotion = onMotion;
     this.onRecovery = onRecovery;
     this.sequence = 0;
+    // Bounded failure memory: a route that just failed is not retried from the
+    // same stance for ever, and recovery can avoid the cell that failed.
+    this.failures = new Map();
+    this.failureTtlMs = 45000;
+    this.lastRecovery = null;
+    this.recoveryCount = 0;
+    this.dimension = dimensionProfile(this._readDimension());
+  }
+
+  _readDimension() {
+    try {
+      if (this.bot && this.bot.bot && this.bot.bot.game) return this.bot.bot.game.dimension;
+      if (this.bot && this.bot.dimension) return this.bot.dimension;
+      return config.navigation && config.navigation.dimension ? config.navigation.dimension : 'overworld';
+    } catch (_) { return 'overworld'; }
+  }
+
+  _failureKey(position) {
+    if (!finitePosition(position)) return null;
+    const at = floorPosition(position);
+    return `${at.x},${at.y},${at.z}`;
+  }
+
+  _sweepFailures() {
+    const now = this.now();
+    for (const [key, row] of this.failures) if (now - row.at > this.failureTtlMs) this.failures.delete(key);
+  }
+
+  _recordFailure(position, result = {}) {
+    const key = this._failureKey(position);
+    if (!key) return;
+    const prior = this.failures.get(key);
+    this.failures.set(key, {
+      position: floorPosition(position),
+      attempts: (prior ? prior.attempts : 0) + 1,
+      code: result.code || null,
+      reason: result.error || result.reason || null,
+      at: this.now()
+    });
+    // Bounded memory: 64 cells is enough to break a local loop and cannot grow
+    // with the number of failed long-distance operator requests.
+    while (this.failures.size > 64) this.failures.delete(this.failures.keys().next().value);
+  }
+
+  _clearFailure(position) {
+    const key = this._failureKey(position);
+    if (key) this.failures.delete(key);
+  }
+
+  recentFailures() {
+    this._sweepFailures();
+    return [...this.failures.values()].sort((a, b) => b.at - a.at).slice(0, 8);
   }
 
   status() {
@@ -85,6 +141,14 @@ class NavigationManager {
       motion: this.arbiter.snapshot(),
       stuck: this.stuck.snapshot(),
       telemetry: this.telemetry.summary(),
+      mode: this.lastMode || routeMode(this.settings.mode).name,
+      modes: routeModeNames(),
+      dimension: { ...this.dimension },
+      recovery: {
+        last: this.lastRecovery,
+        count: this.recoveryCount,
+        failures: this.recentFailures()
+      },
       congestion: this.fleet ? (this.fleet.conflictsFor(this.bot && this.bot.name, this.bot && this.bot.position) || []) : []
     };
   }
@@ -108,12 +172,14 @@ class NavigationManager {
         goal: floorPosition(pos), position: floorPosition(pos), skipped: true
       };
     }
+    const mode = routeMode(options.mode || this.settings.mode || 'balanced');
     const result = goalPosition(this.reader, pos, {
       range: options.range,
       adjustY: options.adjustY,
       allowUnknown: options.allowUnloaded === true,
-      maxDrop: options.maxDrop === undefined ? this.settings.maxDrop : options.maxDrop,
-      allowWater: options.allowWater === undefined ? this.settings.allowWater : options.allowWater,
+      maxDrop: options.maxDrop === undefined ? Math.min(this.settings.maxDrop, mode.maxDrop) : Math.min(Number(options.maxDrop), mode.maxDrop),
+      allowWater: options.allowWater === undefined ? (this.settings.allowWater && mode.allowWater) : options.allowWater,
+      openDoors: options.openDoors === undefined ? this.settings.openDoors === true : options.openDoors === true,
       maxNearbyRadius: options.maxNearbyRadius,
       maxScanUp: options.maxScanUp,
       maxScanDown: options.maxScanDown
@@ -144,8 +210,10 @@ class NavigationManager {
     const owner = options.owner || String(priorityName);
     const timeoutMs = Math.max(1000, Number(options.timeoutMs) || this.settings.defaultTimeoutMs);
     const range = options.range === undefined ? 1 : Number(options.range);
+    const mode = routeMode(options.mode || this.settings.mode || 'balanced');
+    this.lastMode = mode.name;
     const id = this.telemetry.begin({
-      from: this.bot && this.bot.position, target: pos, priority, owner, range
+      from: this.bot && this.bot.position, target: pos, priority, owner, range, mode: mode.name
     });
     const finish = (result) => {
       const final = {
@@ -164,8 +232,15 @@ class NavigationManager {
     if (!finitePosition(pos)) {
       return finish({ ok: false, code: 'INVALID_DESTINATION', error: `invalid movement destination ${JSON.stringify(pos)}` });
     }
+    if (!Number.isFinite(range) || range < 0 || range > 64) {
+      return finish({
+        ok: false, code: 'INVALID_RANGE',
+        error: `invalid arrival range ${JSON.stringify(options.range)}; expected 0..64`,
+        position: this.bot && this.bot.position ? { ...this.bot.position } : null
+      });
+    }
 
-    let validation = this.validate(pos, { ...options, range });
+    let validation = this.validate(pos, { ...options, range, mode: mode.name });
     if (!validation.ok && validation.code === 'DESTINATION_UNLOADED' && options.waitForWorld !== false) {
       const deadline = this.now() + Math.max(0, Number(this.settings.waitForWorldMs) || 0);
       while (!validation.ok && validation.code === 'DESTINATION_UNLOADED' && this.now() < deadline) {
@@ -175,6 +250,7 @@ class NavigationManager {
       }
     }
     if (!validation.ok) {
+      if (/door|gate/i.test(String(validation.reason || ''))) this.telemetry.recordCount('doorBlocked');
       return finish({
         ok: false,
         code: validation.code || 'INVALID_DESTINATION',
@@ -207,7 +283,7 @@ class NavigationManager {
     }
 
     const claim = this.arbiter.claim({
-      priority, owner, timeoutMs,
+      priority, owner, timeoutMs, goal: requestedGoal,
       generation: options.generation === undefined ? null : options.generation
     });
     if (!claim.ok) {
@@ -252,8 +328,9 @@ class NavigationManager {
           target: requestedGoal,
           start: startPosition,
           range,
-          maxDrop: this.settings.maxDrop,
-          allowWater: this.settings.allowWater
+          maxDrop: Math.min(this.settings.maxDrop, mode.maxDrop),
+          allowWater: this.settings.allowWater && mode.allowWater,
+          avoid: this.recentFailures().map((row) => row.position)
         });
         if (recovery && recovery.action === 'abort') {
           last = { ok: false, error: recovery.reason || 'recovery exhausted', recovery: true };
@@ -268,7 +345,9 @@ class NavigationManager {
           result = await execute(goal, {
             attempt, timeoutMs: attemptTimeout, token, motion: claim.motion,
             goal, requested: pos, range, priority, priorityName, owner,
-            validateGoal: (candidate) => this.validate(candidate, { ...options, range })
+            generation: options.generation,
+            mode: mode.name, openDoors: this.settings.openDoors === true || options.openDoors === true,
+            validateGoal: (candidate) => this.validate(candidate, { ...options, range, mode: mode.name })
           });
         } catch (err) {
           result = { ok: false, error: err && err.message ? err.message : String(err) };
@@ -278,7 +357,12 @@ class NavigationManager {
         }
         if (result && result.ok !== false) {
           const live = this.bot && this.bot.position ? { ...this.bot.position } : null;
-          const arrived = this._arrived(live, pos, range, validation);
+          // The executor may legitimately resolve an exact request to a real
+          // standable stance (in the air, on a block target) and reports that
+          // `goal`. Judge arrival against the stance it actually reached, not
+          // the raw coordinate it was asked to stand inside.
+          const executedGoal = result.goal && finitePosition(result.goal) ? result.goal : goal;
+          const arrived = this._arrived(live, pos, range, { ...validation, goal: executedGoal });
           const verified = validation.skipped ? null : arrived;
           // A live pathfinder can report goal_reached while the entity is still
           // several blocks away (a stale server correction, a closed door or a
@@ -294,7 +378,7 @@ class NavigationManager {
             arrivalUnverified: (verificationRequired(options) || grossShort) && arrived === false,
             recovered,
             attempts,
-            goal,
+            goal: executedGoal,
             position: live,
             relocated: Boolean(fleetResult.relocated),
             conflicts: fleetResult.conflicts,
@@ -321,10 +405,22 @@ class NavigationManager {
             if (attemptLimit === maxAttempts && maxAttempts < 2) attemptLimit = 2;
             if (attempt + 1 >= attemptLimit) break;
           } else {
-            return finish(final);
+            this._clearFailure(goal);
+            if (executedGoal) this._clearFailure(executedGoal);
+            if (requestedGoal) this._clearFailure(requestedGoal);
+            if (recovered) this.telemetry.event('recovered', { attempts, goal: executedGoal, mode: mode.name });
+            return finish({ ...final, recovered, mode: mode.name });
           }
         } else {
           last = result || { ok: false, error: 'movement failed' };
+          if (!last.cancelled && !last.superseded) {
+            // A no-path answer implicates the destination; a timeout or a short
+            // arrival implicates where the bot actually got stuck. Remembering
+            // the destination for both made recovery avoid the goal it was
+            // supposed to reach.
+            const failedAt = last.noPath ? goal : (last.position || (this.bot && this.bot.position) || goal);
+            this._recordFailure(failedAt, last);
+          }
           if (last.cancelled || last.superseded) break;
           // A deterministic no-path answer does not improve by planning the
           // same map again. The old operator ladder spent all three attempts
@@ -341,7 +437,9 @@ class NavigationManager {
         }
         if (attempt + 1 >= attemptLimit) break;
         const reason = last.stuck ? 'stuck' : last.timedOut ? 'timeout' : last.noPath ? 'no-path' : 'path-failed';
-        this.telemetry.event('replanned', { id, attempt, reason, error: last.error || null });
+        this.recoveryCount++;
+        this.lastRecovery = { at: this.now(), attempt, reason, strategy: recovery ? recovery.action : null, error: last.error || null };
+        this.telemetry.event('replanned', { id, attempt, reason, strategy: recovery ? recovery.action : null, error: last.error || null });
         recovered = true;
         if (typeof this.onRecovery === 'function') {
           try { await this.onRecovery({ attempt, reason, result: last, goal: requestedGoal, recovery: describeRecovery(recovery) }); }
@@ -362,6 +460,7 @@ class NavigationManager {
       owner,
       priority,
       code: (last && last.code) || null,
+      mode: mode.name,
       timings: (last && last.timings) || null,
       position: this.bot && this.bot.position ? { ...this.bot.position } : null,
       goal: requestedGoal
@@ -375,7 +474,7 @@ class NavigationManager {
     // comparing a feet position to the original ground-block Y would reject a
     // perfectly valid arrival by one block.
     const anchor = validation.goal || validation.position || requested;
-    const tolerance = Math.max(1, Number(range) || 0) + 0.75;
+    const tolerance = Math.max(0, Number(range) || 0) + 0.75;
     return distance(live, anchor) <= tolerance;
   }
 }

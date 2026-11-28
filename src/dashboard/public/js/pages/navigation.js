@@ -37,20 +37,63 @@ function recentEvents(rows) {
   }).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 14);
 }
 
+function routeMapHtml(payload) {
+  const path = Array.isArray(payload.path) ? payload.path : [];
+  const from = payload.from;
+  const goal = payload.goal || payload.target;
+  const points = [];
+  if (from) points.push({ x: from.x, z: from.z, kind: 'from' });
+  for (let i = 0; i < path.length; i += Math.max(1, Math.ceil(path.length / 120))) points.push({ x: path[i].x, z: path[i].z, kind: 'path' });
+  if (goal) points.push({ x: goal.x, z: goal.z, kind: 'goal' });
+  if (points.length < 2) return '';
+  const xs = points.map((point) => Number(point.x));
+  const zs = points.map((point) => Number(point.z));
+  const minX = Math.min(...xs); const maxX = Math.max(...xs);
+  const minZ = Math.min(...zs); const maxZ = Math.max(...zs);
+  const span = Math.max(1, maxX - minX, maxZ - minZ);
+  const xy = (point) => [10 + ((point.x - minX) / span) * 240, 10 + ((point.z - minZ) / span) * 140];
+  const line = points.map((point) => xy(point).map((n) => n.toFixed(1)).join(',')).join(' ');
+  const start = xy(points[0]); const end = xy(points[points.length - 1]);
+  return `<svg class="route-preview-map" viewBox="0 0 260 160" role="img" aria-label="Top-down preview of the planned route">
+    <rect x="0" y="0" width="260" height="160" rx="8" fill="rgba(15,23,42,0.35)"></rect>
+    <polyline points="${line}" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>
+    <circle cx="${start[0].toFixed(1)}" cy="${start[1].toFixed(1)}" r="4" fill="#fbbf24"></circle>
+    <circle cx="${end[0].toFixed(1)}" cy="${end[1].toFixed(1)}" r="4" fill="#4ade80"></circle>
+  </svg><div class="tiny muted" style="margin-top:4px">Top-down X/Z preview · amber start, green goal · ${num(payload.steps || path.length || 0)} waypoints</div>`;
+}
+
 function routeResultHtml(payload, request) {
   if (!payload) return `<div class="callout callout--warn">${icon('alert')}<div>The command returned no route result.</div></div>`;
   if (payload.ok === false) {
-    return `<div class="callout callout--danger">${icon('x-circle')}<div><strong>No route.</strong> ${esc(payload.error || payload.reason || payload.code || 'The planner rejected the destination.')}</div></div>`;
+    const closest = payload.closest
+      ? `<div class="tiny muted" style="margin-top:6px">Closest reachable stance: <span class="mono">${esc(positionText(payload.closest))}</span>${payload.closestDistance === null || payload.closestDistance === undefined ? '' : ` (${num(Math.round(payload.closestDistance * 10) / 10)} blocks short)`}.</div>`
+      : '';
+    return `<div class="callout callout--danger">${icon('x-circle')}<div><strong>No route.</strong> ${esc(payload.error || payload.reason || payload.code || 'The planner rejected the destination.')}${closest}</div></div>`;
   }
   const path = Array.isArray(payload.path) ? payload.path : [];
   const points = path.slice(0, 24).map((point) => `${point.x},${point.y},${point.z}`);
+  const terrain = payload.terrain || {};
+  const terrainRows = [
+    ['Walk / diagonal', `${num(terrain.walk || 0)} / ${num(terrain.diagonal || 0)}`],
+    ['Step up / drop', `${num(terrain.stepUp || 0)} / ${num(terrain.drop || 0)}`],
+    ['Water / climb', `${num(terrain.waterSteps || 0)} / ${num(terrain.climb || 0)}`],
+    ['Doors / narrow', `${num(terrain.doors || 0)} / ${num(terrain.narrowSteps || 0)}`],
+    ['Max drop / vertical', `${num(terrain.maxDrop || 0)} / ${terrain.vertical === undefined ? '—' : num(terrain.vertical)}`]
+  ];
+  const failureNote = payload.closest
+    ? `<div class="tiny muted" style="margin-top:8px">Closest reachable stance: <span class="mono">${esc(positionText(payload.closest))}</span> (${payload.closestDistance === null || payload.closestDistance === undefined ? '—' : num(Math.round(payload.closestDistance * 10) / 10)} blocks from the goal).</div>`
+    : '';
   return `
-    <div class="callout callout--info">${icon('check-circle')}<div><strong>Route found.</strong> ${num(payload.steps || path.length || 0)} steps · cost ${payload.distance === null || payload.distance === undefined ? '—' : num(Math.round(payload.distance * 10) / 10)} · ${num(payload.expanded)} nodes expanded in ${num(payload.ms)} ms. Preview only; the bot has not moved.</div></div>
+    <div class="callout callout--info">${icon('check-circle')}<div><strong>Route found.</strong> ${num(payload.steps || path.length || 0)} steps · cost ${payload.distance === null || payload.distance === undefined ? '—' : num(Math.round(payload.distance * 10) / 10)} · ${num(payload.expanded)} nodes expanded in ${num(payload.ms)} ms. Mode ${esc(payload.mode || 'BALANCED')}. Preview only; the bot has not moved.</div></div>
     <div class="chips" style="margin-top:10px">
       ${badge(payload.reachable ? 'reachable' : 'unreachable', payload.reachable ? 'ok' : 'danger')}
+      ${badge(payload.mode || 'BALANCED', 'info')}
       ${badge(`goal ${positionText(payload.goal)}`, 'neutral', { mono: true })}
       ${badge(`from ${positionText(payload.from)}`, 'neutral', { mono: true })}
     </div>
+    <div style="margin-top:10px">${kvRows(terrainRows)}</div>
+    ${failureNote}
+    ${routeMapHtml(payload)}
     ${points.length ? `<div class="path-waypoints" aria-label="Route waypoints">${points.map((point, index) => `<span class="path-waypoint"><span class="tiny muted">${index + 1}</span><span class="mono">${esc(point)}</span></span>`).join('')}</div>` : '<div class="tiny muted" style="margin-top:10px">No waypoints: the bot is already at the resolved stance.</div>'}
     <div class="toolbar" style="margin-top:12px">
       <button class="button button--primary button--sm" type="button" data-route-go data-bot="${esc(request.bot)}" data-x="${esc(request.x)}" data-y="${esc(request.y)}" data-z="${esc(request.z)}">${icon('navigation')} Walk this route</button>
@@ -83,6 +126,7 @@ export const navigationPage = {
           ${statCard({ label: 'Success rate', value: totals.successRate === null || totals.successRate === undefined ? '—' : `${totals.successRate}%`, iconName: 'check-circle', tone: totals.successRate === null || totals.successRate === undefined ? 'neutral' : totals.successRate >= 90 ? 'success' : totals.successRate >= 70 ? 'warning' : 'danger', context: 'Arrivals / attempted moves' })}
           ${statCard({ label: 'Stuck / no path', value: `${num(totals.stuck || 0)}<small> / ${num(totals.noPath || 0)}</small>`, iconName: 'alert', tone: (totals.stuck || totals.noPath) ? 'warning' : 'success', context: `${num(totals.arrivalUnverified || 0)} arrival checks failed` })}
           ${statCard({ label: 'Plan p95', value: totals.p95Ms === null || totals.p95Ms === undefined ? '—' : `${num(Math.round(totals.p95Ms))}<small> ms</small>`, iconName: 'clock', tone: 'neutral', context: 'Observed movement duration p95' })}
+          ${statCard({ label: 'Recovery', value: num(totals.recoveries || 0), iconName: 'shield', tone: (totals.recoveries || 0) ? 'warning' : 'success', context: `${num(totals.recoveryFailures || 0)} remembered failure cell(s)` })}
         </div>
 
         <div class="grid grid--main-side">
@@ -112,6 +156,9 @@ export const navigationPage = {
             <section class="card">
               <div class="card-header"><div class="card-title">${icon('shield')} Movement policy</div></div>
               <div class="card-body">${kvRows([
+                ['Route mode', policy.routeMode || 'BALANCED'],
+                ['Dimension', policy.dimension ? `${policy.dimension.name} · Y ${policy.dimension.minY}..${policy.dimension.maxY} · max drop ${policy.dimension.maxDrop}` : '—'],
+                ['Modes used', Object.keys(totals.modes || {}).length ? Object.entries(totals.modes).map(([mode, count]) => `${mode} ${num(count)}`).join(' · ') : '—'],
                 ['Strict destinations', policy.strictDestinations ? 'on' : 'off'],
                 ['Max safe drop', `${policy.maxDrop ?? '—'} blocks`],
                 ['Water', policy.allowWater ? 'allowed' : 'refused'],
@@ -121,7 +168,7 @@ export const navigationPage = {
                 ['Adaptive search', policy.adaptiveSearchRadius ? `on · ${num(policy.baseSearchRadius)} base / ${num(policy.searchRadiusMax)} cap` : 'off'],
                 ['Think / tick budget', `${num(policy.thinkTimeoutMs)} / ${num(policy.tickTimeoutMs)} ms`],
                 ['Sprint', policy.sprint ? 'on' : 'off'],
-                ['Doors', policy.openDoors ? 'can open' : 'closed'],
+                ['Doors', policy.openDoors ? 'openable • closed doors still solid' : 'closed doors solid'],
                 ['Dig / scaffold', `${policy.allowDig ? 'dig' : 'no dig'} / ${policy.allowScaffold ? 'scaffold' : 'no scaffold'}`]
               ])}</div>
             </section>
@@ -133,8 +180,24 @@ export const navigationPage = {
                 ${kvRows([
                   ['Conflicts relocated', num(fleet.relocations)],
                   ['Conflicts observed', num(fleet.conflicts)],
+                  ['Active corridors', num((fleet.corridors || []).length)],
                   ['Claim radius', fleet.radius === undefined ? '—' : `${fleet.radius} blocks`]
                 ])}
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-header"><div class="card-title">${icon('shield')} Recovery ladder</div><span class="tiny muted">${num(totals.recoveries || 0)} total</span></div>
+              <div class="card-body">
+                ${(() => {
+                  const items = rows
+                    .filter(({ navigation }) => navigation && navigation.recovery && navigation.recovery.last)
+                    .map(({ bot, navigation }) => {
+                      const last = navigation.recovery.last;
+                      return `<div class="list-item"><span class="list-icon">${icon('shield')}</span><div class="list-main"><div class="list-title">${esc(bot.name)} <span class="tiny muted">${esc(last.strategy || 'retry')}</span></div><div class="list-sub">${esc(last.reason || 'movement retry')}${last.attempt === undefined ? '' : ` · attempt ${num(last.attempt)}`}${(navigation.recovery.failures || []).length ? ` · ${num(navigation.recovery.failures.length)} remembered cell(s)` : ''}</div></div></div>`;
+                    });
+                  return items.length ? `<div class="stack gap-2">${items.join('')}</div>` : '<div class="muted small">No recovery has been needed since this runtime started.</div>';
+                })()}
               </div>
             </section>
 
@@ -144,7 +207,7 @@ export const navigationPage = {
             <section class="card">
           <div class="card-header"><div class="card-title">${icon('users')} Fleet paths</div><span class="tiny muted">${rows.length} reported</span></div>
           <div class="table-wrap"><table class="table">
-            <thead><tr><th>Bot</th><th>Position</th><th>Movement</th><th>Target</th><th>Attempts</th><th>Success</th><th>Stuck / no path</th><th>Last failure</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Bot</th><th>Position</th><th>Movement</th><th>Mode</th><th>Target</th><th>Attempts</th><th>Success</th><th>Stuck / no path</th><th>Last failure</th><th>Actions</th></tr></thead>
             <tbody>
               ${rows.length ? rows.map(({ bot, navigation }) => {
             const telemetry = telemetryOf(navigation);
@@ -156,6 +219,7 @@ export const navigationPage = {
               <td><a class="link" href="#/bots/${encodeURIComponent(bot.name)}/navigation">${esc(bot.name)}</a></td>
               <td class="mono tiny">${esc(positionText(bot.position))}</td>
               <td>${stateBadge}</td>
+              <td class="tiny">${esc(nav.mode || 'BALANCED')}</td>
               <td class="mono tiny">${esc(targetText(navigation))}</td>
               <td class="mono">${num(telemetry.attempts || 0)}</td>
               <td class="mono">${telemetry.successRate === null || telemetry.successRate === undefined ? '—' : `${telemetry.successRate}%`}</td>
@@ -166,7 +230,7 @@ export const navigationPage = {
                 <button class="button button--sm button--ghost" type="button" data-command="bot ${esc(bot.name)} stop">${icon('stop')} Stop</button>
               </div></td>
             </tr>`;
-              }).join('') : `<tr><td colspan="9">${emptyState('No navigation state', 'The runtime has not reported a navigation manager yet.', 'navigation')}</td></tr>`}
+              }).join('') : `<tr><td colspan="10">${emptyState('No navigation state', 'The runtime has not reported a navigation manager yet.', 'navigation')}</td></tr>`}
             </tbody>
           </table></div>
             </section>
@@ -187,7 +251,7 @@ export const navigationPage = {
         <section class="card">
           <div class="card-header"><div class="card-title">${icon('info')} How it works</div></div>
           <div class="card-body tiny muted">
-            Every autonomous task calls the same manager: destination validation, fleet stance claims, one motion owner per bot, bounded attempts, stuck/recovery, arrival evidence and telemetry. Mining and woodcutting dig their own access; routine travel never digs or scaffolds. Safety and operator moves outrank task movement.
+            Every autonomous task calls the same manager: destination validation, weighted route modes, fleet stance and corridor claims, one motion owner per bot, bounded attempts, goal-progress stuck detection, a five-step recovery ladder, arrival evidence and telemetry. Closed doors and unloaded chunks are obstacles; a fall is validated through every intermediate cell. Mining and woodcutting dig their own access; routine travel never digs or scaffolds. Safety, operator and emergency moves outrank task movement.
           </div>
         </section>
       </div>`;

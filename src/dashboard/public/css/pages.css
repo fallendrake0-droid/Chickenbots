@@ -925,3 +925,14 @@
    when the main column is narrow. */
 .table td.mono,
 .table td .button { white-space: nowrap; }
+
+/* Top-down route preview on the Navigation page. The polyline is generated
+   from real backend waypoints; it is not a decorative straight line. */
+.route-preview-map {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 12px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.25));
+  border-radius: 8px;
+}

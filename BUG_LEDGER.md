@@ -370,3 +370,25 @@ formatting, `npm test` 568/568. **Live-server result UNVERIFIED.**
 the real host (construction site surveys/chunk parsing); climbable deep-mine
 shafts (staircase fix is simulator-proven); live night-time death-loop and
 `MINE_BLOCK` duration. All pre-existing live criteria remain UNVERIFIED.
+
+## Round 51 — navigation model, fleet corridors and honest recovery
+
+Each item was reproduced before the fix and is covered by a regression in
+`tests/navigation-overhaul.test.js`, the navigation group or `tests/excavation-exec.test.js`.
+
+| # | Symptom | Root cause | Fix |
+|---|---------|------------|-----|
+| 51.1 | A closed wooden door was treated as walkable | block reader only compared names; door state was ignored | `classifyBlock()` reads `open`/`half`, an unreadable door is closed, and `openDoors` only marks a closed door as openable |
+| 51.2 | A fall could pass through a water/lava/leaf column | only the landing cell was validated | `fallTrajectorySafe()` validates every body cell from take-off to landing |
+| 51.3 | An unloaded chunk could be planned as air | missing block fell through to a passable default | unknown is a hard stop (`DESTINATION_UNLOADED`); the mock and live readers share the rule |
+| 51.4 | A bot that made one small step was reported stuck | detector compared displacement, not progress over time | sliding `NAV_STUCK_WINDOW_MS` window starts only after a real path update |
+| 51.5 | A failed move could report success | exact moves accepted a nearby alternate stance | range 0 plans no alternate stance, and `ARRIVAL_UNVERIFIED` compares against the resolved `result.goal` |
+| 51.6 | A hung long plan froze the other four bots | one 12k-node A* per candidate/segment with no shared deadline | one `NAV_PLAN_BUDGET_MS` deadline per move, segmented candidates, exit scans removed from the inner loop |
+| 51.7 | Five-bot build failed at 26% verification | 350 ms plan budget starved the shared event loop under concurrent builds | default raised to 500 ms; measured 300–500 ms floor, congestion defaults kept at 1.5/5000 |
+| 51.8 | Quarry region R3 stayed `ACTIVE` with a stranded bot | a waiting bot fell into a neighbour's finished pit before its turn; the access staircase no longer connected, so the last top layer was unreachable | executor cuts a bounded one-block staircase (`_climbTo`) through authorised excavation cells, then repositions at the region top; mock navigation never teleports |
+| 51.9 | A mock builder could report a navigation success without a plan | fixture path directly assigned the stance | fixture relocation is tagged `fixture: true`; normal `goTo` always plans |
+| 51.10 | `path` printed a route without explaining it | no mode/terrain/dimension evidence in the result | `mode`, `terrainSummary`, `dimension`, `closestDistance` and the full planner diagnostics are returned; the dashboard draws the real route |
+| 51.11 | A failed final exact step was reported as success | the long-route shrink fallback also ran on the final segment and kept the original `goal` while walking to a different stance | shrink is only allowed for an intermediate segment; an exact final destination fails honestly with its planner reason |
+| 51.12 | A bot could not descend its own staircase | the new fall-trajectory gate rejected a one-block step-down because the take-off column's head cell was solid | a one-block step-down is entered from the side and only the landing body is required; deeper drops still validate the take-off column |
+| 51.13 | Branch mining stopped under a one-block surface overhang | it always navigated to the next branch cell before digging, and the only standable stance was under the unbroken head block | dig from the current tunnel when the cell is already within the real 4.4-block reach; travel only when it is not |
+| 51.14 | Builder could not clear an elevated natural obstacle on a mock site | clearing used the five-block dig reach while the fixture builder advertises a scaffold `buildReach` | the builder passes its declared build reach to the mock dig fixture; normal mining/excavation keep the five-block limit and no position is assigned |

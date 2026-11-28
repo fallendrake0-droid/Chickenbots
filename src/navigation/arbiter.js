@@ -29,7 +29,8 @@ class MotionArbiter {
     this.history = [];
   }
 
-  claim({ priority = 'task', owner = null, timeoutMs = 20000, ttlMs = null, generation = null } = {}) {
+  claim({ priority = 'task', owner = null, timeoutMs = 20000, ttlMs = null, generation = null, goal = null } = {}) {
+    this.sweep();
     const now = this.now();
     const wanted = movePriority(priority);
     const active = this.current;
@@ -53,6 +54,8 @@ class MotionArbiter {
       generation: generation === null ? this.generation() : generation,
       owner: owner || String(priority),
       priority: wanted,
+      goal: goal && [goal.x, goal.y, goal.z].every((v) => Number.isFinite(Number(v)))
+        ? { x: Number(goal.x), y: Number(goal.y), z: Number(goal.z) } : null,
       startedAt: now,
       expiresAt: now + (Number.isFinite(ttl) && ttl > 0 ? ttl : timeout + 5000)
     };
@@ -94,6 +97,7 @@ class MotionArbiter {
   }
 
   snapshot() {
+    this.sweep();
     return this.current ? { ...this.current } : null;
   }
 

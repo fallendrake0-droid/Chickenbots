@@ -1,6 +1,6 @@
 'use strict';
 
-const { classifyAt, classifyBlock, readBlock, UNKNOWN_BLOCK } = require('./blocks');
+const { classifyAt } = require('./blocks');
 
 const DEFAULT_OPTIONS = Object.freeze({
   maxDrop: 3,
@@ -9,7 +9,8 @@ const DEFAULT_OPTIONS = Object.freeze({
   maxNearbyRadius: 6,
   allowWater: true,
   allowHazard: false,
-  allowUnknown: false
+  allowUnknown: false,
+  openDoors: false
 });
 
 function floorPosition(pos) {
@@ -24,17 +25,24 @@ function finitePosition(pos) {
 }
 
 function optionsWith(options = {}) {
+  // The planner passes the same normalised options through thousands of
+  // standability calls per A* search. Rebuilding the merged object on every
+  // feet/head/support read was measurable on a 30-block build walk. Tag the
+  // merged object once and reuse it; callers can still add a field by passing
+  // a fresh object.
+  if (options && options.__normalized === true) return options;
   const defined = {};
   for (const [key, value] of Object.entries(options || {})) {
     if (value !== undefined && value !== null) defined[key] = value;
   }
-  return { ...DEFAULT_OPTIONS, ...defined };
+  return { ...DEFAULT_OPTIONS, ...defined, __normalized: true };
 }
 
 /** Feet and head are the two blocks a 1.8-high player occupies. */
-function bodyAt(reader, pos) {
-  const feet = classifyAt(reader, pos);
-  const head = classifyAt(reader, { x: pos.x, y: pos.y + 1, z: pos.z });
+function bodyAt(reader, pos, options = {}) {
+  const opts = optionsWith(options);
+  const feet = classifyAt(reader, pos, opts);
+  const head = classifyAt(reader, { x: pos.x, y: pos.y + 1, z: pos.z }, opts);
   return { feet, head, unknown: !feet.known || !head.known };
 }
 
@@ -42,10 +50,16 @@ function bodyPassable(feet, head, { allowWater = true, allowHazard = false } = {
   if (!feet.known || !head.known) return { ok: false, reason: 'unloaded' };
   if (feet.lava || head.lava) return { ok: false, reason: 'lava' };
   if ((feet.hazard || head.hazard) && !allowHazard) return { ok: false, reason: 'hazard' };
+  // A closed door is a real wall even if a live pathfinder is allowed to open
+  // it. The planner must not claim the bot can walk through a closed door.
+  if (feet.door && feet.open !== true) return { ok: false, reason: feet.openable ? 'door-closed-openable' : 'door-closed' };
+  if (head.door && head.open !== true) return { ok: false, reason: head.openable ? 'door-closed-openable' : 'door-closed' };
+  if (feet.gate && feet.open !== true) return { ok: false, reason: 'gate-closed' };
+  if (head.gate && head.open !== true) return { ok: false, reason: 'gate-closed' };
   if (feet.climbable) return { ok: head.passable || head.climbable || head.water, reason: head.passable ? 'climbable' : 'head-blocked' };
   if (!(feet.passable || (allowWater && feet.water))) return { ok: false, reason: 'feet-blocked' };
   if (!(head.passable || (allowWater && head.water) || head.climbable)) return { ok: false, reason: 'head-blocked' };
-  return { ok: true, reason: 'clear' };
+  return { ok: true, reason: 'clear', doorLike: Boolean(feet.doorLike || head.doorLike) };
 }
 
 /**
@@ -53,9 +67,9 @@ function bodyPassable(feet, head, { allowWater = true, allowHazard = false } = {
  * as a floor. An immediate drop greater than maxDrop is rejected: a bot must
  * not choose a destination that requires falling off a cliff.
  */
-function supportAt(reader, pos, { maxDrop = 3, allowWater = true } = {}) {
+function supportAt(reader, pos, { maxDrop = 3, allowWater = true, openDoors = false } = {}) {
   for (let drop = 0; drop <= maxDrop; drop++) {
-    const below = classifyAt(reader, { x: pos.x, y: pos.y - 1 - drop, z: pos.z });
+    const below = classifyAt(reader, { x: pos.x, y: pos.y - 1 - drop, z: pos.z }, { openDoors });
     if (!below.known) return { ok: false, reason: 'unloaded-support', drop };
     if (below.lava) return { ok: false, reason: 'lava-support', drop };
     if (below.hazard) return { ok: false, reason: 'hazard-support', drop };
@@ -75,7 +89,7 @@ function standableAt(reader, pos, options = {}) {
   const opts = optionsWith(options);
   if (!finitePosition(pos)) return { ok: false, reason: 'invalid-position', position: pos || null };
   const at = floorPosition(pos);
-  const body = bodyAt(reader, at);
+  const body = bodyAt(reader, at, opts);
   if (body.unknown && !opts.allowUnknown) {
     return { ok: false, reason: 'unloaded', unknown: true, position: at, feet: body.feet, head: body.head };
   }

@@ -55,10 +55,15 @@ const PASSABLE = new Set([
   'cocoa', 'vine', 'sculk_vein', 'frosted_ice', 'snow'
 ]);
 
-// Doors and open trapdoors are treated as passable for deterministic indoor
-// navigation. A closed iron door is not; RealBot's pathfinder policy can still
-// refuse to open them.
-const DOOR_LIKE = /^(?!iron_).+_door$/;
+// A door is passable only when its *actual* open state says so. A wooden door
+// that is closed is an obstacle for the deterministic planner even when the
+// live pathfinder is allowed to open it: pretending a closed door is air is how
+// the simulator walks through walls that the live server still blocks. Iron
+// doors are never openable by hand. Trapdoors and fence gates use the same
+// state rule; an open trapdoor is empty, a closed one is a low partial block.
+const DOOR = /_door$/;
+const TRAPDOOR = /_trapdoor$/;
+const FENCE_GATE = /_fence_gate$/;
 
 const CLIMBABLE = new Set(['ladder', 'vine', 'scaffolding', 'twisting_vines', 'weeping_vines', 'cave_vines', 'cave_vines_plant']);
 
@@ -84,6 +89,52 @@ function isUnknownName(name) {
   return !name || name === UNKNOWN_BLOCK || name === 'unknown' || name === 'not_loaded';
 }
 
+function truthy(value) {
+  return value === true || value === 1 || value === 'true' || value === '1' || value === 'yes';
+}
+
+/**
+ * Read block state without assuming a particular Mineflayer version. Prismarine
+ * exposes `getProperties()`; older objects expose `properties`/`_properties`,
+ * and mock worlds attach a plain object. A state that cannot be read is
+ * explicitly unknown, never silently treated as open.
+ */
+function blockState(block) {
+  if (!block || typeof block !== 'object') return { known: false, open: null, half: null, powered: null };
+  let raw = null;
+  if (typeof block.getProperties === 'function') {
+    try { raw = block.getProperties(); } catch (_) { raw = null; }
+  }
+  if (!raw) raw = block.properties || block._properties || block.state || null;
+  if (!raw || typeof raw !== 'object') return { known: false, open: null, half: null, powered: null };
+  const out = { known: true, open: null, half: null, powered: null, raw };
+  if (Object.prototype.hasOwnProperty.call(raw, 'open')) out.open = truthy(raw.open);
+  if (raw.half !== undefined) out.half = String(raw.half);
+  if (raw.powered !== undefined) out.powered = truthy(raw.powered);
+  return out;
+}
+
+/** Collision height declared by a shape array, regardless of the name table. */
+function declaredCollisionHeight(block) {
+  if (!block || typeof block !== 'object') return null;
+  const shapes = Array.isArray(block.shapes) ? block.shapes : null;
+  if (shapes && shapes.length) {
+    let max = 0;
+    for (const shape of shapes) {
+      if (Array.isArray(shape) && shape.length >= 6) {
+        // Shapes are local box corners [x1,y1,z1,x2,y2,z2]; the highest
+        // occupied Y is the collision top. Some versions emit absolute Y too.
+        const top = Math.max(Number(shape[4]) || 0, Number(shape[1]) || 0);
+        max = Math.max(max, Math.min(2, top));
+      }
+    }
+    return Math.max(0, max);
+  }
+  if (block.boundingBox === 'empty') return 0;
+  if (block.boundingBox === 'block') return 1;
+  return null;
+}
+
 function isAirName(name) { return AIR.has(String(name)); }
 function isWaterName(name) { return WATER.has(String(name)); }
 function isLavaName(name) { return LAVA.has(String(name)); }
@@ -93,22 +144,7 @@ function isClimbableName(name) { return CLIMBABLE.has(String(name)); }
 function isPartialName(name) { return PARTIAL_NAMES.some((re) => re.test(String(name))); }
 
 /** Maximum Y of a block's collision shapes, or null when shapes are absent. */
-function shapeHeight(block) {
-  if (!block || typeof block !== 'object') return null;
-  const shapes = Array.isArray(block.shapes) ? block.shapes : null;
-  if (shapes && shapes.length) {
-    let max = 0;
-    for (const shape of shapes) {
-      if (Array.isArray(shape) && shape.length >= 6) max = Math.max(max, Number(shape[4]) || 0);
-    }
-    return Math.max(0, Math.min(2, max));
-  }
-  // Prismarine's block object exposes boundingBox even when shapes are not
-  // populated. 'empty' is decisive; 'block' means the full cube.
-  if (block.boundingBox === 'empty') return 0;
-  if (block.boundingBox === 'block') return 1;
-  return null;
-}
+function shapeHeight(block) { return declaredCollisionHeight(block); }
 
 /**
  * @returns {{
@@ -117,7 +153,7 @@ function shapeHeight(block) {
  *   climbable:boolean, support:boolean, collisionHeight:number, replaceable:boolean
  * }}
  */
-function classifyBlock(block) {
+function classifyBlock(block, options = {}) {
   const name = nameOf(block);
   if (isUnknownName(name)) {
     return {
@@ -133,10 +169,22 @@ function classifyBlock(block) {
   const climbable = CLIMBABLE.has(name);
   const air = AIR.has(name);
   const passableName = PASSABLE.has(name) || /_button$/.test(name) || /_sign$/.test(name);
-  const height = shapeHeight(block);
+  const height = declaredCollisionHeight(block);
+  const state = blockState(block);
   const partial = isPartialName(name);
+  const door = DOOR.test(name);
+  const trapdoor = TRAPDOOR.test(name);
+  const gate = FENCE_GATE.test(name);
+  // `null` means the state was not exposed; a closed or unknown door is an
+  // obstacle. An empty collision shape is positive evidence that it is open.
+  const open = state.open === null ? (door || trapdoor || gate ? height === 0 : null) : state.open;
+  const openable = door && !/^iron_/.test(name)
+    && (options.canOpenDoors === true || options.openDoors === true);
   let collisionHeight;
-  if (liquid || air || passableName || DOOR_LIKE.test(name)) collisionHeight = 0;
+  if (door) collisionHeight = open === true ? 0 : 1;
+  else if (trapdoor) collisionHeight = open === true ? 0 : (height !== null ? height : 0.1875);
+  else if (gate) collisionHeight = open === true ? 0 : (height !== null ? height : 1);
+  else if (liquid || air || passableName) collisionHeight = 0;
   else if (height !== null) collisionHeight = height;
   else if (partial) {
     if (/_slab$/.test(name)) collisionHeight = 0.5;
@@ -148,10 +196,15 @@ function classifyBlock(block) {
   } else collisionHeight = 1;
   const passable = collisionHeight < 0.5;
   const solid = collisionHeight >= 0.5;
+  const kind = hazard ? 'hazard' : lava ? 'lava' : water ? 'water' : air ? 'air'
+    : door ? (open === true ? 'door-open' : openable ? 'door-closed-openable' : 'door-closed')
+      : trapdoor ? (open === true ? 'trapdoor-open' : 'trapdoor-closed')
+        : gate ? (open === true ? 'gate-open' : 'gate-closed')
+          : climbable ? 'climbable' : passable ? 'passable' : partial ? 'partial' : 'solid';
   return {
     name,
     known: true,
-    kind: hazard ? 'hazard' : lava ? 'lava' : water ? 'water' : air ? 'air' : climbable ? 'climbable' : passable ? 'passable' : partial ? 'partial' : 'solid',
+    kind,
     solid,
     passable,
     liquid,
@@ -159,10 +212,21 @@ function classifyBlock(block) {
     lava,
     hazard,
     climbable,
-    // A slab still supports a player standing at its block coordinate's top.
-    support: solid && !hazard,
+    // A door is not support while open; a closed door is a wall. A closed
+    // trapdoor is a low partial surface, not a full standable floor cell.
+    // A closed trapdoor is only 3/16 high, so it is passable as a body cell
+    // but its top still supports a player standing above it.
+    support: (solid && !hazard) || (trapdoor && open !== true && !hazard),
     collisionHeight,
-    replaceable: air || liquid || passableName
+    replaceable: air || liquid || passableName,
+    open: open === null ? null : Boolean(open),
+    stateKnown: state.known,
+    openable,
+    door,
+    trapdoor,
+    gate,
+    // Narrow passages and doorways are valid but cost more than open ground.
+    doorLike: door || gate || trapdoor
   };
 }
 
@@ -179,11 +243,12 @@ function readBlock(reader, pos) {
   }
 }
 
-function classifyAt(reader, pos) { return classifyBlock(readBlock(reader, pos)); }
+function classifyAt(reader, pos, options = {}) { return classifyBlock(readBlock(reader, pos), options); }
 
 module.exports = {
   UNKNOWN_BLOCK, AIR, WATER, LAVA, FLUIDS, HAZARDS, PASSABLE, CLIMBABLE,
   nameOf, isUnknownName, isAirName, isWaterName, isLavaName, isFluidName,
   isHazardName, isClimbableName, isPartialName, shapeHeight,
+  blockState, declaredCollisionHeight,
   classifyBlock, readBlock, classifyAt
 };

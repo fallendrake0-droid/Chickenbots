@@ -231,9 +231,36 @@ numbers enforced.
   failure and triggers one retry even when the caller did not ask for strict verification. Recovery is
   deterministic: restart, a standable stance **around the real target**, a stance near the start, then
   abort. Tasks default to two attempts; operator moves to three.
+* **World model, not a height field.** Doors, fence gates and trapdoors are classified from their real
+  block state: an unreadable or closed door is a wall, only an actually open door is passable, and an
+  operator policy that allows opening doors still does not turn a closed door into air. Water is
+  swim-through, lava is a hazard, and a fall is checked through every body cell on its trajectory.
+  Unloaded chunks remain unknown (`DESTINATION_UNLOADED`), never air.
+* **Route profiles.** `NAV_ROUTE_MODE` selects a safety envelope without changing the rules: SAFE and
+  CAUTIOUS refuse deep drops and price water heavily, FAST allows a 4-block drop, TASK is the balanced
+  work profile, COMBAT/RETREAT price hazard contact differently, and FOLLOW keeps a bounded following
+  distance. The profile name and the measured terrain composition (`walk`, `diagonal`, `stepUp`,
+  `drop`, `water`, `doors`, `maxDrop`) are returned by `path` and shown on the Navigation page.
+* **Dimension envelopes.** `NAV_DIMENSION` carries the Y range and drop envelope per dimension. The
+  Nether/End cap the drop at two blocks and mark lava/void hazards, so a route that is legal in the
+  overworld cannot silently become a lava or void death.
+* **Fleet corridors and claims.** A stance claim records the route corridor, not just the destination.
+  A conflicting task path is relocated or receives a soft corridor cost; operator and emergency
+  claims are reported but never moved. Congestion is ephemeral (TTL), so a finished build cannot
+  poison tomorrow's route.
+* **Deterministic recovery ladder.** A failure is classified (`PATH_NOT_FOUND`, `PATH_PLAN_TIMEOUT`,
+  `PATH_STUCK`, `ARRIVAL_UNVERIFIED`, `MOVEMENT_BUSY`, …), failed cells are remembered per bot, and
+  recovery walks a fixed ladder: replan, restart, a stance around the real target (skipping known-bad
+  cells), a stance near the start, then an honest abort. Tasks get two attempts, operator moves three.
+  The dashboard shows the ladder level, remembered cells and the last failure beside the live route.
+* **Bounded planning, not a frozen server.** Every deterministic plan shares one deadline
+  (`NAV_PLAN_BUDGET_MS`), expands at most `NAV_MAX_NODES`, and yields between segments. Exit scans are
+  removed from the A* inner loop, so a five-bot build cannot monopolise the event loop.
 * **Simulator honesty.** The mock planner uses the same standability, diagonal corner guard, bounded
-  drops, swimming and ladder rules. Its route preview on the Navigation page is a real backend plan and
-  does not move the bot.
+  drops, swimming, ladder, door and dimension rules. Its route preview on the Navigation page is a
+  real backend plan and does not move the bot. The only direct mock position relocation left is the
+  builder fixture for a bot deliberately suspended beside an elevated schematic; it returns
+  `fixture: true` and is not reported as a navigation success.
 
 ### Combat engine (V6)
 
@@ -435,6 +462,9 @@ All values can be set in `.env` or the environment. Defaults matter and are pres
 | `NAV_ADAPTIVE_SEARCH_RADIUS` / `NAV_SEARCH_RADIUS_SCALE` / `NAV_SEARCH_RADIUS_MAX` | `true` / `1.5` / `512` | scale the pathfinder detour budget with distance (`scale × straight + 16`), clamped between the floor and the ceiling |
 | `NAV_TASK_ATTEMPTS` / `NAV_OPERATOR_ATTEMPTS` | `2` / `3` | bounded attempts: a task gets one recovery retry, an operator move three, before an honest failure |
 | `NAV_STUCK_WINDOW_MS` / `NAV_RECOVERY_DELAY_MS` | `2500` / `250` | no-progress window that stops a stale path, and delay between recovery attempts |
+| `NAV_ROUTE_MODE` | `balanced` | route profile: `safe`, `fast`, `balanced`, `cautious`, `follow`, `combat`, `retreat`, `task`. It changes drop depth, water/hazard costs and narrow-corridor cost, never the standability rule |
+| `NAV_PLAN_BUDGET_MS` | `500` | ceiling for one deterministic plan. A shared deadline covers every segment of one move, so a long route cannot exceed it. 500 ms is the measured floor for a five-bot build; lower values starve the shared event loop |
+| `NAV_DIMENSION` | `overworld` | dimension envelope: `overworld`, `nether` or `end`. It caps safe drops in the Nether/End and rejects targets outside the dimension's build height |
 | `CLIENT_STALL_GUARD_MS` / `CLIENT_STALL_RESUME_MS` | `2500` / `1500` | if the 20 tps client tick loop arrives this late, stop the stale path, re-anchor to the last server position and hold movement for the resume window. A 5s+ freeze also probes the socket with a real swing so a dead session reconnects instead of showing as online |
 | `MC_RECONNECT_*` | see below | reconnect backoff. Supervision now runs on its own 1.5s timer, independent of long mining or movement actions |
 | `MC_INBOUND_YIELD` | `true` | pause the inbound socket between kernel reads so a chunk burst cannot monopolise one event-loop turn |

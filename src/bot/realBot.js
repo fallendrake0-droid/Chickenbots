@@ -17,8 +17,7 @@ const { TILLABLE } = require('../world/crops');
 const { NavigationManager } = require('../navigation/manager');
 const { resolveStandableY } = require('../navigation/standability');
 const { configureMovements } = require('../navigation/movements');
-const { navigationPolicy, adaptiveSearchRadius, pathfinderBudgets } = require('../navigation/policy');
-const { StuckDetector } = require('../navigation/stuck');
+const { navigationPolicy, adaptiveSearchRadius, pathfinderBudgets, routeMode } = require('../navigation/policy');
 
 const HOSTILE = new Set([
   'zombie', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider', 'cave_spider',
@@ -30,17 +29,10 @@ const HOSTILE = new Set([
 const FLUID_BLOCKS = new Set(['water', 'lava', 'flowing_water', 'flowing_lava']);
 const EMPTY_BLOCKS = new Set(['air', 'cave_air', 'void_air']);
 
-// One movement owner per bot. A recovery retreat must not be overwritten by a
-// task pathfinder, and an operator move must not be silently cancelled by a
-// routine follow command. Higher numbers win.
-const MOVE_PRIORITY = Object.freeze({ routine: 0, task: 1, recovery: 2, operator: 3, emergency: 4 });
+// One movement owner per bot lives in navigation/arbiter.js. This module only
+// forwards named priorities; it must not keep a second priority table.
 const POSITION_PACKET_NAMES = new Set(['position', 'position_look']);
 const MAX_WORLD_COORDINATE = 30000000;
-
-function movePriority(value) {
-  if (Number.isFinite(Number(value))) return Number(value);
-  return MOVE_PRIORITY[String(value || 'task').toLowerCase()] ?? MOVE_PRIORITY.task;
-}
 
 function finitePosition(pos) {
   return Boolean(pos)
@@ -2838,13 +2830,13 @@ class RealBot extends BotAdapter {
     }
     const {
       range = 1, timeoutMs = config.navigation?.defaultTimeoutMs || 20000,
-      priority = 'task', owner = null, adjustY = false
+      priority = 'task', owner = null, adjustY = false, mode = 'balanced'
     } = options;
     return this.navigation.navigate(pos, {
-      ...options, range, timeoutMs, priority, owner: owner || String(priority),
+      ...options, range, timeoutMs, priority, owner: owner || String(priority), mode,
       generation: this.connection.generation
     }, (goal, context) => this._executeNavigationPath(goal, {
-      ...context, options: { ...options, range, timeoutMs, adjustY }
+      ...context, options: { ...options, range, timeoutMs, adjustY, mode }
     }));
   }
 
@@ -2854,6 +2846,10 @@ class RealBot extends BotAdapter {
    */
   async _executeNavigationPath(goal, context = {}) {
     const options = context.options || {};
+    if (context.generation !== undefined && context.generation !== null
+      && this.connection && context.generation !== this.connection.generation) {
+      return { ok: false, code: 'CONNECTION_CHANGED', error: 'the connection generation changed while this move was queued' };
+    }
     // A stall re-anchors the entity and asks for a short resync pause; starting
     // the retry before that pause ends would emit the same impossible jump the
     // stall was recovering from.
@@ -2891,7 +2887,11 @@ class RealBot extends BotAdapter {
         tickTimeoutMs: budget.tickTimeoutMs
       }
     });
-    const radius = Math.max(1, Number(options.range) || 1);
+    // Range 0 is an exact stance, not "near enough". GoalNear with radius 1
+    // silently turned every exact task step into a two-block acceptance and
+    // made shaft/construction moves report arrival early.
+    const radius = Math.max(0, Number(options.range) || 0);
+    const mode = routeMode(context.mode || options.mode || 'balanced');
     const target = {
       x: Math.floor(Number(goal.x)), y: Math.floor(Number(goal.y)), z: Math.floor(Number(goal.z))
     };
@@ -2912,12 +2912,20 @@ class RealBot extends BotAdapter {
         bot: this.bot,
         registry: this.bot.registry,
         settings: config.navigation,
-        options
+        options: {
+          ...options,
+          mode: mode.name,
+          maxDrop: options.maxDrop === undefined ? Math.min(config.navigation.maxDrop ?? 3, mode.maxDrop) : options.maxDrop,
+          allowWater: options.allowWater === undefined ? (config.navigation.allowWater !== false && mode.allowWater) : options.allowWater,
+          openDoors: options.openDoors === undefined ? (context.openDoors === true || config.navigation.openDoors === true) : options.openDoors
+        }
       });
       this.bot.pathfinder.setMovements(movements);
       setupMs = Math.max(0, this.now() - setupStartedAt);
     }
-    const goalObject = new goals.GoalNear(target.x, target.y, target.z, radius);
+    const goalObject = radius <= 0
+      ? new goals.GoalBlock(target.x, target.y, target.z)
+      : new goals.GoalNear(target.x, target.y, target.z, radius);
     let timer = null;
     let progressTimer = null;
     let stoppedForStuck = false;
@@ -2962,12 +2970,13 @@ class RealBot extends BotAdapter {
       progressTimer = setInterval(() => {
         if (!pathStarted || timedOut || stoppedForStuck) return;
         const live = this.bot.entity && this.bot.entity.position;
-        const sample = this.navigation.stuck.sample(live);
+        const sample = this.navigation.stuck.sample(live, undefined, { target });
         if (sample.stuck) {
           stoppedForStuck = true;
           this.navigation.telemetry.event('stuck', {
             attempt: context.attempt, owner: context.owner, target: target,
-            displacement: sample.displacement, elapsed: sample.elapsed
+            kind: sample.kind, displacement: sample.displacement, travel: sample.travel,
+            goalDistance: sample.goalDistance, elapsed: sample.elapsed
           });
           try { this.bot.pathfinder.stop(); } catch (_) { /* optional */ }
         }
@@ -2999,7 +3008,8 @@ class RealBot extends BotAdapter {
     if (stoppedForStuck) {
       return withTimings({
         ok: false, stuck: true, pathRejected: false, code: 'PATH_STUCK',
-        error: `movement stalled near ${target.x},${target.y},${target.z}`
+        error: `movement stalled near ${target.x},${target.y},${target.z}`,
+        mode: mode.name, exact: radius === 0
       });
     }
     if (result.ok === false && !timedOut && !stoppedForStuck) {
@@ -3034,7 +3044,9 @@ class RealBot extends BotAdapter {
           ...result,
           arrived: within(settled),
           shortBy: Number(distance(settled, target).toFixed(3)),
-          searchRadius: effectiveSearchRadius
+          searchRadius: effectiveSearchRadius,
+          exact: radius === 0,
+          mode: mode.name
         };
       }
     } else if (result && result.ok === false) {
@@ -3048,7 +3060,9 @@ class RealBot extends BotAdapter {
     }
     const live = this.bot.entity?.position;
     if (finitePosition(live)) this.position = this._vec(live);
-    return withTimings(result);
+    return withTimings(result && typeof result === 'object'
+      ? { mode: mode.name, exact: radius === 0, ...result }
+      : result);
   }
   /** Move near an entity (mineflayer-pathfinder companion; the mock has one). */
   async goNear(entity, range = 2, options = {}) {
