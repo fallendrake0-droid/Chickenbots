@@ -106,48 +106,6 @@ export const navigationPage = {
               </div>
             </section>
 
-            <section class="card">
-              <div class="card-header"><div class="card-title">${icon('users')} Fleet paths</div><span class="tiny muted">${rows.length} reported</span></div>
-              <div class="table-wrap"><table class="table">
-                <thead><tr><th>Bot</th><th>Position</th><th>Movement</th><th>Target</th><th>Attempts</th><th>Success</th><th>Stuck / no path</th><th>Last failure</th><th>Actions</th></tr></thead>
-                <tbody>
-                  ${rows.length ? rows.map(({ bot, navigation }) => {
-                    const telemetry = telemetryOf(navigation);
-                    const nav = navigation || {};
-                    const stateBadge = nav.active
-                      ? badge(`moving · ${nav.owner || nav.priority || 'path'}`, 'accent', { dot: true })
-                      : badge(navigation && navigation.error ? 'status error' : 'idle', navigation && navigation.error ? 'danger' : 'neutral', { dot: true });
-                    return `<tr>
-                      <td><a class="link" href="#/bots/${encodeURIComponent(bot.name)}/navigation">${esc(bot.name)}</a></td>
-                      <td class="mono tiny">${esc(positionText(bot.position))}</td>
-                      <td>${stateBadge}</td>
-                      <td class="mono tiny">${esc(targetText(navigation))}</td>
-                      <td class="mono">${num(telemetry.attempts || 0)}</td>
-                      <td class="mono">${telemetry.successRate === null || telemetry.successRate === undefined ? '—' : `${telemetry.successRate}%`}</td>
-                      <td class="mono">${num(telemetry.stuck || 0)} / ${num(telemetry.noPath || 0)}</td>
-                      <td class="tiny truncate" style="max-width:220px" title="${esc(telemetry.lastError || '')}">${esc(telemetry.lastError || '—')}</td>
-                      <td><div class="row gap-2">
-                        <button class="button button--sm" type="button" data-command="return home ${esc(bot.name)}">${icon('home')} Home</button>
-                        <button class="button button--sm button--ghost" type="button" data-command="bot ${esc(bot.name)} stop">${icon('stop')} Stop</button>
-                      </div></td>
-                    </tr>`;
-                  }).join('') : `<tr><td colspan="9">${emptyState('No navigation state', 'The runtime has not reported a navigation manager yet.', 'navigation')}</td></tr>`}
-                </tbody>
-              </table></div>
-            </section>
-
-            <section class="card">
-              <div class="card-header"><div class="card-title">${icon('activity')} Recent movement events</div><span class="tiny muted">local observations</span></div>
-              <div class="activity-list">
-                ${events.length ? events.map((event) => `<div class="activity-item">
-                  <span class="activity-icon">${icon(event.kind === 'stuck' ? 'alert' : event.kind === 'arrived' ? 'check-circle' : event.kind === 'cancelled' ? 'stop' : 'route')}</span>
-                  <div class="activity-main">
-                    <div>${esc(event.kind)}${event.owner ? ` · ${esc(event.owner)}` : ''}${event.code ? ` · ${esc(event.code)}` : ''}</div>
-                    <div class="mono">${esc(event.bot)} · ${event.at ? esc(timeAgo(event.at)) : ''}${event.error ? ` · ${esc(event.error)}` : ''}</div>
-                  </div>
-                </div>`).join('') : '<div class="muted small" style="padding:8px">No movement events yet. Events appear after a bot plans or follows a path.</div>'}
-              </div>
-            </section>
           </div>
 
           <aside class="stack gap-4">
@@ -180,14 +138,58 @@ export const navigationPage = {
               </div>
             </section>
 
-            <section class="card">
-              <div class="card-header"><div class="card-title">${icon('info')} How it works</div></div>
-              <div class="card-body tiny muted">
-                Every autonomous task calls the same manager: destination validation, fleet stance claims, one motion owner per bot, bounded attempts, stuck/recovery, arrival evidence and telemetry. Mining and woodcutting dig their own access; routine travel never digs or scaffolds. Safety and operator moves outrank task movement.
-              </div>
-            </section>
           </aside>
         </div>
+
+            <section class="card">
+          <div class="card-header"><div class="card-title">${icon('users')} Fleet paths</div><span class="tiny muted">${rows.length} reported</span></div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Bot</th><th>Position</th><th>Movement</th><th>Target</th><th>Attempts</th><th>Success</th><th>Stuck / no path</th><th>Last failure</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${rows.length ? rows.map(({ bot, navigation }) => {
+            const telemetry = telemetryOf(navigation);
+            const nav = navigation || {};
+            const stateBadge = nav.active
+              ? badge(`moving · ${nav.owner || nav.priority || 'path'}`, 'accent', { dot: true })
+              : badge(navigation && navigation.error ? 'status error' : 'idle', navigation && navigation.error ? 'danger' : 'neutral', { dot: true });
+            return `<tr>
+              <td><a class="link" href="#/bots/${encodeURIComponent(bot.name)}/navigation">${esc(bot.name)}</a></td>
+              <td class="mono tiny">${esc(positionText(bot.position))}</td>
+              <td>${stateBadge}</td>
+              <td class="mono tiny">${esc(targetText(navigation))}</td>
+              <td class="mono">${num(telemetry.attempts || 0)}</td>
+              <td class="mono">${telemetry.successRate === null || telemetry.successRate === undefined ? '—' : `${telemetry.successRate}%`}</td>
+              <td class="mono">${num(telemetry.stuck || 0)} / ${num(telemetry.noPath || 0)}</td>
+              <td class="tiny truncate" style="max-width:220px" title="${esc(telemetry.lastError || '')}">${esc(telemetry.lastError || '—')}</td>
+              <td><div class="row gap-2">
+                <button class="button button--sm" type="button" data-command="return home ${esc(bot.name)}">${icon('home')} Home</button>
+                <button class="button button--sm button--ghost" type="button" data-command="bot ${esc(bot.name)} stop">${icon('stop')} Stop</button>
+              </div></td>
+            </tr>`;
+              }).join('') : `<tr><td colspan="9">${emptyState('No navigation state', 'The runtime has not reported a navigation manager yet.', 'navigation')}</td></tr>`}
+            </tbody>
+          </table></div>
+            </section>
+
+        <section class="card">
+          <div class="card-header"><div class="card-title">${icon('activity')} Recent movement events</div><span class="tiny muted">local observations</span></div>
+          <div class="activity-list">
+            ${events.length ? events.map((event) => `<div class="activity-item">
+              <span class="activity-icon">${icon(event.kind === 'stuck' ? 'alert' : event.kind === 'arrived' ? 'check-circle' : event.kind === 'cancelled' ? 'stop' : 'route')}</span>
+              <div class="activity-main">
+            <div>${esc(event.kind)}${event.owner ? ` · ${esc(event.owner)}` : ''}${event.code ? ` · ${esc(event.code)}` : ''}</div>
+            <div class="mono">${esc(event.bot)} · ${event.at ? esc(timeAgo(event.at)) : ''}${event.error ? ` · ${esc(event.error)}` : ''}</div>
+              </div>
+            </div>`).join('') : '<div class="muted small" style="padding:8px">No movement events yet. Events appear after a bot plans or follows a path.</div>'}
+          </div>
+            </section>
+
+        <section class="card">
+          <div class="card-header"><div class="card-title">${icon('info')} How it works</div></div>
+          <div class="card-body tiny muted">
+            Every autonomous task calls the same manager: destination validation, fleet stance claims, one motion owner per bot, bounded attempts, stuck/recovery, arrival evidence and telemetry. Mining and woodcutting dig their own access; routine travel never digs or scaffolds. Safety and operator moves outrank task movement.
+          </div>
+        </section>
       </div>`;
   },
   mount(root) {
